@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 
 from db import db_conn
 
+STALE_RUNNING_SECONDS = 20 * 60
+
 
 def set_radar_status(stage, label, progress=0, eta_seconds=None, message="", warning="", details=None):
     payload = {
@@ -40,7 +42,24 @@ def get_radar_status():
             "updated_at": None,
         }
     try:
-        return json.loads(row["value"])
+        payload = json.loads(row["value"])
+        if payload.get("stage") == "running" and payload.get("updated_at"):
+            updated = datetime.fromisoformat(str(payload["updated_at"]).replace("Z", "+00:00"))
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - updated.astimezone(timezone.utc)).total_seconds()
+            if age > STALE_RUNNING_SECONDS:
+                return {
+                    "stage": "error",
+                    "label": "Прошлый поиск был прерван",
+                    "progress": payload.get("progress", 0),
+                    "eta_seconds": None,
+                    "message": "Сервер перезапустился или старый запрос был остановлен. Можно запускать новый поиск.",
+                    "warning": payload.get("warning", ""),
+                    "details": payload.get("details", {}),
+                    "updated_at": payload.get("updated_at"),
+                }
+        return payload
     except Exception:
         return {
             "stage": "idle",
