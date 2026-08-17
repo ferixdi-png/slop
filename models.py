@@ -96,6 +96,7 @@ class ForensicCharacter(BaseModel):
     full_visual_description: str
     clothing_and_colors: str
     initial_screen_position: str
+    initial_screen_box_percent: str
     initial_body_pose: str
     initial_head_and_gaze: str
     role_in_scene: str
@@ -105,6 +106,7 @@ class ForensicCharacter(BaseModel):
 class ForensicObject(BaseModel):
     object_description: str
     initial_location_or_holder: str
+    initial_screen_position_percent: str
     initial_orientation_state: str
     continuity_rule: str
 
@@ -113,6 +115,7 @@ class ForensicFrameZero(BaseModel):
     camera_position_and_height: str
     framing_and_composition: str
     lens_and_perspective: str
+    normalized_screen_coordinates: list[str]
     character_states: list[str]
     hand_states: list[str]
     object_states: list[str]
@@ -140,6 +143,7 @@ class ForensicTimelineEvent(BaseModel):
     end_sec: float
     event_index: int
     shot_or_segment: str
+    normalized_screen_coordinates: list[str]
     character_positions: list[str]
     body_actions: list[str]
     hand_actions: list[str]
