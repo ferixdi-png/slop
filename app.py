@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import datetime, timezone
+from threading import Thread
 
 from flask import Flask, jsonify, render_template, request
 
@@ -10,7 +11,7 @@ from db import db_conn, init_db
 from gemini_service import analyze_video
 from progress import get_radar_status, set_radar_status
 from radar_entry import sync_radar
-from radar_service import download_temp_video
+from reel_media import download_reel_for_analysis
 from service_checks import check_all_services
 
 app = Flask(__name__)
@@ -134,7 +135,6 @@ def radar_candidates():
             rows = query_rows()
         except Exception:
             pass
-
     return jsonify([dict(x) for x in rows])
 
 
@@ -184,6 +184,16 @@ def release_radar_sync_after_error():
         conn.commit()
 
 
+def run_radar_background():
+    with app.app_context():
+        try:
+            sync_radar()
+        except Exception as exc:
+            release_radar_sync_after_error()
+            set_radar_status("error", "Поиск остановлен", 0, None, str(exc)[:300])
+            app.logger.exception("radar background sync failed")
+
+
 @app.post("/api/radar/sync")
 def radar_sync():
     allowed, retry_minutes = reserve_radar_sync()
@@ -195,15 +205,10 @@ def radar_sync():
         "Запускаю радар",
         1,
         360,
-        "Первый полный проход обычно занимает примерно 4–8 минут.",
+        "Поиск запущен в фоне. Первый полный проход обычно занимает примерно 4–8 минут.",
     )
-    try:
-        return jsonify(ok=True, **sync_radar())
-    except Exception as exc:
-        release_radar_sync_after_error()
-        set_radar_status("error", "Поиск остановлен", 0, None, str(exc)[:300])
-        app.logger.exception("radar sync failed")
-        return jsonify(error=str(exc)), 500
+    Thread(target=run_radar_background, name="radar-sync", daemon=True).start()
+    return jsonify(ok=True, started=True, message="Радар запущен в фоне"), 202
 
 
 def save_analysis(title, source_url, views, viral_score, result):
@@ -233,16 +238,15 @@ def radar_analyze(item_id):
         return jsonify(error="Ролик не найден"), 404
 
     row = dict(row)
-    if not row.get("video_url"):
-        return jsonify(error="У результата нет прямого видеофайла."), 400
-
-    source_duration = round(float(row.get("duration_sec") or 0), 2)
-    if source_duration <= 0 or source_duration > 10.05:
-        return jsonify(error="Нет корректной длительности ролика до 10 секунд."), 400
-
     tmp = None
     try:
-        tmp = download_temp_video(row["video_url"])
+        # Instagram CDN links expire. The helper first tries the stored URL and, if needed,
+        # refreshes the exact Reel through Apify before sending it to Gemini.
+        tmp, refreshed_duration = download_reel_for_analysis(row)
+        source_duration = round(float(refreshed_duration or row.get("duration_sec") or 0), 2)
+        if source_duration <= 0 or source_duration > 10.05:
+            raise RuntimeError("Нет корректной длительности выбранного Reel до 10 секунд")
+
         package = analyze_video(tmp, owned, source_duration)
         result = package.model_dump()
         analysis_id = save_analysis(
@@ -252,7 +256,12 @@ def radar_analyze(item_id):
             row.get("viral_score_v2", 0),
             result,
         )
-        return jsonify(id=analysis_id, result=result)
+        return jsonify(
+            id=analysis_id,
+            model=ANALYSIS_MODEL,
+            source_duration_sec=source_duration,
+            result=result,
+        )
     except Exception as exc:
         app.logger.exception("radar analysis failed")
         return jsonify(error=str(exc)), 500
