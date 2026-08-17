@@ -180,8 +180,9 @@ def normalize_reel(raw, source, creator_stats=None):
 
     if not url or not creator or not published:
         return None
-    # First gate uses Instagram metadata. The MP4 is measured again immediately
-    # before Gemini and anything outside this range is rejected there too.
+    # Product contract: any short Reel up to 10 seconds is eligible. The MP4 is
+    # measured again immediately before Gemini, so bad Instagram metadata cannot
+    # leak into the final TOP.
     if duration < RADAR_MIN_DURATION_SEC or duration > RADAR_MAX_DURATION_SEC:
         return None
     if published < datetime.now(timezone.utc) - timedelta(days=7):
@@ -193,11 +194,11 @@ def normalize_reel(raw, source, creator_stats=None):
     age_hours = max(0.25, (datetime.now(timezone.utc) - published).total_seconds() / 3600)
     vph = round(views / age_hours, 2)
 
-    # High-recall pre-AI gate: discovery is now AI-specific already, so do not
-    # throw away fresh winners just because engagement has not accumulated yet.
-    if views < 300 and likes < 3 and vph < 800:
-        return None
-    if views < 1_000 and likes < 2 and vph < 2_000:
+    # High-recall pre-Gemini gate. Discovery is already AI-specific and the queue
+    # is ranked by viral score afterwards, so only remove near-empty/no-signal rows
+    # here. Do NOT discard a fresh short AI Reel just because likes accumulated
+    # slowly; Gemini should decide content, ranking should decide strength.
+    if views < 50 and likes < 1 and comments < 1 and vph < 300:
         return None
 
     score = calculate_viral_score(
@@ -232,11 +233,11 @@ def normalize_reel(raw, source, creator_stats=None):
     }
     item = apply_quality_score(item)
 
-    # Queue Gemini around likely-AI near-10-second material first. This is only a
-    # discovery bonus; Gemini still has final authority over is_ai_video.
+    # Queue likely-AI short material first. Near-10s gets a small bonus, but 2–8s
+    # clips remain fully eligible because the user's target is <=10 seconds.
     hint_blob = f"{caption} {search_term}".lower()
     ai_hint = any(token in hint_blob for token in AI_HINTS)
-    duration_bonus = 8.0 if duration >= 9.7 else 5.0 if duration >= 9.3 else 3.0
+    duration_bonus = 8.0 if duration >= 9.7 else 5.0 if duration >= 7.0 else 3.0
     ai_bonus = 10.0 if ai_hint else 0.0
     item["viral_score_v2"] = round(
         min(100.0, float(item.get("viral_score_v2") or 0) + duration_bonus + ai_bonus),
