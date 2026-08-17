@@ -1,0 +1,7 @@
+Flask>=3.0,<4.0
+gunicorn>=22,<24
+google-genai>=1.0,<2.0
+pydantic>=2.7,<3.0
+python-dotenv>=1.0,<2.0
+requests>=2.32,<3.0
+apify-client>=1.9,<3.0
