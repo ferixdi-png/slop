@@ -21,6 +21,7 @@ def ensure_column(conn, table, name, definition):
 
 def init_db():
     with db_conn() as conn:
+        # WAL allows background radar writes while the browser reads status/results.
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA wal_autocheckpoint=1000")
 
@@ -50,14 +51,6 @@ def init_db():
         conn.execute("""CREATE TABLE IF NOT EXISTS app_state (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL)""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS radar_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT NOT NULL,
-            level TEXT NOT NULL DEFAULT 'INFO',
-            stage TEXT DEFAULT '',
-            message TEXT NOT NULL,
-            details TEXT DEFAULT '')""")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_radar_logs_created ON radar_logs(id DESC)")
 
         for name, definition in [
             ("followers_count", "INTEGER DEFAULT 0"),
