@@ -7,6 +7,7 @@ from db import db_conn
 
 STORE_NAME = "slop-fabrika-state"
 RECORD_KEY = "RADAR_SNAPSHOT_V1"
+JOB_RECORD_KEY = "RADAR_JOB_V2"
 
 
 def _obj_id(value):
@@ -43,6 +44,51 @@ def _table_rows(conn, table, where_sql="", params=(), limit=200):
         sql += " WHERE " + where_sql
     sql += f" LIMIT {int(limit)}"
     return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def save_cloud_record(key, payload):
+    """Persist JSON in the named Apify KVS used by this project."""
+    store = _store_client()
+    if not store:
+        return False
+    store.set_record(str(key), payload, content_type="application/json")
+    return True
+
+
+def load_cloud_record(key):
+    store = _store_client()
+    if not store:
+        return None
+    record = store.get_record(str(key))
+    value = _record_value(record)
+    return value if isinstance(value, dict) else None
+
+
+def delete_cloud_record(key):
+    store = _store_client()
+    if not store:
+        return False
+    try:
+        store.delete_record(str(key))
+    except Exception:
+        return False
+    return True
+
+
+def save_radar_job(job):
+    payload = dict(job or {})
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    if not save_cloud_record(JOB_RECORD_KEY, payload):
+        raise RuntimeError("Не удалось сохранить состояние радара в Apify KVS")
+    return payload
+
+
+def load_radar_job():
+    return load_cloud_record(JOB_RECORD_KEY)
+
+
+def clear_radar_job():
+    return delete_cloud_record(JOB_RECORD_KEY)
 
 
 def save_radar_snapshot():
