@@ -53,7 +53,11 @@
 
 - `apify/instagram-search-scraper` — поиск Popular Reels по ключевым запросам;
 - `apify/instagram-hashtag-scraper` — отдельный сбор Reels по хештегам;
-- `apify/instagram-profile-scraper` — повторный мониторинг уже найденных авторов.
+- `apify/instagram-reel-scraper` — повторный мониторинг уже найденных авторов и их свежих Reels.
+
+### Одна фиксированная партнёрка
+
+Опционально задаются `AFFILIATE_NAME`, `AFFILIATE_URL` и `AFFILIATE_CTA`. Они используются только в Блоке 5 для нативного CTA и не меняют копируемую сцену.
 
 ### Не нужны
 
