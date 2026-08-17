@@ -1,7 +1,7 @@
 import os, re, time
 from google import genai
 from google.genai import types
-from config import ANALYSIS_MODEL, RADAR_MODEL, REALISM_LOCK
+from config import ANALYSIS_MODEL, RADAR_MODEL, REALISM_LOCK, AFFILIATE_NAME, AFFILIATE_URL, AFFILIATE_CTA
 from models import ProductionPackage, RadarAssessment
 
 def strip_speech(text):
@@ -29,6 +29,11 @@ def build_system_prompt(owned):
         if owned else
         "Если есть узнаваемая реальная личность или длинные уникальные формулировки, не имитируй личность и не копируй длинные уникальные реплики дословно; сохраняй механику, смысл, длительность и ритм."
     )
+    affiliate = (
+        f"Единая партнёрка панели: {AFFILIATE_NAME}. Ссылка: {AFFILIATE_URL}. CTA-намерение: {AFFILIATE_CTA or 'показать зрителю где повторить подобный AI-ролик'}. Используй её ТОЛЬКО в Block 5 как нативный CTA и не меняй ради неё сюжет или реплики исходного видео."
+        if AFFILIATE_NAME or AFFILIATE_URL else
+        "Партнёрка не настроена. Block 5 делай нейтральным без выдуманных ссылок и брендов."
+    )
     return f"""
 Ты профессиональная система реконструкции коротких русскоязычных AI-комедийных видео.
 Задача: после просмотра исходного видео выдать РОВНО 6 структурированных блоков 0–5, не простой пересказ.
@@ -40,6 +45,7 @@ Literal Speaker Binding: никаких CHARACTER_01 Speaker A и абстрак
 Если исходник содержит грубую лексику или потенциально проблемный элемент, не обходи фильтры; сделай минимальную безопасную замену, сохранив ритм и механику.
 Frame 0: все персонажи уже на правильных местах, руки и объекты готовы к первому действию, рот первого говорящего готов к первой фонеме, текста в кадре нет.
 {rights}
+{affiliate}
 
 {REALISM_LOCK}
 
