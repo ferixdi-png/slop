@@ -19,6 +19,12 @@ services:
         value: gemini-3.1-flash-lite
       - key: RADAR_SYNC_KEY
         sync: false
+      - key: AFFILIATE_NAME
+        sync: false
+      - key: AFFILIATE_URL
+        sync: false
+      - key: AFFILIATE_CTA
+        sync: false
       - key: SECRET_KEY
         generateValue: true
       - key: MAX_UPLOAD_MB
