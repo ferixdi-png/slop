@@ -18,14 +18,28 @@ from radar_quality import (
 # 3) a fresh candidate pass never erases a previous Gemini approval while re-checking.
 # 4) creator-baseline refresh preserves the evidence-weighted ranking formula.
 # 5) weekly meta is built only from quality-gated TOP winners.
+# 6) Popular Search receives all radar search phrases in one comma-separated query.
 _pipeline.run_actor_items = run_actor_items_checked
 _pipeline.normalize_reel = normalize_reel
 _pipeline.save_post = save_post_preserve_ai
 _pipeline.refresh_recent_scores = refresh_recent_scores_quality
 _pipeline.save_meta_report = save_meta_report_quality
 
+_original_search_terms = list(getattr(_pipeline, "SEARCH_TERMS", []) or [])
+if len(_original_search_terms) > 1:
+    _pipeline.SEARCH_TERMS = [", ".join(str(x).strip() for x in _original_search_terms if str(x).strip())]
+
 
 def sync_radar():
+    add_radar_log(
+        "Radar entry начал pipeline.",
+        stage="pipeline",
+        details={
+            "original_search_terms": len(_original_search_terms),
+            "popular_search_query": (_pipeline.SEARCH_TERMS[0] if _pipeline.SEARCH_TERMS else "")[:1500],
+        },
+    )
+
     result = _pipeline.sync_radar_v2()
 
     with db_conn() as conn:
