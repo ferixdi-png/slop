@@ -10,6 +10,8 @@ def add_radar_log(message, level="INFO", stage="", details=None):
     message = str(message or "").strip()
     if not message:
         return
+    level = str(level or "INFO")[:16]
+    stage = str(stage or "")[:80]
     payload = ""
     if details is not None:
         try:
@@ -17,11 +19,18 @@ def add_radar_log(message, level="INFO", stage="", details=None):
         except Exception:
             payload = str(details)[:4000]
     created_at = datetime.now(timezone.utc).isoformat()
+
+    try:
+        extra = f" | {payload}" if payload else ""
+        print(f"[RADAR][{level}][{stage}] {message}{extra}", flush=True)
+    except Exception:
+        pass
+
     try:
         with db_conn() as conn:
             conn.execute(
                 "INSERT INTO radar_logs(created_at,level,stage,message,details) VALUES(?,?,?,?,?)",
-                (created_at, str(level or "INFO")[:16], str(stage or "")[:80], message[:1000], payload),
+                (created_at, level, stage, message[:1000], payload),
             )
             conn.execute(
                 "DELETE FROM radar_logs WHERE id NOT IN (SELECT id FROM radar_logs ORDER BY id DESC LIMIT ?)",
@@ -29,7 +38,6 @@ def add_radar_log(message, level="INFO", stage="", details=None):
             )
             conn.commit()
     except Exception:
-        # Diagnostics must never break the radar itself.
         pass
 
 
