@@ -8,8 +8,10 @@ DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = Path(os.environ.get("DB_PATH", DATA_DIR / "slop.db"))
 
-ANALYSIS_MODEL = os.environ.get("ANALYSIS_MODEL", "gemini-3.5-flash")
-RADAR_MODEL = os.environ.get("RADAR_MODEL", "gemini-3.1-flash-lite")
+# 3.6 Flash is the current production model for the detailed multimodal reconstruction pass.
+# 3.5 Flash-Lite is cheaper and fast enough for the high-volume radar classifier.
+ANALYSIS_MODEL = os.environ.get("ANALYSIS_MODEL", "gemini-3.6-flash")
+RADAR_MODEL = os.environ.get("RADAR_MODEL", "gemini-3.5-flash-lite")
 APIFY_SEARCH_ACTOR = os.environ.get("APIFY_SEARCH_ACTOR", "apify/instagram-search-scraper")
 APIFY_HASHTAG_ACTOR = os.environ.get("APIFY_HASHTAG_ACTOR", "apify/instagram-hashtag-scraper")
 APIFY_CREATOR_ACTOR = os.environ.get("APIFY_CREATOR_ACTOR", "apify/instagram-reel-scraper")
@@ -19,11 +21,14 @@ RADAR_AI_ANALYZE_LIMIT = int(os.environ.get("RADAR_AI_ANALYZE_LIMIT", "60"))
 RADAR_KEEP_LIMIT = int(os.environ.get("RADAR_KEEP_LIMIT", "30"))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "120"))
 
+# Fine-grained video sampling for clips up to 10 seconds.
+FORENSIC_VIDEO_FPS = float(os.environ.get("FORENSIC_VIDEO_FPS", "5"))
+RADAR_VIDEO_FPS = float(os.environ.get("RADAR_VIDEO_FPS", "2"))
+
 # Без отдельного RADAR_SYNC_KEY: сервер сам не разрешает запускать полный парсинг слишком часто.
 RADAR_SYNC_COOLDOWN_MINUTES = 60
 
 # Instagram Search Scraper принимает несколько поисковых фраз одной строкой через запятую.
-# Поэтому весь discovery запускается одним Actor run вместо 15 последовательных запусков.
 SEARCH_TERMS = [
     "нейроюмор, ии юмор, нейросеть прикол, нейросеть юмор, AI прикол, AI юмор, "
     "AI бабушка, нейросеть бабушка, AI деревня, нейросеть деревня, AI семья, "
