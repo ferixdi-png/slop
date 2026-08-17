@@ -6,12 +6,13 @@ from threading import Lock, Thread
 from flask import Flask, jsonify, render_template, request
 
 from cloud_state import restore_radar_snapshot_if_empty
-from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_KEEP_LIMIT, RADAR_SYNC_COOLDOWN_MINUTES
+from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_KEEP_LIMIT
 from db import db_conn, init_db
 from gemini_service import analyze_video
 from progress import get_radar_status, set_radar_status
 from prompt_target import lock_generation_target
 from radar_entry import sync_radar
+from radar_logs import add_radar_log, get_radar_logs
 from radar_quality import recommendation_status_for_row, top_eligible
 from reel_media import download_reel_for_analysis
 from service_checks import check_all_services
@@ -21,10 +22,10 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
 init_db()
 try:
     restore_radar_snapshot_if_empty()
-except Exception:
-    # A cloud restore failure must never prevent the web app from starting.
-    pass
+except Exception as exc:
+    add_radar_log(f"Облачное восстановление пропущено: {exc}", level="WARN", stage="startup")
 radar_run_lock = Lock()
+add_radar_log("Сервис запущен и готов принимать команды радара.", stage="startup")
 
 
 @app.get("/")
@@ -59,10 +60,17 @@ def radar_status():
     return jsonify(get_radar_status())
 
 
+@app.get("/api/radar/logs")
+def radar_logs():
+    try:
+        limit = int(request.args.get("limit", "120"))
+    except Exception:
+        limit = 120
+    return jsonify(get_radar_logs(limit))
+
+
 @app.get("/api/radar")
 def radar():
-    # Fetch more than the visible TOP because weak-evidence items are intentionally
-    # removed here rather than allowed to appear as false winners.
     with db_conn() as conn:
         rows = conn.execute(
             """SELECT * FROM radar_posts
@@ -89,8 +97,6 @@ def radar():
 
 @app.get("/api/radar/candidates")
 def radar_candidates():
-    # Candidates never disappear merely because Gemini is re-checking them.
-    # Low-evidence items can stay here for transparency, but cannot enter TOP.
     with db_conn() as conn:
         rows = conn.execute(
             """SELECT id,creator,post_url,preview_url,published_at,duration_sec,views,likes,comments,
@@ -117,48 +123,15 @@ def radar_meta():
     return jsonify(data)
 
 
-def reserve_radar_sync():
-    now = datetime.now(timezone.utc)
-    current = get_radar_status()
-    with db_conn() as conn:
-        row = conn.execute("SELECT value FROM app_state WHERE key='last_radar_sync_at'").fetchone()
-        if row:
-            try:
-                previous = datetime.fromisoformat(row["value"].replace("Z", "+00:00"))
-                if previous.tzinfo is None:
-                    previous = previous.replace(tzinfo=timezone.utc)
-                elapsed = (now - previous.astimezone(timezone.utc)).total_seconds() / 60
-                if current.get("stage") == "running":
-                    return False, max(1, int(RADAR_SYNC_COOLDOWN_MINUTES - elapsed))
-                if current.get("stage") == "done" and elapsed < RADAR_SYNC_COOLDOWN_MINUTES:
-                    return False, max(1, int(RADAR_SYNC_COOLDOWN_MINUTES - elapsed))
-            except Exception:
-                pass
-        conn.execute(
-            """INSERT INTO app_state(key,value) VALUES('last_radar_sync_at',?)
-               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
-            (now.isoformat(),),
-        )
-        conn.commit()
-    return True, 0
-
-
-def release_radar_sync_after_error():
-    with db_conn() as conn:
-        conn.execute("DELETE FROM app_state WHERE key='last_radar_sync_at'")
-        conn.commit()
-
-
 def run_radar_background():
+    add_radar_log("Фоновый поток радара начал работу.", stage="background")
     try:
         with app.app_context():
             try:
-                sync_radar()
+                result = sync_radar()
+                add_radar_log("Фоновый поиск завершён успешно.", stage="done", details=result)
             except Exception as exc:
-                try:
-                    release_radar_sync_after_error()
-                except Exception:
-                    pass
+                add_radar_log(str(exc), level="ERROR", stage="background")
                 try:
                     set_radar_status("error", "Поиск остановлен", 0, None, str(exc)[:300])
                 except Exception:
@@ -167,32 +140,34 @@ def run_radar_background():
     finally:
         if radar_run_lock.locked():
             radar_run_lock.release()
+        add_radar_log("Блокировка запуска радара освобождена.", stage="background")
 
 
 @app.post("/api/radar/sync")
 def radar_sync():
+    add_radar_log("Получен POST /api/radar/sync — пользователь нажал запуск.", stage="launch")
     if not radar_run_lock.acquire(blocking=False):
+        add_radar_log("Новый запуск отклонён: поиск уже выполняется.", level="WARN", stage="launch")
         return jsonify(error="Поиск уже выполняется. Дождись завершения текущего запуска."), 409
 
     try:
-        allowed, retry_minutes = reserve_radar_sync()
-        if not allowed:
-            radar_run_lock.release()
-            return jsonify(error=f"Повторный полный поиск будет доступен примерно через {retry_minutes} мин."), 429
-
         set_radar_status(
             "running",
             "Запускаю радар",
             1,
             360,
-            "Поиск запущен в фоне. Старый стабильный TOP остаётся на экране, пока новый проход не проверит кандидатов.",
+            "Команда принята сервером. Начинаю сбор источников.",
         )
-        Thread(target=run_radar_background, name="radar-sync", daemon=True).start()
-        return jsonify(ok=True, started=True, message="Радар запущен в фоне"), 202
-    except Exception:
+        worker = Thread(target=run_radar_background, name="radar-sync", daemon=True)
+        worker.start()
+        add_radar_log("Команда запуска принята, фоновый поток создан.", stage="launch")
+        return jsonify(ok=True, started=True, message="Команда принята. Радар запущен в фоне."), 202
+    except Exception as exc:
         if radar_run_lock.locked():
             radar_run_lock.release()
-        raise
+        add_radar_log(f"Ошибка запуска радара: {exc}", level="ERROR", stage="launch")
+        app.logger.exception("radar launch failed")
+        return jsonify(error=f"Не удалось запустить радар: {exc}"), 500
 
 
 def save_analysis(title, source_url, views, viral_score, result):
@@ -226,6 +201,7 @@ def radar_analyze(item_id):
         return jsonify(error="Этот ролик не прошёл финальный фильтр качества TOP."), 400
 
     tmp = None
+    add_radar_log(f"Запущен детальный анализ Reel #{item_id} @{row.get('creator','')}", stage="prompts")
     try:
         tmp, refreshed_duration = download_reel_for_analysis(row)
         source_duration = round(float(refreshed_duration or row.get("duration_sec") or 0), 2)
@@ -241,6 +217,7 @@ def radar_analyze(item_id):
             row.get("viral_score_v2", 0),
             result,
         )
+        add_radar_log(f"Ультра-промпты для @{row.get('creator','')} готовы.", stage="prompts")
         return jsonify(
             id=analysis_id,
             model=ANALYSIS_MODEL,
@@ -249,6 +226,7 @@ def radar_analyze(item_id):
             result=result,
         )
     except Exception as exc:
+        add_radar_log(f"Ошибка промптов @{row.get('creator','')}: {exc}", level="ERROR", stage="prompts")
         app.logger.exception("radar analysis failed")
         return jsonify(error=str(exc)), 500
     finally:
