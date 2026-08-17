@@ -2,7 +2,7 @@ name: Smoke Check
 
 on:
   push:
-    branches: [main]
+    branches: [main, fix/radar-request-state-machine]
   workflow_dispatch:
 
 jobs:
@@ -17,94 +17,135 @@ jobs:
         run: pip install -r requirements.txt
       - name: Compile Python
         run: python -m compileall -q .
-      - name: Flask + persistent restart smoke test
+      - name: Flask + request-state-machine smoke test
         env:
           SECRET_KEY: smoke-test
         run: |
           python - <<'PY'
+          import copy
+
           import app as app_module
-          import persistent_radar
+          import radar_request_job as radar_job
           from progress import set_radar_status
 
           c = app_module.app.test_client()
+
+          # Health and status must remain pure/fast even with no API keys.
           for path in ['/health', '/api/status', '/api/radar/status', '/api/radar', '/api/radar/candidates']:
               r = c.get(path)
               print(path, r.status_code, r.content_type)
               assert r.status_code == 200, (path, r.status_code, r.get_data(as_text=True))
 
-          # 1) Button contract: launch is short and returns 202, never waits for the full radar.
-          def fake_persistent_start():
+          health = c.get('/health').get_json()
+          assert health['radar_runtime'] == 'request_state_machine_v5'
+
+          # /api/radar/status must not touch durable KVS/network.
+          set_radar_status('ready', 'Готов к поиску', 0, None, 'local-only-status')
+          original_load = radar_job.load_radar_job
+          radar_job.load_radar_job = lambda: (_ for _ in ()).throw(RuntimeError('KVS MUST NOT BE CALLED BY STATUS'))
+          r = c.get('/api/radar/status')
+          assert r.status_code == 200
+          assert r.get_json()['message'] == 'local-only-status'
+          radar_job.load_radar_job = original_load
+
+          # Endpoint contract: start is a short 202 and tick is a separate request.
+          def fake_start():
               return ({
                   'ok': True,
+                  'active': True,
                   'accepted': True,
                   'completed': False,
                   'resumed': False,
-                  'run_id': 'smoke-persistent-run',
+                  'run_id': 'smoke-run',
                   'phase': 'queued',
               }, 202)
 
-          app_module.start_or_resume_radar = fake_persistent_start
+          def fake_tick():
+              return ({'ok': True, 'active': True, 'run_id': 'smoke-run', 'phase': 'discovering'}, 200)
+
+          real_start = app_module.create_or_resume_job
+          real_tick = app_module.tick_job
+          app_module.create_or_resume_job = fake_start
+          app_module.tick_job = fake_tick
           r = c.post('/api/radar/sync')
-          payload = r.get_json()
-          print('/api/radar/sync', r.status_code, payload)
-          assert r.status_code == 202
-          assert payload['ok'] is True
-          assert payload['accepted'] is True
-          assert payload['completed'] is False
+          assert r.status_code == 202 and r.get_json()['accepted'] is True
+          r = c.post('/api/radar/tick')
+          assert r.status_code == 200 and r.get_json()['phase'] == 'discovering'
+          app_module.create_or_resume_job = real_start
+          app_module.tick_job = real_tick
 
-          # 2) Simulate a Render restart: local SQLite says READY, no local worker,
-          # but an active durable job exists in KVS. /api/radar/status MUST resume it.
-          set_radar_status('ready', 'Готов к поиску', 0, None, 'local state lost')
-          state = {'resumed': False}
-          durable_job = {
-              'version': 4,
-              'run_id': 'smoke-resume-run',
-              'phase': 'discovering',
-              'sources': {
-                  'hashtags': {'run_id': 'apify-run-1', 'status': 'RUNNING'},
-              },
-          }
+          # Core state machine with a fake Apify backend. There is NO worker/thread.
+          state = {'job': None}
+          starts = []
 
-          def fake_runtime_state():
-              return {
-                  'run_id': 'smoke-resume-run' if state['resumed'] else None,
-                  'started_at': None,
-                  'worker_active': state['resumed'],
-                  'worker_pending': False,
-                  'server_pid': 1,
-                  'runtime': 'persistent_apify_job_v4',
-              }
+          def mem_load():
+              return copy.deepcopy(state['job']) if state['job'] else None
 
-          def fake_resume_if_needed():
-              state['resumed'] = True
-              set_radar_status(
-                  'running', 'Возобновляю поиск после рестарта', 12, 300,
-                  'durable KVS job resumed',
-                  details={'run_id': durable_job['run_id'], 'persistent_job': True},
-              )
-              return durable_job
+          def mem_save(job):
+              state['job'] = copy.deepcopy(job)
+              return copy.deepcopy(job)
 
-          app_module.runtime_state = fake_runtime_state
-          app_module.resume_if_needed = fake_resume_if_needed
-          r = c.get('/api/radar/status')
-          status = r.get_json()
-          print('/api/radar/status restart simulation', status)
-          assert r.status_code == 200
-          assert state['resumed'] is True
-          assert status['stage'] == 'running'
-          assert status['progress'] >= 1
-          assert status['details']['persistent_run_id'] == 'smoke-resume-run'
+          class FakeActor:
+              def __init__(self, actor_id):
+                  self.actor_id = actor_id
+              def start(self, run_input=None):
+                  run_id = f'run-{len(starts)+1}'
+                  starts.append((self.actor_id, run_input, run_id))
+                  return {'id': run_id, 'status': 'RUNNING'}
 
-          # 3) Persistent core: an already-active KVS job is resumed, not duplicated.
-          called = {'worker': 0}
-          persistent_radar.load_radar_job = lambda: durable_job
-          persistent_radar.ensure_worker = lambda job: called.__setitem__('worker', called['worker'] + 1) or True
-          payload, code = persistent_radar.start_or_resume()
-          print('persistent_radar.start_or_resume existing job', code, payload)
+          class FakeRun:
+              def __init__(self, run_id):
+                  self.run_id = run_id
+              def get(self):
+                  return {
+                      'id': self.run_id,
+                      'status': 'SUCCEEDED',
+                      'defaultDatasetId': f'dataset-{self.run_id}',
+                  }
+
+          class FakeDataset:
+              def iterate_items(self):
+                  return iter([])
+
+          class FakeClient:
+              def actor(self, actor_id): return FakeActor(actor_id)
+              def run(self, run_id): return FakeRun(run_id)
+              def dataset(self, dataset_id): return FakeDataset()
+
+          radar_job.load_radar_job = mem_load
+          radar_job.save_radar_job = mem_save
+          radar_job._client = lambda: FakeClient()
+          radar_job._ensure_snapshot_once = lambda: None
+          radar_job.save_radar_snapshot = lambda: True
+
+          payload, code = radar_job.create_or_resume_job()
+          assert code == 202
+          assert payload['phase'] == 'queued'
+          run_id = payload['run_id']
+
+          phases = []
+          for _ in range(8):
+              payload, code = radar_job.tick_job()
+              phases.append(payload['phase'])
+              print('tick', payload['phase'], payload.get('active'), payload.get('result'))
+              if payload['phase'] == 'done':
+                  break
+
+          assert starts and len(starts) == 2, starts
+          assert 'discovering' in phases
+          assert 'preparing' in phases
+          assert 'finalizing' in phases
+          assert phases[-1] == 'done', phases
+          assert state['job']['run_id'] == run_id
+          assert state['job']['result']['kept'] == 0
+
+          # A second click after completion creates a new job; while active it resumes.
+          state['job']['phase'] = 'discovering'
+          old_id = state['job']['run_id']
+          payload, code = radar_job.create_or_resume_job()
           assert code == 202
           assert payload['resumed'] is True
-          assert payload['run_id'] == durable_job['run_id']
-          assert called['worker'] == 1
+          assert payload['run_id'] == old_id
           PY
       - uses: actions/setup-node@v4
         with:
@@ -113,7 +154,9 @@ jobs:
         run: |
           node --check static/app.js
           node --check static/runtime.js
-      - name: Verify single launch contract in HTML
+      - name: Verify request-driven frontend contract
         run: |
-          grep -q 'runtime.js?v=20260817-1905' templates/index.html
-          grep -q "fetch('/api/radar/sync'" static/runtime.js
+          grep -q 'runtime.js?v=20260817-1930' templates/index.html
+          grep -q "/api/radar/sync" static/runtime.js
+          grep -q "/api/radar/tick" static/runtime.js
+          grep -q "request_state_machine_v5" radar_request_job.py
