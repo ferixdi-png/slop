@@ -12,12 +12,16 @@ ANALYSIS_MODEL = os.environ.get("ANALYSIS_MODEL", "gemini-3.5-flash")
 RADAR_MODEL = os.environ.get("RADAR_MODEL", "gemini-3.1-flash-lite")
 APIFY_SEARCH_ACTOR = os.environ.get("APIFY_SEARCH_ACTOR", "apify/instagram-search-scraper")
 APIFY_HASHTAG_ACTOR = os.environ.get("APIFY_HASHTAG_ACTOR", "apify/instagram-hashtag-scraper")
-APIFY_PROFILE_ACTOR = os.environ.get("APIFY_PROFILE_ACTOR", "apify/instagram-profile-scraper")
+APIFY_CREATOR_ACTOR = os.environ.get("APIFY_CREATOR_ACTOR", "apify/instagram-reel-scraper")
 SEARCH_LIMIT = int(os.environ.get("APIFY_SEARCH_LIMIT", "64"))
 HASHTAG_LIMIT = int(os.environ.get("APIFY_HASHTAG_LIMIT", "80"))
 RADAR_AI_ANALYZE_LIMIT = int(os.environ.get("RADAR_AI_ANALYZE_LIMIT", "60"))
 RADAR_KEEP_LIMIT = int(os.environ.get("RADAR_KEEP_LIMIT", "30"))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "120"))
+
+AFFILIATE_NAME = os.environ.get("AFFILIATE_NAME", "").strip()
+AFFILIATE_URL = os.environ.get("AFFILIATE_URL", "").strip()
+AFFILIATE_CTA = os.environ.get("AFFILIATE_CTA", "").strip()
 
 SEARCH_TERMS = [
     "нейроюмор", "ии юмор", "нейросеть прикол", "нейросеть юмор", "AI прикол",
