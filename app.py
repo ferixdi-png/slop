@@ -1,20 +1,15 @@
 import json
 import os
-
 from datetime import datetime, timezone
 
 from flask import Flask, jsonify, render_template, request
 
-from config import (
-    ANALYSIS_MODEL,
-    RADAR_MODEL,
-    RADAR_KEEP_LIMIT,
-    RADAR_SYNC_COOLDOWN_MINUTES,
-)
+from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_KEEP_LIMIT, RADAR_SYNC_COOLDOWN_MINUTES
 from db import db_conn, init_db
 from gemini_service import analyze_video
 from progress import get_radar_status, set_radar_status
-from radar_service import download_temp_video, sync_radar
+from radar_service import download_temp_video
+from radar_service_v2 import sync_radar_v2
 from service_checks import check_all_services
 
 app = Flask(__name__)
@@ -88,7 +83,6 @@ def status():
 
 @app.get("/api/diagnostics")
 def diagnostics():
-    """Real but tiny API calls. No video parsing and no Actor run."""
     return jsonify(check_all_services())
 
 
@@ -117,6 +111,21 @@ def radar():
         x.update(recommendation_status(x))
         out.append(x)
     return jsonify(out)
+
+
+@app.get("/api/radar/candidates")
+def radar_candidates():
+    """Fallback visibility: show what Apify brought even when AI filter rejected it."""
+    with db_conn() as conn:
+        rows = conn.execute(
+            """SELECT id,creator,post_url,preview_url,published_at,duration_sec,views,likes,comments,
+                      hours_since_publish,views_per_hour,viral_score_v2,ai_checked,ai_match,reason,search_term
+               FROM radar_posts
+               WHERE datetime(published_at)>=datetime('now','-7 days')
+               ORDER BY viral_score_v2 DESC, views_per_hour DESC, views DESC
+               LIMIT 30"""
+        ).fetchall()
+    return jsonify([dict(x) for x in rows])
 
 
 @app.get("/api/radar/meta")
@@ -169,19 +178,17 @@ def release_radar_sync_after_error():
 def radar_sync():
     allowed, retry_minutes = reserve_radar_sync()
     if not allowed:
-        return jsonify(
-            error=f"Повторный полный поиск будет доступен примерно через {retry_minutes} мин."
-        ), 429
+        return jsonify(error=f"Повторный полный поиск будет доступен примерно через {retry_minutes} мин."), 429
+
     set_radar_status(
         "running",
         "Запускаю радар",
         1,
         360,
-        "Готовлю источники. Первый полный проход обычно занимает примерно 4–8 минут.",
+        "Первый полный проход обычно занимает примерно 4–8 минут.",
     )
     try:
-        result = sync_radar()
-        return jsonify(ok=True, **result)
+        return jsonify(ok=True, **sync_radar_v2())
     except Exception as exc:
         release_radar_sync_after_error()
         set_radar_status("error", "Поиск остановлен", 0, None, str(exc)[:300])
@@ -192,8 +199,7 @@ def radar_sync():
 def save_analysis(title, source_url, views, viral_score, result):
     with db_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO analyses(created_at,title,source_url,views,viral_score,model,result_json) "
-            "VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO analyses(created_at,title,source_url,views,viral_score,model,result_json) VALUES(?,?,?,?,?,?,?)",
             (
                 datetime.now(timezone.utc).isoformat(),
                 title,
@@ -215,6 +221,7 @@ def radar_analyze(item_id):
         row = conn.execute("SELECT * FROM radar_posts WHERE id=?", (item_id,)).fetchone()
     if not row:
         return jsonify(error="Ролик не найден"), 404
+
     row = dict(row)
     if not row.get("video_url"):
         return jsonify(error="У результата нет прямого видеофайла."), 400
