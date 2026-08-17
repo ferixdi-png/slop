@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from flask import Flask, jsonify, render_template, request
 
-from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_KEEP_LIMIT, RADAR_MIN_DURATION_SEC, RADAR_MAX_DURATION_SEC
+from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_MIN_DURATION_SEC, RADAR_MAX_DURATION_SEC
 from db import db_conn, init_db
 from progress import get_radar_status, set_radar_status
 from prompt_target import lock_generation_target
@@ -31,8 +31,8 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
 init_db()
 
 # Keep the stable request-driven Render architecture; only upgrade discovery,
-# classification recall, strict measured duration and result volume.
-from radar_growth_v6 import apply_growth_overrides, top_eligible_v6
+# classification recall, language adaptation and result volume.
+from radar_growth_v6 import apply_growth_overrides, top_eligible_v6, PROFILE_VERSION, KEEP_LIMIT
 apply_growth_overrides()
 top_eligible = top_eligible_v6
 
@@ -64,8 +64,8 @@ def status():
         render_instance=os.environ.get("RENDER_INSTANCE_ID", ""),
         render_cpu_count=os.environ.get("RENDER_CPU_COUNT", ""),
         radar_runtime=RADAR_RUNTIME,
-        radar_profile="mass_10s_ai_v6",
-        radar_keep_limit=RADAR_KEEP_LIMIT,
+        radar_profile=PROFILE_VERSION,
+        radar_keep_limit=KEEP_LIMIT,
         radar_duration_min=RADAR_MIN_DURATION_SEC,
         radar_duration_max=RADAR_MAX_DURATION_SEC,
     )
@@ -82,8 +82,8 @@ def radar_status():
     details = dict(payload.get("details") or {})
     details.update(
         runtime=RADAR_RUNTIME,
-        radar_profile="mass_10s_ai_v6",
-        radar_keep_limit=RADAR_KEEP_LIMIT,
+        radar_profile=PROFILE_VERSION,
+        radar_keep_limit=KEEP_LIMIT,
         radar_duration_min=RADAR_MIN_DURATION_SEC,
         radar_duration_max=RADAR_MAX_DURATION_SEC,
         render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
@@ -118,7 +118,7 @@ def radar():
             x["characters"] = []
         x.update(recommendation_status_for_row(x))
         out.append(x)
-        if len(out) >= RADAR_KEEP_LIMIT:
+        if len(out) >= KEEP_LIMIT:
             break
     return jsonify(out)
 
@@ -131,9 +131,9 @@ def radar_candidates():
                       hours_since_publish,views_per_hour,viral_score_v2,ai_checked,ai_match,reason,search_term
                FROM radar_posts
                WHERE datetime(published_at)>=datetime('now','-7 days')
-                 AND duration_sec>=? AND duration_sec<=?
+                 AND (duration_sec IS NULL OR duration_sec=0 OR (duration_sec>=? AND duration_sec<=?))
                ORDER BY ai_match DESC, viral_score_v2 DESC, views_per_hour DESC, views DESC
-               LIMIT 300""",
+               LIMIT 500""",
             (RADAR_MIN_DURATION_SEC, RADAR_MAX_DURATION_SEC),
         ).fetchall()
     return jsonify([dict(x) for x in rows])
@@ -173,7 +173,7 @@ def radar_sync():
                 str(exc)[:300],
                 details={
                     "runtime": RADAR_RUNTIME,
-                    "radar_profile": "mass_10s_ai_v6",
+                    "radar_profile": PROFILE_VERSION,
                     "render_commit": str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
                 },
             )
@@ -289,20 +289,22 @@ def health():
         analysis_model=ANALYSIS_MODEL,
         radar_model=RADAR_MODEL,
         radar_runtime=RADAR_RUNTIME,
-        radar_profile="mass_10s_ai_v6",
+        radar_profile=PROFILE_VERSION,
+        radar_keep_limit=KEEP_LIMIT,
         server_pid=os.getpid(),
         render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
     )
 
 
 add_radar_log(
-    f"Сервис запущен. Radar runtime: {RADAR_RUNTIME}. Profile: mass_10s_ai_v6. Startup без внешних API-вызовов.",
+    f"Сервис запущен. Radar runtime: {RADAR_RUNTIME}. Profile: {PROFILE_VERSION}. Startup без внешних API-вызовов.",
     stage="startup",
     details={
         "python": sys.version.split()[0],
         "analysis_model": ANALYSIS_MODEL,
         "radar_model": RADAR_MODEL,
-        "radar_keep_limit": RADAR_KEEP_LIMIT,
+        "radar_profile": PROFILE_VERSION,
+        "radar_keep_limit": KEEP_LIMIT,
         "radar_duration_min": RADAR_MIN_DURATION_SEC,
         "radar_duration_max": RADAR_MAX_DURATION_SEC,
         "render_cpu_count": os.environ.get("RENDER_CPU_COUNT", ""),
