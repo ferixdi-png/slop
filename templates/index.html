@@ -4,8 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>ФАБРИКА СЛОПА — Радар недели</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260817-1930" />
-  <link rel="stylesheet" href="/static/upgrade.css?v=20260817-1930" />
+  <link rel="stylesheet" href="/static/style.css?v=20260817-2115" />
+  <link rel="stylesheet" href="/static/upgrade.css?v=20260817-2115" />
 </head>
 <body>
   <div class="app-shell">
@@ -15,7 +15,7 @@
         <div><strong>ФАБРИКА СЛОПА</strong><small>радар AI-охватов</small></div>
       </div>
       <div class="side-note">
-        1. Запусти радар. 2. Выбери победителя из TOP. 3. Нажми «Получить ультра-промпты». 4. Скопируй PHOTO PROMPT стартового кадра и VIDEO PROMPT для Gemini Omni.
+        1. Запусти радар. 2. Выбери победителя из TOP. 3. Нажми «Получить ультра-промпты». 4. Скопируй PHOTO PROMPT стартового кадра и VIDEO PROMPT. Если исходник не на русском, речь автоматически адаптируется на русский с сохранением ролей и тайминга.
       </div>
     </aside>
 
@@ -30,7 +30,7 @@
 
       <section id="radar" class="screen active">
         <div class="section-title">
-          <div><span class="step">7 ДНЕЙ</span><h2>Русские AI-комедийные Reels до 10 секунд</h2></div>
+          <div><span class="step">7 ДНЕЙ</span><h2>AI-комедийные Reels со всего мира до 10 секунд</h2></div>
           <span class="muted">{{ creator_count }} авторов уже в наблюдении</span>
         </div>
 
@@ -50,8 +50,8 @@
 
         <div class="card radar-intro">
           <div>
-            <b>Сначала находим победителей, потом тратим детальный Gemini-анализ</b>
-            <span>Apify собирает Reels → фильтр последних 7 дней и ≤10 сек → кандидаты появляются сразу → Gemini проверяет само видео и русскую речь → Viral Score 2.0 → итоговый TOP со статусами S / A / B / C. Каждый этап сохраняется в Apify KVS. Фонового worker внутри Render нет: после замены instance следующий короткий запрос продолжает ровно с сохранённого этапа.</span>
+            <b>Сначала находим максимум AI-механик, потом ранжируем и собираем промпты</b>
+            <span>Apify ищет AI Reels по русским и международным запросам + расширенному набору AI-хештегов → фильтр последних 7 дней и фактической длительности ≤10 сек → Gemini проверяет само видео → нерусские ролики тоже допускаются, если механику можно повторить → при создании промптов речь переводится и адаптируется на русский с сохранением спикеров, панчлайна и тайминга → Viral Score 2.0 → TOP со статусами S / A / B / C. Слабый, но подходящий ролик не исчезает: он просто ранжируется ниже.</span>
           </div>
           <div class="radar-controls">
             <button id="syncRadar" class="secondary">ЗАПУСТИТЬ ПОИСК</button>
@@ -77,7 +77,7 @@
           <div class="spinner"></div>
           <div>
             <strong>Gemini собирает ультра-промпты по выбранному Reel…</strong>
-            <span>5 FPS forensic pass → Frame 0 → production package → QA audit → при необходимости repair-pass. Точная длительность исходника сохраняется 1:1, речь остаётся русской, липсинк и позиции персонажей проверяются отдельно.</span>
+            <span>5 FPS forensic pass → Frame 0 → production package → QA audit → при необходимости repair-pass. Точная длительность сохраняется 1:1. Если речь иностранная, она переводится в естественный русский и подгоняется под исходное окно липсинга без смены спикеров.</span>
           </div>
         </div>
 
@@ -88,7 +88,7 @@
         </div>
 
         <div class="section-mini-title">
-          <div><b>TOP для повторения</b><span>≤10 сек · последние 7 дней · подтверждены Gemini как русская AI-комедийная сценка</span></div>
+          <div><b>TOP для повторения</b><span>≤10 сек · последние 7 дней · подтверждены Gemini как AI-механика, пригодная для русской адаптации</span></div>
         </div>
         <div class="card">
           <div id="radarRows" class="radar-table">
@@ -97,7 +97,7 @@
         </div>
 
         <div class="section-mini-title candidates-title">
-          <div><b>Кандидаты из Apify</b><span>объективный фильтр по дате и длительности; здесь ролики ещё могут быть отсеяны Gemini</span></div>
+          <div><b>Кандидаты из Apify</b><span>широкий AI-discovery; точная длительность и пригодность проверяются по самому видео</span></div>
         </div>
         <div class="card">
           <div id="candidateRows" class="candidate-table">
@@ -108,7 +108,7 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260817-1930"></script>
-  <script src="/static/runtime.js?v=20260817-1930"></script>
+  <script src="/static/app.js?v=20260817-2115"></script>
+  <script src="/static/runtime.js?v=20260817-2115"></script>
 </body>
 </html>
