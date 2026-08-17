@@ -1,8 +1,15 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from config import RADAR_MAX_DURATION_SEC, RADAR_MIN_DURATION_SEC
 from radar_quality import apply_quality_score
 from radar_service import calculate_viral_score
+
+
+AI_HINTS = (
+    "ai", "ии", "нейро", "нейросет", "veo", "kling", "seedance", "sora",
+    "генерац", "сгенер", "aivideo", "aicomedy", "aislop", "нейрослоп",
+)
 
 
 def parse_dt(value: Any):
@@ -173,7 +180,9 @@ def normalize_reel(raw, source, creator_stats=None):
 
     if not url or not creator or not published:
         return None
-    if duration <= 0 or duration > 10.0:
+    # First gate uses Instagram metadata. The MP4 is measured again immediately
+    # before Gemini and anything outside this range is rejected there too.
+    if duration < RADAR_MIN_DURATION_SEC or duration > RADAR_MAX_DURATION_SEC:
         return None
     if published < datetime.now(timezone.utc) - timedelta(days=7):
         return None
@@ -184,11 +193,11 @@ def normalize_reel(raw, source, creator_stats=None):
     age_hours = max(0.25, (datetime.now(timezone.utc) - published).total_seconds() / 3600)
     vph = round(views / age_hours, 2)
 
-    # Cheap pre-AI gate: do not spend a Gemini video call on obvious low-signal noise.
-    # A Reel survives if it already has some mass OR is accelerating very fast.
-    if views < 2_000 and likes < 50 and vph < 5_000:
+    # High-recall pre-AI gate: discovery is now AI-specific already, so do not
+    # throw away fresh winners just because engagement has not accumulated yet.
+    if views < 300 and likes < 3 and vph < 800:
         return None
-    if views < 5_000 and 0 < likes < 10 and vph < 8_000:
+    if views < 1_000 and likes < 2 and vph < 2_000:
         return None
 
     score = calculate_viral_score(
@@ -201,6 +210,7 @@ def normalize_reel(raw, source, creator_stats=None):
         usual_views,
     )
 
+    search_term = raw.get("searchTerm") or raw.get("hashtag") or raw.get("hashtagName") or raw.get("inputUrl") or source
     item = {
         "platform": "Instagram Reels",
         "creator": creator,
@@ -216,8 +226,21 @@ def normalize_reel(raw, source, creator_stats=None):
         "views_per_hour": vph,
         "followers_count": followers,
         "creator_usual_views": round(usual_views, 1),
-        "search_term": raw.get("searchTerm") or raw.get("hashtag") or raw.get("hashtagName") or raw.get("inputUrl") or source,
+        "search_term": search_term,
         "caption": str(caption)[:4000],
         **score,
     }
-    return apply_quality_score(item)
+    item = apply_quality_score(item)
+
+    # Queue Gemini around likely-AI near-10-second material first. This is only a
+    # discovery bonus; Gemini still has final authority over is_ai_video.
+    hint_blob = f"{caption} {search_term}".lower()
+    ai_hint = any(token in hint_blob for token in AI_HINTS)
+    duration_bonus = 8.0 if duration >= 9.7 else 5.0 if duration >= 9.3 else 3.0
+    ai_bonus = 10.0 if ai_hint else 0.0
+    item["viral_score_v2"] = round(
+        min(100.0, float(item.get("viral_score_v2") or 0) + duration_bonus + ai_bonus),
+        1,
+    )
+    item["ai_discovery_hint"] = ai_hint
+    return item
