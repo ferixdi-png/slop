@@ -143,10 +143,17 @@ def sync_radar_v2():
         reverse=True,
     )[:RADAR_AI_ANALYZE_LIMIT]
 
+    # Important UX guarantee: as soon as Apify has returned usable rows, they are visible on the site.
+    # AI then updates these same rows from candidate -> approved/rejected.
+    with db_conn() as conn:
+        for item in candidates:
+            save_post(conn, item, None)
+        conn.commit()
+
     total = len(candidates)
     set_radar_status(
         "running", "Начинаю AI-проверку видео", 42, max(60, total * 6 + 60),
-        f"После числового фильтра осталось {len(unique)}. Детально посмотрю до {total} самых сильных роликов.",
+        f"После числового фильтра осталось {len(unique)}. На сайте уже видны лучшие кандидаты; теперь AI проверит до {total} роликов.",
         warning=" · ".join(warnings[-2:]),
         details={"raw": len(raw_items), "numeric_candidates": len(unique), "ai_total": total, "ai_done": 0},
     )
