@@ -1,8 +1,6 @@
 import json
 import os
 
-from datetime import datetime, timezone
-
 from apify_client import ApifyClient
 
 from config import (
@@ -19,11 +17,11 @@ from config import (
 from db import db_conn
 from gemini_service import classify_radar_video
 from progress import set_radar_status
+from radar_normalize import normalize_reel
 from radar_service import (
     download_temp_video,
     load_creator_stats,
     matches,
-    normalize_reel,
     refresh_recent_scores,
     run_actor_items,
     save_meta_report,
@@ -77,7 +75,7 @@ def sync_radar_v2():
             raw_items.extend((x, "наблюдаемый автор") for x in creator_rows)
             with db_conn() as conn:
                 update_creator_baselines(conn, creator_rows)
-        except Exception as exc:
+        except Exception:
             source_errors += 1
             warnings.append("Мониторинг авторов временно недоступен")
 
@@ -95,7 +93,7 @@ def sync_radar_v2():
         for x in rows:
             x.setdefault("searchTerm", x.get("searchTerm") or "ключевой поиск")
             raw_items.append((x, "Popular Reels"))
-    except Exception as exc:
+    except Exception:
         source_errors += 1
         warnings.append("Popular Reels заблокирован Instagram — продолжаю по хештегам")
         set_radar_status(
@@ -115,7 +113,7 @@ def sync_radar_v2():
             APIFY_HASHTAG_ACTOR,
             {"hashtags": HASHTAGS, "resultsType": "reels", "resultsLimit": HASHTAG_LIMIT},
         )
-        raw_items.extend((x, f"хештег: {x.get('hashtag') or ''}") for x in rows)
+        raw_items.extend((x, f"хештег: {x.get('hashtag') or x.get('searchTerm') or ''}") for x in rows)
     except Exception:
         source_errors += 1
         warnings.append("Hashtag Scraper временно недоступен")
