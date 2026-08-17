@@ -3,6 +3,7 @@ from actor_utils import run_actor_items_checked
 from cloud_state import save_radar_snapshot
 from db import db_conn
 from progress import set_radar_status
+from radar_logs import add_radar_log
 from radar_normalize import normalize_reel
 from radar_quality import (
     refresh_recent_scores_quality,
@@ -37,6 +38,15 @@ def sync_radar():
     visible_top = [dict(row) for row in rows if top_eligible(dict(row))]
     result["kept"] = min(len(visible_top), 30)
 
+    add_radar_log(
+        f"Quality gate сформировал итоговый TOP: {result['kept']} роликов.",
+        stage="quality",
+        details={
+            "ai_matches_before_quality": len(rows),
+            "quality_top": result["kept"],
+        },
+    )
+
     set_radar_status(
         "done",
         "Поиск завершён",
@@ -50,8 +60,13 @@ def sync_radar():
     )
 
     try:
-        save_radar_snapshot()
-    except Exception:
+        saved = save_radar_snapshot()
+        add_radar_log(
+            "Стабильный TOP сохранён в облачный Apify snapshot." if saved else "Облачный snapshot пропущен: хранилище недоступно.",
+            level="INFO" if saved else "WARN",
+            stage="snapshot",
+        )
+    except Exception as exc:
         # Cloud backup must never turn an otherwise successful radar into an error.
-        pass
+        add_radar_log(f"Не удалось сохранить облачный snapshot: {exc}", level="WARN", stage="snapshot")
     return result
