@@ -5,6 +5,7 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Validates the current production branch after radar/runtime changes.
 jobs:
   smoke:
     runs-on: ubuntu-latest
