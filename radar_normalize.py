@@ -183,6 +183,14 @@ def normalize_reel(raw, source, creator_stats=None):
     usual_views = float(stats.get("usual_views", 0))
     age_hours = max(0.25, (datetime.now(timezone.utc) - published).total_seconds() / 3600)
     vph = round(views / age_hours, 2)
+
+    # Cheap pre-AI gate: do not spend a Gemini video call on obvious low-signal noise.
+    # A Reel survives if it already has some mass OR is accelerating very fast.
+    if views < 2_000 and likes < 50 and vph < 5_000:
+        return None
+    if views < 5_000 and 0 < likes < 10 and vph < 8_000:
+        return None
+
     score = calculate_viral_score(
         views,
         likes,
