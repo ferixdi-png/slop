@@ -13,10 +13,6 @@ services:
         sync: false
       - key: APIFY_API_TOKEN
         sync: false
-      - key: ANALYSIS_MODEL
-        value: gemini-3.6-flash
-      - key: RADAR_MODEL
-        value: gemini-3.5-flash-lite
       - key: FORENSIC_VIDEO_FPS
         value: 5
       - key: RADAR_VIDEO_FPS
