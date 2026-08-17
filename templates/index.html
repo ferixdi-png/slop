@@ -15,7 +15,7 @@
         <div><strong>ФАБРИКА СЛОПА</strong><small>радар AI-охватов</small></div>
       </div>
       <div class="side-note">
-        Один рабочий экран: найти свежие короткие русские AI-комедийные Reels, отранжировать их и собрать по выбранному ролику Frame 0 + production prompt.
+        1. Запусти радар. 2. Выбери победителя из TOP. 3. Нажми «Получить ультра-промпты». 4. Скопируй PHOTO PROMPT стартового кадра и VIDEO PROMPT для Gemini Omni.
       </div>
     </aside>
 
@@ -38,20 +38,20 @@
           <div class="card api-card" id="geminiApiCard">
             <div><span class="api-dot"></span><b>Google AI Studio</b></div>
             <strong id="geminiApiStatus">Проверяю ключ…</strong>
-            <small id="geminiApiMeta">Минимальный тест без видео</small>
+            <small id="geminiApiMeta">Минимальный реальный запрос к Gemini API</small>
           </div>
           <div class="card api-card" id="apifyApiCard">
             <div><span class="api-dot"></span><b>Apify</b></div>
             <strong id="apifyApiStatus">Проверяю ключ…</strong>
-            <small id="apifyApiMeta">Проверка доступа к аккаунту</small>
+            <small id="apifyApiMeta">Проверка доступа к аккаунту Apify</small>
           </div>
           <button id="checkApis" class="secondary api-check-btn">ПРОВЕРИТЬ API</button>
         </div>
 
         <div class="card radar-intro">
           <div>
-            <b>Система сама говорит, что стоит повторять</b>
-            <span>Apify собирает Reels → фильтр 7 дней и ≤10 сек → лучшие кандидаты сразу появляются на сайте → AI смотрит само видео → Viral Score 2.0 → статус S / A / B / C.</span>
+            <b>Сначала находим победителей, потом тратим детальный Gemini-анализ</b>
+            <span>Apify собирает Reels → фильтр последних 7 дней и ≤10 сек → кандидаты появляются сразу → Gemini проверяет само видео и русскую речь → Viral Score 2.0 → итоговый TOP со статусами S / A / B / C. Кнопка ультра-промптов есть только у прошедших AI-фильтр роликов.</span>
           </div>
           <div class="radar-controls">
             <button id="syncRadar" class="secondary">ЗАПУСТИТЬ ПОИСК</button>
@@ -76,8 +76,8 @@
         <div id="analysisProgress" class="card progress hidden">
           <div class="spinner"></div>
           <div>
-            <strong>Разбираю выбранный ролик 1:1…</strong>
-            <span>Forensic pass → production package → QA audit → при необходимости repair-pass. Сохраняю точную длительность, русскую речь, липсинк, позиции, предметы и камеру.</span>
+            <strong>Gemini собирает ультра-промпты по выбранному Reel…</strong>
+            <span>5 FPS forensic pass → Frame 0 → production package → QA audit → при необходимости repair-pass. Точная длительность исходника сохраняется 1:1, речь остаётся русской, липсинк и позиции персонажей проверяются отдельно.</span>
           </div>
         </div>
 
@@ -88,16 +88,16 @@
         </div>
 
         <div class="section-mini-title">
-          <div><b>TOP подходящих роликов</b><span>прошли AI-фильтр</span></div>
+          <div><b>TOP для повторения</b><span>≤10 сек · последние 7 дней · подтверждены Gemini как русская AI-комедийная сценка</span></div>
         </div>
         <div class="card">
           <div id="radarRows" class="radar-table">
-            <div class="empty">Подходящих роликов пока нет.</div>
+            <div class="empty">TOP пока не сформирован.</div>
           </div>
         </div>
 
         <div class="section-mini-title candidates-title">
-          <div><b>Кандидаты из Apify</b><span>видны сразу после числового фильтра, ещё до финального AI-отбора</span></div>
+          <div><b>Кандидаты из Apify</b><span>объективный фильтр по дате и длительности; здесь ролики ещё могут быть отсеяны Gemini</span></div>
         </div>
         <div class="card">
           <div id="candidateRows" class="candidate-table">
