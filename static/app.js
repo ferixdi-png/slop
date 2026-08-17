@@ -11,16 +11,74 @@ $$('.nav').forEach(btn => btn.addEventListener('click', () => {
 
 const videoInput = $('#video');
 const drop = $('#dropzone');
-['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('drag'); }));
-['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('drag'); }));
-drop.addEventListener('drop', e => { if (e.dataTransfer.files?.[0]) { videoInput.files = e.dataTransfer.files; showFile(); } });
+let selectedDuration = 0;
+
+['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => {
+  e.preventDefault();
+  drop.classList.add('drag');
+}));
+['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => {
+  e.preventDefault();
+  drop.classList.remove('drag');
+}));
+drop.addEventListener('drop', e => {
+  if (e.dataTransfer.files?.[0]) {
+    videoInput.files = e.dataTransfer.files;
+    showFile();
+  }
+});
 videoInput.addEventListener('change', showFile);
-function showFile(){ const f=videoInput.files?.[0]; if(!f)return; $('#dropTitle').textContent=f.name; $('#dropSub').textContent=`${(f.size/1024/1024).toFixed(1)} МБ`; }
+
+function readVideoDuration(file){
+  return new Promise((resolve, reject) => {
+    const el = document.createElement('video');
+    const url = URL.createObjectURL(file);
+    el.preload = 'metadata';
+    el.onloadedmetadata = () => {
+      const duration = Number(el.duration || 0);
+      URL.revokeObjectURL(url);
+      if(!Number.isFinite(duration) || duration <= 0) reject(new Error('Не удалось определить длительность'));
+      else resolve(duration);
+    };
+    el.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Не удалось прочитать метаданные видео'));
+    };
+    el.src = url;
+  });
+}
+
+async function showFile(){
+  const f = videoInput.files?.[0];
+  if(!f) return;
+  selectedDuration = 0;
+  $('#dropTitle').textContent = f.name;
+  $('#dropSub').textContent = `${(f.size/1024/1024).toFixed(1)} МБ · определяю длительность…`;
+  try{
+    selectedDuration = await readVideoDuration(f);
+    const exact = selectedDuration.toFixed(2);
+    $('#dropSub').textContent = `${(f.size/1024/1024).toFixed(1)} МБ · ${exact} сек · итог будет ровно ${exact} сек`;
+    if(selectedDuration > 10.05){
+      $('#dropSub').textContent += ' · ФАЙЛ ДЛИННЕЕ 10 СЕК';
+    }
+  }catch(err){
+    $('#dropSub').textContent = `${(f.size/1024/1024).toFixed(1)} МБ · ${err.message}`;
+  }
+}
 
 $('#analyzeForm').addEventListener('submit', async (e) => {
   e.preventDefault();
+  if(!selectedDuration){
+    alert('Не удалось определить точную длительность ролика. Выбери файл заново.');
+    return;
+  }
+  if(selectedDuration > 10.05){
+    alert(`Нужны ролики до 10 секунд. Этот файл длится ${selectedDuration.toFixed(2)} сек.`);
+    return;
+  }
   const form = new FormData(e.currentTarget);
   form.set('owned_or_licensed', $('#rights').checked ? 'true' : 'false');
+  form.set('source_duration_sec', selectedDuration.toFixed(2));
   await runAnalysis(() => fetch('/api/analyze', { method:'POST', body:form }));
 });
 
@@ -47,7 +105,11 @@ async function runAnalysis(requestFn){
 $$('.library-card').forEach(card => card.addEventListener('click', async () => {
   const r = await fetch(`/api/analysis/${card.dataset.id}`);
   const data = await r.json();
-  if(r.ok){ showAnalyzer(); renderResult({result:data.result}); window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'}); }
+  if(r.ok){
+    showAnalyzer();
+    renderResult({result:data.result});
+    window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});
+  }
 }));
 
 function showAnalyzer(){
@@ -64,21 +126,21 @@ function renderResult(payload){
   const b3 = d.block_3_video || {};
   const b4 = d.block_4_audio || {};
   const b5 = d.block_5_publication || {};
-
   const allPackage = buildWholePackage(d);
+  const exact = Number(d.source_duration_sec || b3.exact_duration_sec || 0).toFixed(2);
   const html = `
     <div class="result-top">
-      <div class="stat"><span>Длительность</span><b>${escapeHtml(d.source_duration_sec ?? 0)} сек</b></div>
-      <div class="stat"><span>Язык</span><b>${escapeHtml(d.source_language || 'русский')}</b></div>
-      <div class="stat"><span>Режим</span><b class="accent">1:1</b></div>
+      <div class="stat"><span>Точная длина</span><b>${escapeHtml(exact)} сек</b></div>
+      <div class="stat"><span>Язык речи</span><b>русский</b></div>
+      <div class="stat"><span>Режим</span><b class="accent">1:1 LOCK</b></div>
       <div class="stat"><span>Точность разбора</span><b>${escapeHtml(d.reconstruction_confidence ?? 0)}%</b></div>
     </div>
-    <div class="card master-copy"><div><span class="step">ГОТОВО</span><h2>Полный пакет 0–5</h2><p>Можно копировать целиком или по отдельным блокам.</p></div><button class="copy-all" data-copy="${escapeAttr(allPackage)}">КОПИРОВАТЬ ВСЁ</button></div>
+    <div class="card master-copy"><div><span class="step">ГОТОВО</span><h2>Полный пакет 0–5</h2><p>Frame 0 + усиленный Block 3 уже зафиксированы под точную длину исходника ${escapeHtml(exact)} сек.</p></div><button class="copy-all" data-copy="${escapeAttr(allPackage)}">КОПИРОВАТЬ ВСЁ</button></div>
     ${blockCard('БЛОК 0', 'Режиссёрское решение', directorText(b0))}
-    ${blockCard('БЛОК 1', 'Первый кадр', d.block_1_frame0_prompt || '')}
+    ${blockCard('БЛОК 1', 'Стартовый кадр Frame 0', d.block_1_frame0_prompt || '')}
     ${blockCard('БЛОК 2', 'Карта проверки первого кадра', complianceText(b2))}
-    ${blockCard('БЛОК 3', 'Промпт для видео', JSON.stringify(b3, null, 2))}
-    ${blockCard('БЛОК 4', 'Аудио', audioText(b4))}
+    ${blockCard('БЛОК 3', 'УЛЬТРА-ДЕТАЛЬНЫЙ промпт для оживления', JSON.stringify(b3, null, 2))}
+    ${blockCard('БЛОК 4', 'Русская речь и аудио', audioText(b4))}
     ${blockCard('БЛОК 5', 'Публикация', publicationText(b5))}
   `;
   $('#result').innerHTML = html;
@@ -97,6 +159,7 @@ function directorText(b){
     `Реализм\n${b.realism_decision||''}`
   ].join('\n\n');
 }
+
 function complianceText(b){
   return [
     `Персонажи\n${(b.characters||[]).join('\n')}`,
@@ -107,33 +170,52 @@ function complianceText(b){
     `Проверка реализма\n${(b.realism_check||[]).join('\n')}`
   ].join('\n\n');
 }
+
 function audioText(b){
   const dialogue=(b.dialogue||[]).map(x=>`Линия ${x.line_number}\n${x.visual_speaker_binding}\n${x.text}`).join('\n\n');
-  return [dialogue, `Произношение\n${(b.pronunciation_hints||[]).join('\n')}`, `Интонации и смех\n${(b.intonation_and_laughter_map||[]).join('\n')}`].join('\n\n');
+  return [
+    dialogue,
+    `Произношение\n${(b.pronunciation_hints||[]).join('\n')}`,
+    `Интонации и смех\n${(b.intonation_and_laughter_map||[]).join('\n')}`
+  ].join('\n\n');
 }
+
 function publicationText(b){
-  return [`Пост\n${b.short_post||''}`,`Заголовок\n${b.shorts_title||''}`,`Фраза удержания\n${b.retention_phrase||''}`,`Хэштеги\n${(b.hashtags||[]).join(' ')}`].join('\n\n');
+  return [
+    `Пост\n${b.short_post||''}`,
+    `Заголовок\n${b.shorts_title||''}`,
+    `Фраза удержания\n${b.retention_phrase||''}`,
+    `Хэштеги\n${(b.hashtags||[]).join(' ')}`
+  ].join('\n\n');
 }
+
 function buildWholePackage(d){
   return [
     `БЛОК 0. РЕЖИССЁРСКОЕ РЕШЕНИЕ\n${directorText(d.block_0_director||{})}`,
-    `БЛОК 1. ПЕРВЫЙ КАДР\n${d.block_1_frame0_prompt||''}`,
+    `БЛОК 1. FRAME 0\n${d.block_1_frame0_prompt||''}`,
     `БЛОК 2. КАРТА ПРОВЕРКИ\n${complianceText(d.block_2_compliance||{})}`,
-    `БЛОК 3. ВИДЕО\n${JSON.stringify(d.block_3_video||{},null,2)}`,
-    `БЛОК 4. АУДИО\n${audioText(d.block_4_audio||{})}`,
+    `БЛОК 3. УЛЬТРА-ДЕТАЛЬНЫЙ VIDEO PROMPT\n${JSON.stringify(d.block_3_video||{},null,2)}`,
+    `БЛОК 4. РУССКАЯ РЕЧЬ И АУДИО\n${audioText(d.block_4_audio||{})}`,
     `БЛОК 5. ПУБЛИКАЦИЯ\n${publicationText(d.block_5_publication||{})}`,
   ].join('\n\n════════════════════════════════\n\n');
 }
+
 function blockCard(tag,title,text){
   return `<div class="card"><div class="card-head"><div><span class="step">${tag}</span><h2>${title}</h2></div></div><div class="prompt-box" data-prompt="${escapeAttr(text)}"><button class="copy">КОПИРОВАТЬ</button>${escapeHtml(text)}</div></div>`;
 }
+
 function bindCopyButtons(root){
   $$('.copy', root).forEach(b => b.addEventListener('click', async ()=>{
     await navigator.clipboard.writeText(b.parentElement.dataset.prompt || '');
-    const old=b.textContent; b.textContent='СКОПИРОВАНО'; setTimeout(()=>b.textContent=old,1200);
+    const old=b.textContent;
+    b.textContent='СКОПИРОВАНО';
+    setTimeout(()=>b.textContent=old,1200);
   }));
   $$('.copy-all', root).forEach(b=>b.addEventListener('click',async()=>{
-    await navigator.clipboard.writeText(b.dataset.copy||''); const old=b.textContent; b.textContent='СКОПИРОВАНО'; setTimeout(()=>b.textContent=old,1200);
+    await navigator.clipboard.writeText(b.dataset.copy||'');
+    const old=b.textContent;
+    b.textContent='СКОПИРОВАНО';
+    setTimeout(()=>b.textContent=old,1200);
   }));
 }
 
@@ -151,7 +233,6 @@ async function loadRadar(){
       return;
     }
     host.innerHTML=rows.map((x,i)=>{
-      const hot = x.views >= 100000 && x.hours_since_publish <= 72 ? '🔥' : '';
       const anomaly = Number(x.anomaly_multiplier||0);
       const usual = Number(x.creator_usual_views||0);
       const followers = Number(x.followers_count||0);
@@ -159,14 +240,19 @@ async function loadRadar(){
         ? `<div class="anomaly ${anomaly>=5?'hot':''}">обычно ${formatNum(usual)} → <b>×${anomaly.toFixed(anomaly>=10?0:1)}</b></div>`
         : `<div class="anomaly muted-line">база автора собирается</div>`;
       const followerHtml = followers > 0 ? ` · ${formatNum(followers)} подписчиков` : '';
-      return `<div class="radar-card">
+      const level = escapeHtml(x.priority_level || 'C');
+      const label = escapeHtml(x.priority_label || '⚪ НИЗКИЙ ПРИОРИТЕТ');
+      const reason = escapeHtml(x.priority_reason || '');
+      return `<div class="radar-card priority-${level}">
         <div class="radar-rank">#${i+1}</div>
         <div class="radar-score"><b>${Number(x.viral_score_v2||0).toFixed(0)}</b><small>VIRAL</small></div>
         <div class="radar-main">
-          <div class="radar-title">${hot} ${escapeHtml(x.hook||x.scene_description||'Подходящая AI-сценка')}</div>
-          <div class="radar-meta">@${escapeHtml(x.creator)}${followerHtml} · ${Number(x.duration_sec||0).toFixed(1)} сек · ${Number(x.hours_since_publish||0).toFixed(1)} ч назад</div>
+          <div class="priority-badge priority-${level}">${label}</div>
+          <div class="radar-title">${escapeHtml(x.hook||x.scene_description||'Подходящая AI-сценка')}</div>
+          <div class="radar-meta">@${escapeHtml(x.creator)}${followerHtml} · ${Number(x.duration_sec||0).toFixed(2)} сек · ${Number(x.hours_since_publish||0).toFixed(1)} ч назад</div>
           <div class="radar-desc">${escapeHtml(x.scene_description||'')}</div>
           ${anomalyHtml}
+          <div class="priority-reason">${reason}</div>
         </div>
         <div class="radar-number"><b>${formatNum(x.views)}</b><small>просмотров</small></div>
         <div class="radar-number"><b class="accent">${formatNum(x.views_per_hour)}/ч</b><small>скорость</small></div>
@@ -225,6 +311,7 @@ async function analyzeRadar(id){
     body:JSON.stringify({owned_or_licensed:$('#rights')?.checked||false})
   }));
 }
+
 $('#refreshRadar')?.addEventListener('click',()=>loadRadar());
 
 function formatNum(v){
@@ -233,8 +320,12 @@ function formatNum(v){
   if(n>=1e3)return (n/1e3).toFixed(n>=1e5?0:1)+' тыс';
   return Math.round(n).toLocaleString('ru-RU');
 }
-function escapeHtml(v=''){return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
-function escapeAttr(v=''){return escapeHtml(v).replace(/\n/g,'&#10;');}
+function escapeHtml(v=''){
+  return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+}
+function escapeAttr(v=''){
+  return escapeHtml(v).replace(/\n/g,'&#10;');
+}
 
 async function loadStatus(){
   const el=$('#serviceStatus');
@@ -244,8 +335,9 @@ async function loadStatus(){
     const s=await r.json();
     if(!r.ok) throw new Error('status');
     const ready=s.gemini_configured && s.apify_configured;
-    el.innerHTML=`<i></i>${ready?'API подключены':'нужны 2 API ключа'}`;
-    if(!ready) el.classList.add('warn'); else el.classList.remove('warn');
+    el.innerHTML=`<i></i>${ready?'API подключены':'нужны API ключи'}`;
+    if(!ready) el.classList.add('warn');
+    else el.classList.remove('warn');
   }catch(_){
     el.textContent='статус недоступен';
   }
@@ -254,8 +346,8 @@ async function loadStatus(){
 async function syncRadar(){
   const out=$('#radarSyncResult');
   const btn=$('#syncRadar');
-  if(btn){btn.disabled=true; btn.textContent='ИЩУ РОЛИКИ…';}
-  if(out) out.textContent='Запущен поиск по запросам хештегам и отслеживаемым авторам. Затем считаю Viral Score 2.0 и мету TOP. Это может занять несколько минут.';
+  if(btn){btn.disabled=true;btn.textContent='ИЩУ РОЛИКИ…';}
+  if(out) out.textContent='Запущен полный поиск по запросам, хештегам и отслеживаемым авторам. Это может занять несколько минут.';
   try{
     const r=await fetch('/api/radar/sync',{method:'POST'});
     const d=await r.json();
@@ -266,9 +358,9 @@ async function syncRadar(){
   }catch(e){
     if(out) out.textContent=e.message;
   }finally{
-    if(btn){btn.disabled=false; btn.textContent='ЗАПУСТИТЬ ПОИСК';}
+    if(btn){btn.disabled=false;btn.textContent='ЗАПУСТИТЬ ПОИСК';}
   }
 }
-$('#syncRadar')?.addEventListener('click',syncRadar);
 
+$('#syncRadar')?.addEventListener('click',syncRadar);
 loadStatus();
