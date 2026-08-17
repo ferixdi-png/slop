@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: slop-fabrika
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --threads 4 --timeout 300
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: APIFY_API_TOKEN
+        sync: false
+      - key: ANALYSIS_MODEL
+        value: gemini-3.5-flash
+      - key: RADAR_MODEL
+        value: gemini-3.1-flash-lite
+      - key: RADAR_SYNC_KEY
+        generateValue: true
+      - key: SECRET_KEY
+        generateValue: true
+      - key: MAX_UPLOAD_MB
+        value: 120
