@@ -3,16 +3,15 @@ import os
 import sys
 import uuid
 from datetime import datetime, timezone
-from threading import Lock
 
 from flask import Flask, jsonify, render_template, request
 
 from cloud_state import restore_radar_snapshot_if_empty
 from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_KEEP_LIMIT
 from db import db_conn, init_db
+from persistent_radar import resume_if_needed, runtime_state, start_or_resume as start_or_resume_radar
 from progress import get_radar_status, set_radar_status
 from prompt_target import lock_generation_target
-from radar_entry import sync_radar
 from radar_logs import add_radar_log, reset_radar_run_id, set_radar_run_id
 from radar_quality import recommendation_status_for_row, top_eligible
 from reel_media import download_reel_for_analysis
@@ -26,63 +25,6 @@ try:
     restore_radar_snapshot_if_empty()
 except Exception as exc:
     add_radar_log(f"Облачное восстановление пропущено: {exc}", level="WARN", stage="startup")
-
-try:
-    boot_status = get_radar_status()
-    if boot_status.get("stage") == "running":
-        set_radar_status(
-            "error",
-            "Прошлый поиск прерван рестартом",
-            int(boot_status.get("progress") or 0),
-            None,
-            "Render перезапустил процесс. Старый HTTP-запрос остановлен; можно сразу запускать новый поиск.",
-            warning=boot_status.get("warning", ""),
-            details={"interrupted_at_startup": True},
-        )
-except Exception as exc:
-    add_radar_log(f"Не удалось нормализовать старый статус при старте: {exc}", level="WARN", stage="startup")
-
-radar_run_lock = Lock()
-active_state_lock = Lock()
-active_state = {"run_id": None, "started_at": None}
-add_radar_log(
-    "Сервис запущен и готов принимать команды радара.",
-    stage="startup",
-    details={
-        "python": sys.version.split()[0],
-        "analysis_model": ANALYSIS_MODEL,
-        "radar_model": RADAR_MODEL,
-        "render_cpu_count": os.environ.get("RENDER_CPU_COUNT", ""),
-    },
-)
-
-
-def new_run_id():
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return f"{stamp}-{uuid.uuid4().hex[:6]}"
-
-
-def set_active_run(run_id):
-    with active_state_lock:
-        active_state["run_id"] = run_id
-        active_state["started_at"] = datetime.now(timezone.utc).isoformat()
-
-
-def clear_active_run(run_id):
-    with active_state_lock:
-        if active_state.get("run_id") == run_id:
-            active_state["run_id"] = None
-            active_state["started_at"] = None
-
-
-def get_active_run_state():
-    with active_state_lock:
-        return {
-            "run_id": active_state.get("run_id"),
-            "started_at": active_state.get("started_at"),
-            "request_active": radar_run_lock.locked(),
-            "server_pid": os.getpid(),
-        }
 
 
 @app.get("/")
@@ -107,6 +49,7 @@ def status():
         render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
         render_instance=os.environ.get("RENDER_INSTANCE_ID", ""),
         render_cpu_count=os.environ.get("RENDER_CPU_COUNT", ""),
+        radar_runtime="persistent_apify_job_v3",
     )
 
 
@@ -118,30 +61,50 @@ def diagnostics():
 @app.get("/api/radar/status")
 def radar_status():
     payload = get_radar_status()
-    active = get_active_run_state()
+    active = runtime_state()
+
+    # A Render deploy/restart may kill only the local worker process. The durable
+    # job in Apify KVS remains authoritative, so the next normal UI poll resumes it.
+    if payload.get("stage") == "running" and not (
+        active.get("worker_active") or active.get("worker_pending")
+    ):
+        try:
+            job = resume_if_needed()
+            active = runtime_state()
+            if not job and not (
+                active.get("worker_active") or active.get("worker_pending")
+            ):
+                payload.update(
+                    stage="error",
+                    label="Поиск остановлен",
+                    eta_seconds=None,
+                    message="Активного persistent job нет. Запусти поиск заново.",
+                )
+        except Exception as exc:
+            add_radar_log(
+                f"Status poll не смог восстановить persistent job: {exc}",
+                level="WARN",
+                stage="status",
+            )
+
     details = dict(payload.get("details") or {})
     details.update(active)
     details["render_commit"] = str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12]
+    details["persistent_job"] = True
     payload["details"] = details
 
-    if active["request_active"] and payload.get("stage") != "running":
-        payload.update(
-            stage="running",
-            label="Поиск выполняется",
-            progress=max(1, int(payload.get("progress") or 1)),
-            eta_seconds=payload.get("eta_seconds") or 360,
-            message=(
-                f"Радар выполняется в активном HTTP-запросе. Run ID: {active['run_id']}. "
-                "Подробности — Render → Logs."
-            ),
-        )
-    elif payload.get("stage") == "running" and not active["request_active"]:
-        payload.update(
-            stage="error",
-            label="Поиск больше не выполняется",
-            eta_seconds=None,
-            message="Статус остался running, но активного запроса уже нет. Можно запустить поиск заново.",
-        )
+    if active.get("worker_active") or active.get("worker_pending"):
+        if payload.get("stage") != "running":
+            payload.update(
+                stage="running",
+                label="Поиск выполняется",
+                progress=max(1, int(payload.get("progress") or 1)),
+                eta_seconds=payload.get("eta_seconds") or 360,
+                message=(
+                    f"Persistent worker выполняет радар. Run ID: {active.get('run_id')}. "
+                    "При рестарте Render поиск продолжится по сохранённым Apify runId."
+                ),
+            )
     return jsonify(payload)
 
 
@@ -201,74 +164,33 @@ def radar_meta():
 
 @app.post("/api/radar/sync")
 def radar_sync():
-    run_id = new_run_id()
-    context_token = set_radar_run_id(run_id)
-    acquired = False
+    # IMPORTANT: this HTTP request never runs the 8-12 minute pipeline anymore.
+    # It persists/resumes a durable job and returns 202 immediately. The worker is
+    # independent from the browser request and reconstructs itself after Render restarts.
     try:
-        add_radar_log(
-            "Получен POST /api/radar/sync — запускаю полный радар.",
-            stage="launch",
-        )
-        acquired = radar_run_lock.acquire(blocking=False)
-        if not acquired:
-            active = get_active_run_state()
-            add_radar_log(
-                "Новый запуск отклонён: радар уже выполняется.",
-                level="WARN",
-                stage="launch",
-                details=active,
-            )
-            return jsonify(error="Поиск уже выполняется. Дождись завершения текущего запуска.", runtime=active), 409
-
-        set_active_run(run_id)
-        set_radar_status(
-            "running",
-            "Запускаю радар",
-            1,
-            720,
-            "Команда принята. Радар работает в low-memory режиме; статус обновляется параллельно.",
-            details={
-                "run_id": run_id,
-                "server_pid": os.getpid(),
-                "mode": "low_memory_synchronous_request",
-                "render_commit": str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
-            },
-        )
-        add_radar_log(
-            "Radar pipeline START.",
-            stage="launch",
-            details=get_active_run_state(),
-        )
-
-        result = sync_radar()
-        add_radar_log("Radar pipeline DONE.", stage="done", details=result)
-        return jsonify(ok=True, completed=True, run_id=run_id, result=result), 200
-
+        payload, status_code = start_or_resume_radar()
+        return jsonify(payload), status_code
     except Exception as exc:
-        add_radar_log(f"Radar pipeline ERROR: {exc}", level="ERROR", stage="launch")
+        add_radar_log(
+            f"Не удалось создать/возобновить persistent radar job: {exc}",
+            level="ERROR",
+            stage="launch",
+        )
         try:
             set_radar_status(
                 "error",
-                "Поиск остановлен",
+                "Не удалось запустить поиск",
                 0,
                 None,
                 str(exc)[:300],
                 details={
-                    "run_id": run_id,
-                    "mode": "low_memory_synchronous_request",
+                    "persistent_job": True,
                     "render_commit": str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
                 },
             )
         except Exception:
             pass
-        app.logger.exception("radar sync failed")
-        return jsonify(error=str(exc), run_id=run_id), 500
-    finally:
-        clear_active_run(run_id)
-        if acquired and radar_run_lock.locked():
-            radar_run_lock.release()
-        add_radar_log("HTTP-запрос радара завершён; блокировка запуска освобождена.", stage="launch")
-        reset_radar_run_id(context_token)
+        return jsonify(error=str(exc)), 500
 
 
 def save_analysis(title, source_url, views, viral_score, result):
@@ -321,8 +243,7 @@ def radar_analyze(item_id):
                 stage="prompts",
             )
 
-            # Heavy Gemini/Pydantic modules are imported only for an actual prompt job,
-            # never during ordinary web startup or the Apify discovery phase.
+            # Heavy Gemini/Pydantic modules are imported only for a real prompt job.
             from gemini_pipeline_logged import analyze_video_logged
 
             package = lock_generation_target(analyze_video_logged(tmp, owned, source_duration))
@@ -347,7 +268,11 @@ def radar_analyze(item_id):
                 result=result,
             )
         except Exception as exc:
-            add_radar_log(f"Ошибка промптов @{row.get('creator','')}: {exc}", level="ERROR", stage="prompts")
+            add_radar_log(
+                f"Ошибка промптов @{row.get('creator','')}: {exc}",
+                level="ERROR",
+                stage="prompts",
+            )
             app.logger.exception("radar analysis failed")
             return jsonify(error=str(exc)), 500
         finally:
@@ -366,8 +291,32 @@ def health():
         ok=True,
         analysis_model=ANALYSIS_MODEL,
         radar_model=RADAR_MODEL,
-        radar_request=get_active_run_state(),
+        radar_runtime="persistent_apify_job_v3",
+        radar_worker=runtime_state(),
         render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
+    )
+
+
+add_radar_log(
+    "Сервис запущен. Radar runtime: persistent_apify_job_v3.",
+    stage="startup",
+    details={
+        "python": sys.version.split()[0],
+        "analysis_model": ANALYSIS_MODEL,
+        "radar_model": RADAR_MODEL,
+        "render_cpu_count": os.environ.get("RENDER_CPU_COUNT", ""),
+    },
+)
+
+# If a deploy/restart interrupted a search, resume it automatically as soon as
+# this new Gunicorn worker boots. No second button click is required.
+try:
+    resume_if_needed()
+except Exception as exc:
+    add_radar_log(
+        f"Автовосстановление radar job не запустилось: {exc}",
+        level="WARN",
+        stage="startup",
     )
 
 
