@@ -19,9 +19,8 @@ RADAR_AI_ANALYZE_LIMIT = int(os.environ.get("RADAR_AI_ANALYZE_LIMIT", "60"))
 RADAR_KEEP_LIMIT = int(os.environ.get("RADAR_KEEP_LIMIT", "30"))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "120"))
 
-AFFILIATE_NAME = os.environ.get("AFFILIATE_NAME", "").strip()
-AFFILIATE_URL = os.environ.get("AFFILIATE_URL", "").strip()
-AFFILIATE_CTA = os.environ.get("AFFILIATE_CTA", "").strip()
+# Без отдельного RADAR_SYNC_KEY: сервер сам не разрешает запускать полный парсинг слишком часто.
+RADAR_SYNC_COOLDOWN_MINUTES = 60
 
 SEARCH_TERMS = [
     "нейроюмор", "ии юмор", "нейросеть прикол", "нейросеть юмор", "AI прикол",
@@ -34,18 +33,46 @@ HASHTAGS = [
 ]
 
 REALISM_LOCK = """
-GLOBAL REALISM LOCK. This rule overrides the rendering style of the source while preserving observable content and staging.
-The result must always look like authentic casual footage from a modern flagship smartphone from 2024–2026, never like an AI render, animation, 3D scene, beauty-filter clip, studio commercial, or cinematic production.
+GLOBAL SMARTPHONE REALISM OVERRIDE — ABSOLUTE PRIORITY.
 
-STRICT PRESERVATION: preserve observable character count, approximate age, body proportions, hairstyle, clothing category and colors, expression, pose, gaze direction, object placement, background layout, lighting direction, camera angle, composition, action order, dialogue order, pacing, reaction timing and comedic beat. Do not beautify, redesign, glamorize or cinematize the scene.
+The source controls CONTENT, not rendering style.
+Preserve what happens: character count and roles, observable age archetypes, body proportions, hairstyle logic, clothing category and colors, pose, gaze direction, object placement, background layout, camera position, composition, action order, dialogue order, pacing, reaction timing, comedic beat and ending.
+If the source is cartoon, animation, CGI, stylized 3D, plastic AI imagery or otherwise artificial, DO NOT preserve that artificial rendering style. Reconstruct the same scene as believable live-action reality.
 
-REALISM RESTORATION: remove AI plastic skin, over-smoothed textures, synthetic sharpness, fake HDR, unnatural clarity, beauty-filter skin, waxy faces, painted hair, fake fabric, impossible reflections and overly perfect symmetry. Restore natural skin pores, microtexture, tiny imperfections, age detail, subtle skin color variation, individual hair strands, authentic fabric weave and folds, real material response, plausible shadows and real-world imperfections.
+FINAL TARGET:
+The result must look like authentic casual vertical footage captured on a modern flagship smartphone from 2024–2026 and found in a real person's camera roll. It must never feel like an animation, render, studio commercial, beauty-filter clip or cinematic production.
 
-SKIN: keep pores, fine detail, wrinkles, blemishes, under-eye detail, beard texture, freckles and tonal variation when present. Smoothness stays low. Never create glossy porcelain skin.
+CANDID HUMAN BEHAVIOR:
+Natural imperfect posture, uneven weight distribution, small asymmetry, believable hand placement, tiny involuntary movements, spontaneous micro-expressions, realistic blinking, natural eye focus, subtle timing imperfections, hair movement and clothing movement appropriate to the action. Avoid influencer posing, catalog stiffness and perfect symmetry.
 
-SMARTPHONE CAMERA: ordinary computational photography, believable autofocus, automatic exposure, slight handheld micro-shake, tiny framing drift, realistic motion behavior, natural smartphone perspective and slightly softer edges than center. No fake cinematic depth of field or exaggerated bokeh.
+SKIN REALISM:
+Natural human pores, microtexture, tiny imperfections, subtle tonal variation, real under-eye detail, wrinkles or age detail when appropriate, beard texture or freckles when present. Smoothness stays low. No porcelain complexion, glossy plastic skin, waxy faces, beauty-filter geometry or excessive retouching.
 
-COLOR AND LIGHT: natural slightly imperfect white balance, realistic smartphone contrast and saturation, preserved highlights, believable lifted shadows, source-consistent light direction, no theatrical relighting or cinematic grading.
+HAIR REALISM:
+Individual strands, small flyaways, realistic roots, natural highlights, plausible density, real interaction with shoulders, wind and movement. No painted hair, helmet hair or CGI strands.
 
-FINAL FEELING: a high-quality everyday phone video from a real person's camera roll. The source controls WHAT happens, WHO does it, WHAT is said, WHEN reactions happen and WHERE the camera is. This lock controls HOW physically real everything looks.
+HAND AND ANATOMY REALISM:
+Correct human anatomy, plausible joints, natural grip around objects, no duplicated fingers or limbs, no melted hands, no body morphing. Permanent body proportions remain physically consistent through the scene.
+
+FABRIC AND MATERIAL REALISM:
+Real fabric thickness, weave, seams, folds, gravity, tension points and contact with the body. Objects must have plausible materials, reflections, contact shadows and wear. No melted fabric, fake surfaces or impossible reflections.
+
+SMARTPHONE CAPTURE SIMULATION:
+Handheld modern flagship smartphone camera, ordinary computational photography, realistic wide-camera perspective, small physically plausible lens distortion, slightly softer edges than center, believable autofocus, subtle focus breathing, automatic exposure, automatic white balance, slight handheld micro-shake, tiny framing drift and occasional tiny motion softness when appropriate.
+No artificial DSLR-style cinematic bokeh, no impossible gimbal perfection unless the source is clearly static, no fake depth of field.
+
+LIGHTING:
+All light must plausibly originate from the real environment. Preserve the source lighting direction where possible, but convert stylized light into physically believable daylight or ambient indoor light. Subject and background share the same light. Allow minor highlight clipping and imperfect shadow lift typical of phones. No invisible studio lights, theatrical relighting, neon fantasy glow or cinematic grading.
+
+IMAGE PROCESSING:
+Natural optical sharpness, moderate noise reduction while preserving texture, realistic smartphone HDR only, authentic highlight rolloff, subtle sensor grain, slightly imperfect white balance and realistic saturation. Remove synthetic sharpening, fake HDR, unnatural clarity, over-denoising and overedited Instagram look.
+
+REAL-WORLD IMPERFECTIONS:
+Allow minor framing errors, small horizon deviation, slightly inconsistent headroom, background clutter appropriate to real life, tiny autofocus uncertainty, subtle exposure adaptation, hair crossing the face, clothing wrinkles and micro motion blur.
+
+FRAME 0:
+Frame 0 must already look like a real photograph from a smartphone camera roll, not concept art. Every visible face, hand, fabric, object, shadow and background surface must pass the same realism rules before animation starts.
+
+FINAL FEELING:
+A premium but ordinary smartphone video of a real event that genuinely happened. The viewer should read it as live-action phone footage first, not as AI-generated content.
 """.strip()
