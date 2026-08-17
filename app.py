@@ -128,18 +128,14 @@ def radar_candidates():
             ).fetchall()
 
     rows = query_rows()
-    recovery = None
     if not rows and os.environ.get("APIFY_API_TOKEN"):
         try:
-            recovery = recover_last_successful_hashtag_run()
+            recover_last_successful_hashtag_run()
             rows = query_rows()
-        except Exception as exc:
-            recovery = {"ok": False, "reason": str(exc)[:200], "recovered": 0}
+        except Exception:
+            pass
 
-    return jsonify(
-        rows=[dict(x) for x in rows],
-        recovery=recovery,
-    )
+    return jsonify([dict(x) for x in rows])
 
 
 @app.get("/api/radar/meta")
