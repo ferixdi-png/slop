@@ -6,25 +6,23 @@ from datetime import datetime, timezone
 
 from flask import Flask, jsonify, render_template, request
 
-from cloud_state import restore_radar_snapshot_if_empty
 from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_KEEP_LIMIT
 from db import db_conn, init_db
-from persistent_radar import resume_if_needed, runtime_state, start_or_resume as start_or_resume_radar
 from progress import get_radar_status, set_radar_status
 from prompt_target import lock_generation_target
 from radar_logs import add_radar_log, reset_radar_run_id, set_radar_run_id
 from radar_quality import recommendation_status_for_row, top_eligible
+from radar_request_job import (
+    RUNTIME as RADAR_RUNTIME,
+    create_or_resume_job,
+    tick_job,
+)
 from reel_media import download_reel_for_analysis
 from service_checks import check_all_services
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
 init_db()
-
-try:
-    restore_radar_snapshot_if_empty()
-except Exception as exc:
-    add_radar_log(f"Облачное восстановление пропущено: {exc}", level="WARN", stage="startup")
 
 
 @app.get("/")
@@ -49,7 +47,7 @@ def status():
         render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
         render_instance=os.environ.get("RENDER_INSTANCE_ID", ""),
         render_cpu_count=os.environ.get("RENDER_CPU_COUNT", ""),
-        radar_runtime="persistent_apify_job_v4",
+        radar_runtime=RADAR_RUNTIME,
     )
 
 
@@ -60,52 +58,17 @@ def diagnostics():
 
 @app.get("/api/radar/status")
 def radar_status():
-    # The durable Apify KVS job is authoritative. Never rely on local SQLite to
-    # decide whether a restart interrupted an active search. If this process has
-    # no worker, probe KVS and resume any active job regardless of local stage.
-    active = runtime_state()
-    job = None
-    if not (active.get("worker_active") or active.get("worker_pending")):
-        try:
-            job = resume_if_needed()
-        except Exception as exc:
-            add_radar_log(
-                f"Status poll не смог проверить/восстановить persistent job: {exc}",
-                level="WARN",
-                stage="status",
-            )
-
+    # CRITICAL: status is deliberately local-only. No Apify/Gemini/network calls
+    # are allowed here, so page polling can never block the Render web process.
     payload = get_radar_status()
-    active = runtime_state()
-
     details = dict(payload.get("details") or {})
-    details.update(active)
-    details["render_commit"] = str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12]
-    details["persistent_job"] = True
-    if isinstance(job, dict):
-        details["persistent_phase"] = job.get("phase")
-        details["persistent_run_id"] = job.get("run_id")
+    details.update(
+        runtime=RADAR_RUNTIME,
+        render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
+        render_instance=os.environ.get("RENDER_INSTANCE_ID", ""),
+        server_pid=os.getpid(),
+    )
     payload["details"] = details
-
-    if active.get("worker_active") or active.get("worker_pending"):
-        if payload.get("stage") != "running":
-            payload.update(
-                stage="running",
-                label="Поиск выполняется",
-                progress=max(1, int(payload.get("progress") or 1)),
-                eta_seconds=payload.get("eta_seconds") or 360,
-                message=(
-                    f"Persistent worker выполняет радар. Run ID: {active.get('run_id')}. "
-                    "При рестарте Render поиск автоматически продолжится по сохранённым Apify runId."
-                ),
-            )
-    elif payload.get("stage") == "running" and not (job and job.get("phase") in {"queued", "starting_sources", "discovering", "processing"}):
-        payload.update(
-            stage="error",
-            label="Поиск остановлен",
-            eta_seconds=None,
-            message="Локальный статус был running, но активного persistent job в Apify KVS нет. Можно запустить поиск заново.",
-        )
     return jsonify(payload)
 
 
@@ -165,15 +128,13 @@ def radar_meta():
 
 @app.post("/api/radar/sync")
 def radar_sync():
-    # This request only creates/resumes a durable KVS job and returns 202 quickly.
-    # The long-running work is independent from the browser request and is rebuilt
-    # automatically after a Render process replacement.
+    # Creates/resumes only the durable KVS state. No long-running pipeline here.
     try:
-        payload, status_code = start_or_resume_radar()
+        payload, status_code = create_or_resume_job()
         return jsonify(payload), status_code
     except Exception as exc:
         add_radar_log(
-            f"Не удалось создать/возобновить persistent radar job: {exc}",
+            f"Не удалось создать/возобновить durable radar job: {exc}",
             level="ERROR",
             stage="launch",
         )
@@ -185,13 +146,22 @@ def radar_sync():
                 None,
                 str(exc)[:300],
                 details={
-                    "persistent_job": True,
+                    "runtime": RADAR_RUNTIME,
                     "render_commit": str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
                 },
             )
         except Exception:
             pass
         return jsonify(error=str(exc)), 500
+
+
+@app.post("/api/radar/tick")
+def radar_tick():
+    # One request = one durable step: start one Actor, poll Actors, prepare
+    # candidates, classify one Reel, or finalize. If Render swaps the instance,
+    # the next request reloads the same phase from Apify KVS and continues.
+    payload, status_code = tick_job()
+    return jsonify(payload), status_code
 
 
 def save_analysis(title, source_url, views, viral_score, result):
@@ -287,18 +257,19 @@ def radar_analyze(item_id):
 
 @app.get("/health")
 def health():
+    # Render health check must be pure and instantaneous: no KVS, no SQLite, no APIs.
     return jsonify(
         ok=True,
         analysis_model=ANALYSIS_MODEL,
         radar_model=RADAR_MODEL,
-        radar_runtime="persistent_apify_job_v4",
-        radar_worker=runtime_state(),
+        radar_runtime=RADAR_RUNTIME,
+        server_pid=os.getpid(),
         render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
     )
 
 
 add_radar_log(
-    "Сервис запущен. Radar runtime: persistent_apify_job_v4.",
+    f"Сервис запущен. Radar runtime: {RADAR_RUNTIME}. Startup без внешних API-вызовов.",
     stage="startup",
     details={
         "python": sys.version.split()[0],
@@ -307,17 +278,6 @@ add_radar_log(
         "render_cpu_count": os.environ.get("RENDER_CPU_COUNT", ""),
     },
 )
-
-# Always probe the durable KVS job at process boot. This is intentionally
-# independent from local SQLite status: instance replacement can lose local state.
-try:
-    resume_if_needed()
-except Exception as exc:
-    add_radar_log(
-        f"Автовосстановление radar job не запустилось: {exc}",
-        level="WARN",
-        stage="startup",
-    )
 
 
 if __name__ == "__main__":
