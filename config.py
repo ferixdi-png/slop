@@ -8,10 +8,11 @@ DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = Path(os.environ.get("DB_PATH", DATA_DIR / "slop.db"))
 
-# 3.6 Flash is the current production model for the detailed multimodal reconstruction pass.
-# 3.5 Flash-Lite is cheaper and fast enough for the high-volume radar classifier.
-ANALYSIS_MODEL = os.environ.get("ANALYSIS_MODEL", "gemini-3.6-flash")
-RADAR_MODEL = os.environ.get("RADAR_MODEL", "gemini-3.5-flash-lite")
+# ABSOLUTE MODEL LOCK.
+# Radar classification, forensic video analysis, production prompts, QA and repair
+# always use the same low-cost model. Environment variables cannot override it.
+ANALYSIS_MODEL = "gemini-3.1-flash-lite"
+RADAR_MODEL = "gemini-3.1-flash-lite"
 APIFY_SEARCH_ACTOR = os.environ.get("APIFY_SEARCH_ACTOR", "apify/instagram-search-scraper")
 APIFY_HASHTAG_ACTOR = os.environ.get("APIFY_HASHTAG_ACTOR", "apify/instagram-hashtag-scraper")
 APIFY_CREATOR_ACTOR = os.environ.get("APIFY_CREATOR_ACTOR", "apify/instagram-reel-scraper")
