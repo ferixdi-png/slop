@@ -1,0 +1,38 @@
+name: Smoke Check
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile Python
+        run: python -m compileall -q .
+      - name: Flask smoke test
+        env:
+          SECRET_KEY: smoke-test
+        run: |
+          python - <<'PY'
+          from app import app
+          c = app.test_client()
+          for path in ['/health', '/api/status', '/api/radar/status', '/api/radar', '/api/radar/candidates']:
+              r = c.get(path)
+              print(path, r.status_code, r.content_type)
+              assert r.status_code == 200, (path, r.status_code, r.get_data(as_text=True))
+          PY
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check JavaScript syntax
+        run: |
+          node --check static/app.js
+          node --check static/runtime.js
