@@ -8,15 +8,14 @@ POLL_SECONDS = 10
 
 
 def _max_wait_seconds(actor_id):
-    # Popular search is only a discovery source and has a fallback to hashtags,
-    # so it must never block the whole radar forever. The heavier hashtag and
-    # creator runs get more time.
+    # The complete radar now runs inside one long Render request. Bound each
+    # discovery source so the whole pipeline stays below Gunicorn's 15-minute timeout.
     actor = str(actor_id or "").lower()
     if "search-scraper" in actor:
-        return int(os.environ.get("APIFY_SEARCH_MAX_WAIT_SECONDS", "240"))
+        return int(os.environ.get("APIFY_SEARCH_MAX_WAIT_SECONDS", "90"))
     if "hashtag" in actor:
-        return int(os.environ.get("APIFY_HASHTAG_MAX_WAIT_SECONDS", "720"))
-    return int(os.environ.get("APIFY_ACTOR_MAX_WAIT_SECONDS", "600"))
+        return int(os.environ.get("APIFY_HASHTAG_MAX_WAIT_SECONDS", "240"))
+    return int(os.environ.get("APIFY_ACTOR_MAX_WAIT_SECONDS", "180"))
 
 
 def run_actor_items_checked(client, actor_id, run_input):
@@ -29,9 +28,6 @@ def run_actor_items_checked(client, actor_id, run_input):
     )
 
     try:
-        # Do not use ActorClient.call() here: it blocks until completion and leaves
-        # the user with a silent log. start() returns the run immediately, then we
-        # poll it so the website can show a heartbeat and exact runId/status.
         run = client.actor(actor_id).start(run_input=run_input)
     except Exception as exc:
         add_radar_log(f"Apify Actor {actor_id} не запустился: {exc}", level="ERROR", stage="apify")
@@ -84,7 +80,6 @@ def run_actor_items_checked(client, actor_id, run_input):
         elapsed = int(time.monotonic() - started)
         heartbeat_bucket = elapsed // 20
 
-        # Log immediately on status/message changes, otherwise one heartbeat every ~20 sec.
         if status != last_status or status_message != last_message or heartbeat_bucket != last_heartbeat_bucket:
             text = f"Apify {actor_id}: {status} · {elapsed} сек"
             if status_message:
