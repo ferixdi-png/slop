@@ -30,4 +30,31 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE,
             first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
             best_views_per_hour REAL DEFAULT 0, matching_reels INTEGER DEFAULT 0)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS radar_meta (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            source_count INTEGER DEFAULT 0,
+            average_duration_sec REAL DEFAULT 0,
+            report_json TEXT NOT NULL)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS app_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL)""")
+
+        for name, definition in [
+            ("followers_count", "INTEGER DEFAULT 0"),
+            ("creator_usual_views", "REAL DEFAULT 0"),
+            ("anomaly_multiplier", "REAL DEFAULT 0"),
+            ("follower_reach", "REAL DEFAULT 0"),
+            ("like_rate", "REAL DEFAULT 0"),
+            ("comment_rate", "REAL DEFAULT 0"),
+            ("viral_score_v2", "REAL DEFAULT 0"),
+        ]:
+            ensure_column(conn, "radar_posts", name, definition)
+
+        for name, definition in [
+            ("followers_count", "INTEGER DEFAULT 0"),
+            ("usual_views", "REAL DEFAULT 0"),
+            ("sample_size", "INTEGER DEFAULT 0"),
+        ]:
+            ensure_column(conn, "tracked_creators", name, definition)
         conn.commit()
