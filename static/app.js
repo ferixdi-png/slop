@@ -2,6 +2,20 @@ const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const copyRegistry = new Map();
 let copyCounter = 0;
+let refreshBundleInFlight = false;
+
+const RETRYABLE_HTTP = new Set([408, 429, 500, 502, 503, 504]);
+
+class ApiError extends Error {
+  constructor(message, {status = 0, transient = false} = {}) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.transient = transient;
+  }
+}
+
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 function escapeHtml(v = '') {
   return String(v).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
@@ -40,16 +54,88 @@ async function copyText(text) {
   }
 }
 
+function isTransientError(error) {
+  return Boolean(error?.transient || error instanceof TypeError || RETRYABLE_HTTP.has(Number(error?.status || 0)));
+}
+
+function markReconnect() {
+  const el = $('#serviceStatus');
+  if (!el) return;
+  el.classList.add('warn');
+  el.innerHTML = '<i></i> Render перезапускается · переподключаюсь…';
+}
+
+async function apiJson(url, options = {}, config = {}) {
+  const method = String(options.method || 'GET').toUpperCase();
+  const retries = Number(config.retries ?? (method === 'GET' ? 2 : 0));
+  const baseDelay = Number(config.baseDelay ?? 650);
+  let lastError;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(url, {
+        cache: 'no-store',
+        ...options,
+        headers: {
+          Accept: 'application/json',
+          ...(options.headers || {}),
+        },
+      });
+
+      const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+      const text = await response.text();
+      const looksLikeHtml = contentType.includes('text/html') || /^\s*<!doctype/i.test(text) || /^\s*<html/i.test(text);
+
+      if (looksLikeHtml) {
+        throw new ApiError(
+          'Render временно перезапускает сервис. Данные сохранены, переподключаюсь автоматически.',
+          {status: response.status, transient: true}
+        );
+      }
+
+      let data = null;
+      if (text.trim()) {
+        try {
+          data = JSON.parse(text);
+        } catch (_) {
+          throw new ApiError('Сервер вернул некорректный ответ. Повторяю подключение…', {
+            status: response.status,
+            transient: true,
+          });
+        }
+      }
+
+      if (!response.ok) {
+        const message = data?.error || data?.message || `Ошибка сервера ${response.status}`;
+        throw new ApiError(message, {
+          status: response.status,
+          transient: RETRYABLE_HTTP.has(response.status),
+        });
+      }
+      return data;
+    } catch (error) {
+      lastError = error instanceof ApiError
+        ? error
+        : new ApiError('Сервис временно недоступен. Переподключаюсь…', {transient: true});
+
+      if (attempt >= retries || !isTransientError(lastError)) break;
+      markReconnect();
+      await sleep(baseDelay * Math.pow(1.7, attempt));
+    }
+  }
+  throw lastError || new ApiError('Не удалось получить ответ сервера');
+}
+
 async function loadStatus() {
   const el = $('#serviceStatus');
   try {
-    const r = await fetch('/api/status', {cache:'no-store'});
-    const s = await r.json();
+    const s = await apiJson('/api/status');
     const ready = s.gemini_configured && s.apify_configured;
     el.innerHTML = `<i></i>${ready ? `готово · ${escapeHtml(s.analysis_model || '')}` : 'нужны API ключи'}`;
     el.classList.toggle('warn', !ready);
-  } catch (_) {
-    el.textContent = 'статус недоступен';
+  } catch (e) {
+    if (isTransientError(e)) markReconnect();
+    else el.textContent = 'статус недоступен';
   }
 }
 
@@ -63,6 +149,12 @@ function paintApiCard(name, data) {
     card.classList.add('api-loading');
     status.textContent = 'Проверяю ключ…';
     meta.textContent = 'Минимальный сетевой тест';
+    return;
+  }
+  if (data.transient) {
+    card.classList.add('api-loading');
+    status.textContent = 'Сервис перезапускается…';
+    meta.textContent = data.label || 'Повторю проверку автоматически';
     return;
   }
   card.classList.add(data.ok ? 'api-ok' : 'api-bad');
@@ -81,14 +173,19 @@ async function checkApis() {
   paintApiCard('gemini', null);
   paintApiCard('apify', null);
   try {
-    const r = await fetch('/api/diagnostics', {cache:'no-store'});
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || 'Не удалось проверить API');
+    const d = await apiJson('/api/diagnostics', {}, {retries: 3});
     paintApiCard('gemini', d.gemini);
     paintApiCard('apify', d.apify);
   } catch (e) {
-    paintApiCard('gemini', {ok:false,label:e.message});
-    paintApiCard('apify', {ok:false,label:e.message});
+    if (isTransientError(e)) {
+      markReconnect();
+      paintApiCard('gemini', {transient:true,label:'Render перезапускается — ключ не считается ошибочным'});
+      paintApiCard('apify', {transient:true,label:'Render перезапускается — ключ не считается ошибочным'});
+      setTimeout(() => checkApis(), 2500);
+    } else {
+      paintApiCard('gemini', {ok:false,label:e.message});
+      paintApiCard('apify', {ok:false,label:e.message});
+    }
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'ПРОВЕРИТЬ API'; }
   }
@@ -96,9 +193,7 @@ async function checkApis() {
 
 async function loadRadarStatus() {
   try {
-    const r = await fetch('/api/radar/status', {cache:'no-store'});
-    const s = await r.json();
-    if (!r.ok) return;
+    const s = await apiJson('/api/radar/status');
     const pct = Math.max(0, Math.min(100, Number(s.progress || 0)));
     $('#radarProgressPct').textContent = `${pct}%`;
     $('#radarStage').textContent = s.label || 'Радар';
@@ -120,7 +215,8 @@ async function loadRadarStatus() {
     if (d.raw !== undefined) stats.push(`<div><b>${formatNum(d.raw)}</b><span>сырых</span></div>`);
     if (d.numeric_candidates !== undefined) stats.push(`<div><b>${formatNum(d.numeric_candidates)}</b><span>≤10 сек / 7 дней</span></div>`);
     if (d.ai_total !== undefined) stats.push(`<div><b>${formatNum(d.ai_done || 0)}/${formatNum(d.ai_total)}</b><span>AI проверка</span></div>`);
-    if (d.matched !== undefined) stats.push(`<div><b>${formatNum(d.matched)}</b><span>в TOP</span></div>`);
+    if (d.quality_top !== undefined) stats.push(`<div><b>${formatNum(d.quality_top)}</b><span>в сильном TOP</span></div>`);
+    else if (d.matched !== undefined) stats.push(`<div><b>${formatNum(d.matched)}</b><span>AI совпадений</span></div>`);
     $('#radarPipelineStats').innerHTML = stats.join('');
 
     const syncBtn = $('#syncRadar');
@@ -129,13 +225,17 @@ async function loadRadarStatus() {
       syncBtn.disabled = running;
       syncBtn.textContent = running ? 'ПОИСК ИДЁТ…' : 'ЗАПУСТИТЬ ПОИСК';
     }
-  } catch (_) {}
+  } catch (e) {
+    if (isTransientError(e)) markReconnect();
+  }
 }
 
 function radarCard(x, i) {
   const anomaly = Number(x.anomaly_multiplier || 0);
   const usual = Number(x.creator_usual_views || 0);
   const followers = Number(x.followers_count || 0);
+  const likes = Number(x.likes || 0);
+  const comments = Number(x.comments || 0);
   const level = escapeHtml(x.priority_level || 'C');
   const label = escapeHtml(x.priority_label || 'НИЗКИЙ ПРИОРИТЕТ');
   const reason = escapeHtml(x.priority_reason || '');
@@ -153,7 +253,7 @@ function radarCard(x, i) {
       <div class="radar-desc">${escapeHtml(x.scene_description || '')}</div>
       <div class="priority-reason">${reason}</div>${anomalyHtml}
     </div>
-    <div class="radar-number"><b>${formatNum(x.views)}</b><small>просмотров</small></div>
+    <div class="radar-number"><b>${formatNum(x.views)}</b><small>просмотров · ${formatNum(likes)} лайков${comments ? ` · ${formatNum(comments)} комм.` : ''}</small></div>
     <div class="radar-number"><b class="accent">${formatNum(x.views_per_hour)}/ч</b><small>скорость</small></div>
     <div class="radar-actions">
       <a href="${escapeAttr(x.post_url)}" target="_blank" rel="noopener">ОРИГИНАЛ</a>
@@ -166,17 +266,21 @@ async function loadRadar() {
   const host = $('#radarRows');
   if (!host) return;
   try {
-    const r = await fetch('/api/radar', {cache:'no-store'});
-    const rows = await r.json();
-    if (!r.ok) throw new Error(rows.error || 'Не удалось загрузить TOP');
-    if (!rows.length) {
-      host.innerHTML = '<div class="empty">TOP пока формируется. Ниже уже видны кандидаты, полученные от Apify.</div>';
+    const rows = await apiJson('/api/radar');
+    if (!Array.isArray(rows) || !rows.length) {
+      if (!host.querySelector('.radar-card')) {
+        host.innerHTML = '<div class="empty">TOP пока формируется. Ниже уже видны кандидаты, полученные от Apify.</div>';
+      }
       return;
     }
     host.innerHTML = rows.map((x, i) => radarCard(x, i)).join('');
     $$('[data-radar-analyze]', host).forEach(btn => btn.addEventListener('click', () => analyzeRadar(btn.dataset.radarAnalyze, btn)));
   } catch (e) {
-    host.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
+    if (isTransientError(e)) {
+      markReconnect();
+      return; // never erase an already visible TOP during a Render restart
+    }
+    if (!host.querySelector('.radar-card')) host.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -184,25 +288,29 @@ async function loadCandidates() {
   const host = $('#candidateRows');
   if (!host) return;
   try {
-    const r = await fetch('/api/radar/candidates', {cache:'no-store'});
-    const rows = await r.json();
-    if (!r.ok) throw new Error('Не удалось загрузить кандидатов');
+    const rows = await apiJson('/api/radar/candidates');
     if (!Array.isArray(rows) || !rows.length) {
-      host.innerHTML = '<div class="empty">Apify ещё не передал ни одного Reel, прошедшего объективный фильтр 7 дней + ≤10 секунд.</div>';
+      if (!host.querySelector('.candidate-row')) {
+        host.innerHTML = '<div class="empty">Apify ещё не передал ни одного Reel, прошедшего объективный фильтр 7 дней + ≤10 секунд.</div>';
+      }
       return;
     }
     host.innerHTML = rows.map((x, i) => {
       const state = x.ai_match ? 'ПРОШЁЛ AI' : (x.ai_checked ? 'НЕ ПРОШЁЛ AI' : 'ЖДЁТ AI');
       return `<div class="candidate-row ${x.ai_match ? 'candidate-ok' : ''}">
         <div><b>#${i+1} @${escapeHtml(x.creator)}</b><span>${Number(x.duration_sec || 0).toFixed(2)} сек · ${Number(x.hours_since_publish || 0).toFixed(1)} ч назад · ${escapeHtml(x.search_term || '')}</span></div>
-        <div><b>${formatNum(x.views)}</b><span>${formatNum(x.views_per_hour)}/ч</span></div>
+        <div><b>${formatNum(x.views)}</b><span>${formatNum(x.likes)} лайков · ${formatNum(x.views_per_hour)}/ч</span></div>
         <div><b>${Number(x.viral_score_v2 || 0).toFixed(0)}</b><span>Viral</span></div>
         <div><span class="candidate-state">${state}</span></div>
         <a href="${escapeAttr(x.post_url)}" target="_blank" rel="noopener">ОТКРЫТЬ</a>
       </div>`;
     }).join('');
   } catch (e) {
-    host.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
+    if (isTransientError(e)) {
+      markReconnect();
+      return; // preserve current candidates
+    }
+    if (!host.querySelector('.candidate-row')) host.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -210,11 +318,11 @@ async function loadRadarMeta() {
   const host = $('#radarMeta');
   if (!host) return;
   try {
-    const r = await fetch('/api/radar/meta', {cache:'no-store'});
-    const data = await r.json();
-    if (!r.ok) throw new Error('Не удалось загрузить мету недели');
+    const data = await apiJson('/api/radar/meta');
     if (!data?.report) {
-      host.innerHTML = '<div class="card"><div class="empty">Мета недели появится после первого завершённого поиска.</div></div>';
+      if (!host.querySelector('.meta-card')) {
+        host.innerHTML = '<div class="card"><div class="empty">Мета недели появится после первого завершённого поиска.</div></div>';
+      }
       return;
     }
     const m = data.report;
@@ -227,25 +335,40 @@ async function loadRadarMeta() {
       <div class="meta-clusters">${clusters}</div><div class="meta-takeaways"><b>Что брать в работу</b><ul>${takeaways}</ul></div>
     </div>`;
   } catch (e) {
-    host.innerHTML = `<div class="card"><div class="error">${escapeHtml(e.message)}</div></div>`;
+    if (isTransientError(e)) {
+      markReconnect();
+      return; // keep the last good weekly meta visible
+    }
+    if (!host.querySelector('.meta-card')) host.innerHTML = `<div class="card"><div class="error">${escapeHtml(e.message)}</div></div>`;
   }
 }
 
 async function refreshEverything() {
-  await Promise.all([loadRadarStatus(), loadRadar(), loadCandidates(), loadRadarMeta(), loadStatus()]);
+  if (refreshBundleInFlight) return;
+  refreshBundleInFlight = true;
+  try {
+    await Promise.all([loadRadarStatus(), loadRadar(), loadCandidates(), loadRadarMeta(), loadStatus()]);
+  } finally {
+    refreshBundleInFlight = false;
+  }
 }
 
 async function syncRadar() {
   const btn = $('#syncRadar');
   if (btn) { btn.disabled = true; btn.textContent = 'ЗАПУСКАЮ…'; }
   try {
-    const r = await fetch('/api/radar/sync', {method:'POST'});
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || 'Ошибка запуска радара');
-    $('#radarStatusMessage').textContent = 'Радар запущен в фоне. Можно оставаться на странице — статус и результаты обновляются автоматически.';
+    // Do not start an expensive radar request while Render is between workers.
+    await apiJson('/health', {}, {retries: 4, baseDelay: 800});
+    const d = await apiJson('/api/radar/sync', {method:'POST'}, {retries:0});
+    $('#radarStatusMessage').textContent = d?.message || 'Радар запущен в фоне. Статус и результаты обновляются автоматически.';
     await refreshEverything();
   } catch (e) {
-    $('#radarStatusMessage').textContent = e.message;
+    if (isTransientError(e)) {
+      markReconnect();
+      $('#radarStatusMessage').textContent = 'Render сейчас перезапускается. Дождись зелёного статуса «готово» и нажми поиск ещё раз — данные не потеряны.';
+    } else {
+      $('#radarStatusMessage').textContent = e.message;
+    }
     if (btn) { btn.disabled = false; btn.textContent = 'ЗАПУСТИТЬ ПОИСК'; }
   }
 }
@@ -260,16 +383,18 @@ async function analyzeRadar(id, button = null) {
   result.innerHTML = '';
   window.scrollTo({top: progress.offsetTop - 20, behavior:'smooth'});
   try {
-    const r = await fetch(`/api/radar/${id}/analyze`, {
+    await apiJson('/health', {}, {retries: 4, baseDelay: 800});
+    const data = await apiJson(`/api/radar/${id}/analyze`, {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({owned_or_licensed:false})
-    });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || 'Ошибка разбора');
+    }, {retries:0});
     renderResult(data.result, data.model || '');
   } catch (e) {
-    result.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
+    const message = isTransientError(e)
+      ? 'Render перезапустился во время запроса. Исходный Reel не потерян — после зелёного статуса нажми «Получить ультра-промпты» ещё раз.'
+      : e.message;
+    result.innerHTML = `<div class="error">${escapeHtml(message)}</div>`;
     result.classList.remove('hidden');
   } finally {
     progress.classList.add('hidden');
@@ -332,6 +457,8 @@ $('#checkApis')?.addEventListener('click', checkApis);
 loadStatus();
 checkApis();
 refreshEverything();
-setInterval(loadRadarStatus, 4000);
-setInterval(() => { loadRadar(); loadCandidates(); }, 10000);
-setInterval(loadRadarMeta, 30000);
+setInterval(() => { if (!document.hidden) loadRadarStatus(); }, 4000);
+setInterval(() => { if (!document.hidden) { loadRadar(); loadCandidates(); } }, 10000);
+setInterval(() => { if (!document.hidden) loadRadarMeta(); }, 30000);
+window.addEventListener('online', () => refreshEverything());
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshEverything(); });
