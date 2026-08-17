@@ -1,0 +1,121 @@
+name: Mass 10s AI Radar Check
+
+on:
+  push:
+    branches: [fix/more-10s-ai-reels]
+  workflow_dispatch:
+
+jobs:
+  mass-radar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile Python
+        run: python -m compileall -q .
+      - name: Verify mass radar profile
+        env:
+          SECRET_KEY: smoke-test
+        run: |
+          python - <<'PY'
+          import copy
+          from datetime import datetime, timezone
+
+          import app as app_module
+          import radar_growth_v6 as growth
+          import radar_request_job as radar_job
+          import radar_quality
+          from models import RadarAssessment
+
+          c = app_module.app.test_client()
+          health = c.get('/health').get_json()
+          status = c.get('/api/status').get_json()
+          assert health['radar_profile'] == 'mass_10s_ai_v6', health
+          assert status['radar_keep_limit'] == 60, status
+          assert status['radar_duration_min'] == 9.0, status
+          assert status['radar_duration_max'] == 10.05, status
+          assert radar_job.RADAR_AI_ANALYZE_LIMIT == 240
+          assert radar_job.RADAR_KEEP_LIMIT == 60
+
+          sources = radar_job._build_sources()
+          assert {'popular_ai', 'ai_hashtags', 'ai_keywords'} <= set(sources), sources.keys()
+          assert sources['popular_ai']['input']['searchType'] == 'popular'
+          assert sources['popular_ai']['input']['searchLimit'] == 60
+          assert len(sources['popular_ai']['input']['search'].split(',')) >= 25
+          assert sources['ai_keywords']['input']['keywordSearch'] is True
+
+          # AI match semantics: one-person AI gag is allowed; real talking head is not.
+          base = dict(
+              is_russian=True,
+              is_ai_video=True,
+              is_comedy_scene=False,
+              is_tutorial_or_review=False,
+              is_talking_head=False,
+              simple_situation=True,
+              strong_first_frame=True,
+              one_clear_joke_or_twist=True,
+              characters_count=1,
+              scene_description='AI персонаж выдаёт короткий абсурдный гэг',
+              characters=['AI персонаж'],
+              joke='абсурдный панчлайн',
+              hook='сильный первый кадр',
+              ending='короткая реакция',
+              reproducible_format=True,
+              reason='target AI gag',
+          )
+          assert growth.matches_v6(RadarAssessment(**base)) is True
+          bad = dict(base); bad['is_talking_head'] = True
+          assert growth.matches_v6(RadarAssessment(**bad)) is False
+          bad = dict(base); bad['is_ai_video'] = False
+          assert growth.matches_v6(RadarAssessment(**bad)) is False
+
+          # Output filter really targets roughly 10 seconds.
+          strong = {
+              'duration_sec': 9.8, 'viral_score_v2': 70, 'views': 50000,
+              'likes': 500, 'comments': 20, 'views_per_hour': 10000,
+          }
+          assert growth.top_eligible_v6(strong) is True
+          short = dict(strong); short['duration_sec'] = 8.7
+          assert growth.top_eligible_v6(short) is False
+          long = dict(strong); long['duration_sec'] = 10.2
+          assert growth.top_eligible_v6(long) is False
+
+          # Actual downloaded MP4 duration has final authority and rejects before Gemini.
+          real_measure = growth.measure_video_duration
+          growth.measure_video_duration = lambda path, fallback=0: 10.4
+          rejected = growth.classify_radar_video_v6('/tmp/does-not-need-to-exist.mp4', 'ии юмор')
+          assert rejected.is_ai_video is False
+          assert '10.40' in rejected.reason
+          growth.measure_video_duration = real_measure
+
+          # Candidate normalization strongly prefers AI hints and 9–10 second clips.
+          raw = {
+              'url': 'https://www.instagram.com/reel/MASS10S/',
+              'ownerUsername': 'ai_creator',
+              'videoDuration': 9.9,
+              'videoPlayCount': 15000,
+              'likesCount': 250,
+              'commentsCount': 15,
+              'timestamp': datetime.now(timezone.utc).isoformat(),
+              'caption': 'нейросеть сделала этот AI прикол',
+          }
+          item = radar_job.normalize_reel(raw, 'popular_ai', {})
+          assert item is not None
+          assert item['duration_sec'] == 9.9
+          assert item['ai_discovery_hint'] is True
+
+          # Public radar can return up to 60 rows, not the old 30.
+          assert app_module.RADAR_KEEP_LIMIT == 60
+          print('MASS RADAR PROFILE OK', status)
+          PY
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: JavaScript syntax
+        run: |
+          node --check static/app.js
+          node --check static/runtime.js
