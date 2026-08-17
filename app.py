@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from flask import Flask, jsonify, render_template, request
 
+from apify_recovery import recover_last_successful_hashtag_run
 from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_KEEP_LIMIT, RADAR_SYNC_COOLDOWN_MINUTES
 from db import db_conn, init_db
 from gemini_service import analyze_video
@@ -115,16 +116,30 @@ def radar():
 
 @app.get("/api/radar/candidates")
 def radar_candidates():
-    with db_conn() as conn:
-        rows = conn.execute(
-            """SELECT id,creator,post_url,preview_url,published_at,duration_sec,views,likes,comments,
-                      hours_since_publish,views_per_hour,viral_score_v2,ai_checked,ai_match,reason,search_term
-               FROM radar_posts
-               WHERE datetime(published_at)>=datetime('now','-7 days')
-               ORDER BY viral_score_v2 DESC, views_per_hour DESC, views DESC
-               LIMIT 30"""
-        ).fetchall()
-    return jsonify([dict(x) for x in rows])
+    def query_rows():
+        with db_conn() as conn:
+            return conn.execute(
+                """SELECT id,creator,post_url,preview_url,published_at,duration_sec,views,likes,comments,
+                          hours_since_publish,views_per_hour,viral_score_v2,ai_checked,ai_match,reason,search_term
+                   FROM radar_posts
+                   WHERE datetime(published_at)>=datetime('now','-7 days')
+                   ORDER BY viral_score_v2 DESC, views_per_hour DESC, views DESC
+                   LIMIT 30"""
+            ).fetchall()
+
+    rows = query_rows()
+    recovery = None
+    if not rows and os.environ.get("APIFY_API_TOKEN"):
+        try:
+            recovery = recover_last_successful_hashtag_run()
+            rows = query_rows()
+        except Exception as exc:
+            recovery = {"ok": False, "reason": str(exc)[:200], "recovered": 0}
+
+    return jsonify(
+        rows=[dict(x) for x in rows],
+        recovery=recovery,
+    )
 
 
 @app.get("/api/radar/meta")
