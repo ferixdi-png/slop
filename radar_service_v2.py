@@ -19,7 +19,6 @@ from gemini_service import classify_radar_video
 from progress import set_radar_status
 from radar_normalize import normalize_reel
 from radar_service import (
-    download_temp_video,
     load_creator_stats,
     matches,
     refresh_recent_scores,
@@ -28,6 +27,7 @@ from radar_service import (
     save_post,
     update_creator_baselines,
 )
+from reel_media import download_reel_for_analysis
 
 
 def _save_one(item, assessment=None):
@@ -67,7 +67,6 @@ def sync_radar_v2():
             details={"tracked_creators": len(tracked)},
         )
         try:
-            # External network call happens with no SQLite transaction open.
             creator_rows = run_actor_items(
                 client,
                 APIFY_CREATOR_ACTOR,
@@ -151,7 +150,6 @@ def sync_radar_v2():
         reverse=True,
     )[:RADAR_AI_ANALYZE_LIMIT]
 
-    # Persist candidates quickly so the UI can show them before Gemini finishes.
     if candidates:
         with db_conn() as conn:
             for item in candidates:
@@ -189,17 +187,18 @@ def sync_radar_v2():
         assessment = None
         tmp = None
         try:
-            # Download + Gemini are network work. No database connection is open here.
-            if item["video_url"]:
-                tmp = download_temp_video(item["video_url"])
-                assessment = classify_radar_video(tmp, item["caption"])
-                checked += 1
-                if matches(assessment):
-                    matched += 1
+            # Always obtain a usable MP4. If the CDN URL is missing/expired,
+            # download_reel_for_analysis refreshes this exact Reel through Apify.
+            tmp, refreshed_duration = download_reel_for_analysis(item)
+            if refreshed_duration and 0 < float(refreshed_duration) <= 10.05:
+                item["duration_sec"] = float(refreshed_duration)
+            assessment = classify_radar_video(tmp, item["caption"])
+            checked += 1
+            if matches(assessment):
+                matched += 1
             _save_one(item, assessment)
         except Exception as exc:
             errors += 1
-            # Keep the candidate visible even if its AI check failed this run.
             try:
                 _save_one(item, None)
             except Exception as db_exc:
@@ -230,7 +229,6 @@ def sync_radar_v2():
 
     if need_baseline:
         try:
-            # Again: external request first, DB write only after the response is complete.
             baseline_rows = run_actor_items(
                 client,
                 APIFY_CREATOR_ACTOR,
@@ -256,7 +254,6 @@ def sync_radar_v2():
         warning=" · ".join(warnings[-2:]),
     )
 
-    # Fetch rows, then release this read connection before the Gemini meta request.
     with db_conn() as conn:
         top_rows = conn.execute(
             """SELECT * FROM radar_posts
@@ -269,7 +266,6 @@ def sync_radar_v2():
 
     try:
         if top_rows:
-            # save_meta_report calls Gemini before its INSERT; use a fresh isolated connection.
             with db_conn() as conn:
                 save_meta_report(conn, top_rows)
                 conn.commit()
