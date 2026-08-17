@@ -46,25 +46,25 @@ def safe_float(*values):
 def creator_of(raw):
     owner = raw.get("owner") if isinstance(raw.get("owner"), dict) else {}
     user = raw.get("user") if isinstance(raw.get("user"), dict) else {}
-    author = raw.get("author")
-    if isinstance(author, dict):
-        author = author.get("username")
+    author_obj = raw.get("author") if isinstance(raw.get("author"), dict) else {}
+    author_scalar = raw.get("author") if isinstance(raw.get("author"), str) else ""
     return str(
         raw.get("ownerUsername")
         or raw.get("owner_username")
         or raw.get("authorUsername")
         or raw.get("author_username")
-        or author
+        or author_scalar
         or raw.get("username")
         or raw.get("profileUsername")
+        or raw.get("profile_username")
         or owner.get("username")
         or user.get("username")
+        or author_obj.get("username")
         or ""
     ).strip().lstrip("@")
 
 
 def views_of(raw):
-    # Instagram deprecated videoViewCount; play count is the preferred public metric when present.
     return safe_int(
         raw.get("videoPlayCount"),
         raw.get("video_play_count"),
@@ -80,12 +80,14 @@ def views_of(raw):
         raw.get("video_view_count"),
         raw.get("viewCount"),
         raw.get("view_count"),
+        raw.get("views"),
     )
 
 
 def followers_of(raw):
     owner = raw.get("owner") if isinstance(raw.get("owner"), dict) else {}
     user = raw.get("user") if isinstance(raw.get("user"), dict) else {}
+    author = raw.get("author") if isinstance(raw.get("author"), dict) else {}
     return safe_int(
         raw.get("ownerFollowersCount"),
         raw.get("owner_followers_count"),
@@ -98,11 +100,13 @@ def followers_of(raw):
         owner.get("followers_count"),
         user.get("followersCount"),
         user.get("followers_count"),
+        author.get("follower_count"),
+        author.get("followers_count"),
     )
 
 
 def normalize_reel(raw, source, creator_stats=None):
-    shortcode = raw.get("shortCode") or raw.get("shortcode") or raw.get("code") or ""
+    shortcode = raw.get("shortCode") or raw.get("shortcode") or raw.get("short_code") or raw.get("code") or ""
     url = (
         raw.get("url")
         or raw.get("reelUrl")
@@ -119,8 +123,10 @@ def normalize_reel(raw, source, creator_stats=None):
         raw.get("videoUrl")
         or raw.get("video_url")
         or raw.get("videoSrc")
+        or raw.get("video_src")
         or raw.get("downloadedVideoUrl")
         or raw.get("downloaded_video_url")
+        or (raw.get("mediaDownloadUrl") if isinstance(raw.get("mediaDownloadUrl"), str) else "")
         or ""
     )
     preview = (
@@ -129,6 +135,7 @@ def normalize_reel(raw, source, creator_stats=None):
         or raw.get("thumbnailUrl")
         or raw.get("thumbnail_url")
         or raw.get("thumbnail_src")
+        or raw.get("image")
         or ""
     )
     creator = creator_of(raw)
@@ -137,21 +144,30 @@ def normalize_reel(raw, source, creator_stats=None):
         raw.get("videoDuration"),
         raw.get("video_duration"),
         raw.get("video_duration_secs"),
+        raw.get("duration_seconds"),
+        raw.get("durationSeconds"),
         raw.get("duration"),
     )
     views = views_of(raw)
-    likes = safe_int(raw.get("likesCount"), raw.get("likeCount"), raw.get("like_count"), raw.get("likes"))
-    comments = safe_int(raw.get("commentsCount"), raw.get("commentCount"), raw.get("comment_count"), raw.get("comments_count"))
+    likes = safe_int(
+        raw.get("likesCount"), raw.get("likeCount"), raw.get("like_count"), raw.get("likes")
+    )
+    comments = safe_int(
+        raw.get("commentsCount"), raw.get("commentCount"), raw.get("comment_count"),
+        raw.get("comments_count"), raw.get("comments")
+    )
     published = parse_dt(
         raw.get("timestamp")
         or raw.get("timestampUnix")
         or raw.get("takenAtTimestamp")
         or raw.get("taken_at_timestamp")
         or raw.get("takenAt")
+        or raw.get("taken_at")
         or raw.get("publishedAt")
         or raw.get("published_at")
         or raw.get("posted_at")
         or raw.get("upload_date")
+        or raw.get("date")
     )
 
     if not url or not creator or not published:
@@ -180,8 +196,8 @@ def normalize_reel(raw, source, creator_stats=None):
         "platform": "Instagram Reels",
         "creator": creator,
         "post_url": url,
-        "video_url": video_url,
-        "preview_url": preview,
+        "video_url": str(video_url or ""),
+        "preview_url": str(preview or ""),
         "published_at": published.isoformat(),
         "duration_sec": duration,
         "views": views,
@@ -191,7 +207,7 @@ def normalize_reel(raw, source, creator_stats=None):
         "views_per_hour": vph,
         "followers_count": followers,
         "creator_usual_views": round(usual_views, 1),
-        "search_term": raw.get("searchTerm") or raw.get("hashtag") or raw.get("inputUrl") or source,
+        "search_term": raw.get("searchTerm") or raw.get("hashtag") or raw.get("hashtagName") or raw.get("inputUrl") or source,
         "caption": str(caption)[:4000],
         **score,
     }
