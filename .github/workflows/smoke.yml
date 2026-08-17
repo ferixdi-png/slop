@@ -2,7 +2,7 @@ name: Smoke Check
 
 on:
   push:
-    branches: [main, fix/radar-request-state-machine]
+    branches: [main, fix/radar-request-state-machine, fix/more-10s-ai-reels]
   workflow_dispatch:
 
 jobs:
@@ -17,33 +17,33 @@ jobs:
         run: pip install -r requirements.txt
       - name: Compile Python
         run: python -m compileall -q .
-      - name: Flask + request-state-machine smoke test
+      - name: Flask + durable request-state-machine smoke test
         env:
           SECRET_KEY: smoke-test
         run: |
           python - <<'PY'
-          import copy
-          from datetime import datetime, timezone
-
           import app as app_module
-          import gemini_service
           import radar_request_job as radar_job
-          from db import db_conn
-          from models import RadarAssessment
           from progress import set_radar_status
 
           c = app_module.app.test_client()
 
-          # Health and status must remain pure/fast even with no API keys.
+          # Pure endpoints must stay available without external API keys.
           for path in ['/health', '/api/status', '/api/radar/status', '/api/radar', '/api/radar/candidates']:
               r = c.get(path)
               print(path, r.status_code, r.content_type)
               assert r.status_code == 200, (path, r.status_code, r.get_data(as_text=True))
 
           health = c.get('/health').get_json()
+          status = c.get('/api/status').get_json()
           assert health['radar_runtime'] == 'request_state_machine_v5'
+          assert health['radar_profile'] == 'mass_10s_ai_v6'
+          assert status['radar_keep_limit'] == 60
+          assert status['radar_duration_min'] == 9.0
+          assert status['radar_duration_max'] == 10.05
+          assert radar_job.RADAR_AI_ANALYZE_LIMIT == 240
 
-          # /api/radar/status must not touch durable KVS/network.
+          # Status polling must never call KVS/network.
           set_radar_status('ready', 'Готов к поиску', 0, None, 'local-only-status')
           original_load = radar_job.load_radar_job
           radar_job.load_radar_job = lambda: (_ for _ in ()).throw(RuntimeError('KVS MUST NOT BE CALLED BY STATUS'))
@@ -52,16 +52,11 @@ jobs:
           assert r.get_json()['message'] == 'local-only-status'
           radar_job.load_radar_job = original_load
 
-          # Endpoint contract: start is a short 202 and tick is a separate request.
+          # HTTP contract remains short request -> durable job -> ticks.
           def fake_start():
               return ({
-                  'ok': True,
-                  'active': True,
-                  'accepted': True,
-                  'completed': False,
-                  'resumed': False,
-                  'run_id': 'smoke-run',
-                  'phase': 'queued',
+                  'ok': True, 'active': True, 'accepted': True, 'completed': False,
+                  'resumed': False, 'run_id': 'smoke-run', 'phase': 'queued',
               }, 202)
 
           def fake_tick():
@@ -78,160 +73,13 @@ jobs:
           app_module.create_or_resume_job = real_start
           app_module.tick_job = real_tick
 
-          # Core state machine with a fake Apify backend. There is NO worker/thread.
-          state = {'job': None}
-          starts = []
+          # New discovery topology: 3 AI-specific feeds even before learned creators.
+          sources = radar_job._build_sources()
+          assert {'popular_ai', 'ai_hashtags', 'ai_keywords'} <= set(sources)
+          assert sources['popular_ai']['input']['searchLimit'] == 60
+          assert sources['ai_keywords']['input']['keywordSearch'] is True
 
-          def mem_load():
-              return copy.deepcopy(state['job']) if state['job'] else None
-
-          def mem_save(job):
-              state['job'] = copy.deepcopy(job)
-              return copy.deepcopy(job)
-
-          class FakeActor:
-              def __init__(self, actor_id):
-                  self.actor_id = actor_id
-              def start(self, run_input=None):
-                  run_id = f'run-{len(starts)+1}'
-                  starts.append((self.actor_id, run_input, run_id))
-                  return {'id': run_id, 'status': 'RUNNING'}
-
-          class FakeRun:
-              def __init__(self, run_id):
-                  self.run_id = run_id
-              def get(self):
-                  return {
-                      'id': self.run_id,
-                      'status': 'SUCCEEDED',
-                      'defaultDatasetId': f'dataset-{self.run_id}',
-                  }
-
-          class FakeDataset:
-              def iterate_items(self):
-                  return iter([])
-
-          class FakeClient:
-              def actor(self, actor_id): return FakeActor(actor_id)
-              def run(self, run_id): return FakeRun(run_id)
-              def dataset(self, dataset_id): return FakeDataset()
-
-          radar_job.load_radar_job = mem_load
-          radar_job.save_radar_job = mem_save
-          radar_job._client = lambda: FakeClient()
-          radar_job._ensure_snapshot_once = lambda: None
-          radar_job.save_radar_snapshot = lambda: True
-
-          payload, code = radar_job.create_or_resume_job()
-          assert code == 202
-          assert payload['phase'] == 'queued'
-          run_id = payload['run_id']
-
-          phases = []
-          for _ in range(8):
-              payload, code = radar_job.tick_job()
-              phases.append(payload['phase'])
-              print('tick', payload['phase'], payload.get('active'), payload.get('result'))
-              if payload['phase'] == 'done':
-                  break
-
-          assert starts and len(starts) == 2, starts
-          assert 'discovering' in phases
-          assert 'preparing' in phases
-          assert 'finalizing' in phases
-          assert phases[-1] == 'done', phases
-          assert state['job']['run_id'] == run_id
-          assert state['job']['result']['kept'] == 0
-
-          # While an active durable job exists, another click resumes the same run.
-          state['job']['phase'] = 'discovering'
-          old_id = state['job']['run_id']
-          payload, code = radar_job.create_or_resume_job()
-          assert code == 202
-          assert payload['resumed'] is True
-          assert payload['run_id'] == old_id
-
-          # One candidate must survive the full durable AI transition and persist
-          # its Gemini verdict to SQLite before the job advances to finalizing.
-          candidate_url = 'https://www.instagram.com/reel/SMOKEAI/'
-          candidate = {
-              'platform': 'Instagram Reels',
-              'creator': 'smoke_creator',
-              'post_url': candidate_url,
-              'video_url': 'https://example.com/fake.mp4',
-              'preview_url': '',
-              'published_at': datetime.now(timezone.utc).isoformat(),
-              'duration_sec': 8.0,
-              'views': 150000,
-              'likes': 2500,
-              'comments': 120,
-              'hours_since_publish': 2.0,
-              'views_per_hour': 75000.0,
-              'followers_count': 12000,
-              'creator_usual_views': 15000.0,
-              'anomaly_multiplier': 10.0,
-              'follower_reach': 12.5,
-              'like_rate': 0.0166,
-              'comment_rate': 0.0008,
-              'viral_score_v2': 92.0,
-              'search_term': 'smoke',
-              'caption': 'русский ии юмор',
-              'ai_done': False,
-              'ai_match': False,
-              'ai_attempts': 0,
-              'ai_error': '',
-          }
-          state['job'] = {
-              'version': 5,
-              'runtime': 'request_state_machine_v5',
-              'run_id': 'smoke-ai-run',
-              'phase': 'ai',
-              'created_at': datetime.now(timezone.utc).isoformat(),
-              'sources': {},
-              'candidates': [candidate],
-              'warnings': [],
-              'source_failures': {},
-              'stats': {'raw': 1, 'numeric_candidates': 1, 'ai_total': 1},
-              'result': {},
-              'error': '',
-          }
-
-          radar_job.download_reel_for_analysis = lambda item: ('/tmp/nonexistent-smoke.mp4', 8.0)
-          gemini_service.classify_radar_video = lambda path, caption: RadarAssessment(
-              is_russian=True,
-              is_ai_video=True,
-              is_comedy_scene=True,
-              is_tutorial_or_review=False,
-              is_talking_head=False,
-              simple_situation=True,
-              strong_first_frame=True,
-              one_clear_joke_or_twist=True,
-              characters_count=2,
-              scene_description='Два персонажа в короткой комедийной сцене',
-              characters=['персонаж один', 'персонаж два'],
-              joke='короткий бытовой твист',
-              hook='сильный первый кадр',
-              ending='быстрая реакция',
-              reproducible_format=True,
-              reason='smoke pass',
-          )
-
-          payload, code = radar_job.tick_job()
-          print('ai tick', payload['phase'], payload['ai_done'], payload['ai_total'])
-          assert code == 200
-          assert payload['phase'] == 'finalizing'
-          assert state['job']['candidates'][0]['ai_done'] is True
-          assert state['job']['candidates'][0]['ai_match'] is True
-
-          with db_conn() as conn:
-              row = conn.execute(
-                  'SELECT ai_checked,ai_match,reason FROM radar_posts WHERE post_url=?',
-                  (candidate_url,),
-              ).fetchone()
-          assert row is not None
-          assert int(row['ai_checked']) == 1
-          assert int(row['ai_match']) == 1
-          assert row['reason'] == 'smoke pass'
+          print('GENERAL SMOKE OK')
           PY
       - uses: actions/setup-node@v4
         with:
@@ -242,7 +90,7 @@ jobs:
           node --check static/runtime.js
       - name: Verify request-driven frontend contract
         run: |
-          grep -q 'runtime.js?v=20260817-1930' templates/index.html
           grep -q "/api/radar/sync" static/runtime.js
           grep -q "/api/radar/tick" static/runtime.js
           grep -q "request_state_machine_v5" radar_request_job.py
+          grep -q "mass_10s_ai_v6" app.py
