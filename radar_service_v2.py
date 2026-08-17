@@ -30,6 +30,13 @@ from radar_service import (
 )
 
 
+def _save_one(item, assessment=None):
+    """One tiny SQLite write transaction. Never keep DB open during network/API work."""
+    with db_conn() as conn:
+        save_post(conn, item, assessment)
+        conn.commit()
+
+
 def sync_radar_v2():
     token = os.environ.get("APIFY_API_TOKEN")
     if not token:
@@ -60,6 +67,7 @@ def sync_radar_v2():
             details={"tracked_creators": len(tracked)},
         )
         try:
+            # External network call happens with no SQLite transaction open.
             creator_rows = run_actor_items(
                 client,
                 APIFY_CREATOR_ACTOR,
@@ -75,9 +83,9 @@ def sync_radar_v2():
             raw_items.extend((x, "наблюдаемый автор") for x in creator_rows)
             with db_conn() as conn:
                 update_creator_baselines(conn, creator_rows)
-        except Exception:
+        except Exception as exc:
             source_errors += 1
-            warnings.append("Мониторинг авторов временно недоступен")
+            warnings.append(f"Мониторинг авторов временно недоступен: {str(exc)[:120]}")
 
     set_radar_status(
         "running", "Ищу Popular Reels", 15, 300,
@@ -93,12 +101,12 @@ def sync_radar_v2():
         for x in rows:
             x.setdefault("searchTerm", x.get("searchTerm") or "ключевой поиск")
             raw_items.append((x, "Popular Reels"))
-    except Exception:
+    except Exception as exc:
         source_errors += 1
-        warnings.append("Popular Reels заблокирован Instagram — продолжаю по хештегам")
+        warnings.append(f"Popular Reels недоступен — продолжаю по хештегам: {str(exc)[:120]}")
         set_radar_status(
             "running", "Popular Reels недоступен — продолжаю", 22, 280,
-            "Instagram заблокировал поисковый источник. Это не ошибка API-ключа. Перехожу к хештегам.",
+            "Поисковый источник Instagram недоступен. Это не означает ошибку API-ключа. Перехожу к хештегам.",
             warning=warnings[-1],
         )
 
@@ -114,9 +122,9 @@ def sync_radar_v2():
             {"hashtags": HASHTAGS, "resultsType": "reels", "resultsLimit": HASHTAG_LIMIT},
         )
         raw_items.extend((x, f"хештег: {x.get('hashtag') or x.get('searchTerm') or ''}") for x in rows)
-    except Exception:
+    except Exception as exc:
         source_errors += 1
-        warnings.append("Hashtag Scraper временно недоступен")
+        warnings.append(f"Hashtag Scraper временно недоступен: {str(exc)[:120]}")
 
     set_radar_status(
         "running", "Фильтрую кандидатов", 36, 220,
@@ -143,12 +151,12 @@ def sync_radar_v2():
         reverse=True,
     )[:RADAR_AI_ANALYZE_LIMIT]
 
-    # Important UX guarantee: as soon as Apify has returned usable rows, they are visible on the site.
-    # AI then updates these same rows from candidate -> approved/rejected.
-    with db_conn() as conn:
-        for item in candidates:
-            save_post(conn, item, None)
-        conn.commit()
+    # Persist candidates quickly so the UI can show them before Gemini finishes.
+    if candidates:
+        with db_conn() as conn:
+            for item in candidates:
+                save_post(conn, item, None)
+            conn.commit()
 
     total = len(candidates)
     set_radar_status(
@@ -159,44 +167,50 @@ def sync_radar_v2():
     )
 
     checked = matched = errors = 0
-    with db_conn() as conn:
-        for index, item in enumerate(candidates, start=1):
-            progress = 42 + int(40 * (index - 1) / max(1, total))
-            remaining = max(0, total - index + 1)
-            set_radar_status(
-                "running",
-                f"AI-проверка роликов {index}/{total}",
-                progress,
-                max(35, remaining * 6 + 45),
-                "Проверяю русский язык, AI-природу, комедийную сценку, простой сюжет и возможность повторения.",
-                warning=" · ".join(warnings[-2:]),
-                details={
-                    "raw": len(raw_items),
-                    "numeric_candidates": len(unique),
-                    "ai_total": total,
-                    "ai_done": index - 1,
-                    "matched": matched,
-                },
-            )
-            assessment = tmp = None
+    for index, item in enumerate(candidates, start=1):
+        progress = 42 + int(40 * (index - 1) / max(1, total))
+        remaining = max(0, total - index + 1)
+        set_radar_status(
+            "running",
+            f"AI-проверка роликов {index}/{total}",
+            progress,
+            max(35, remaining * 6 + 45),
+            "Проверяю русский язык, AI-природу, комедийную сценку, простой сюжет и возможность повторения.",
+            warning=" · ".join(warnings[-2:]),
+            details={
+                "raw": len(raw_items),
+                "numeric_candidates": len(unique),
+                "ai_total": total,
+                "ai_done": index - 1,
+                "matched": matched,
+            },
+        )
+
+        assessment = None
+        tmp = None
+        try:
+            # Download + Gemini are network work. No database connection is open here.
+            if item["video_url"]:
+                tmp = download_temp_video(item["video_url"])
+                assessment = classify_radar_video(tmp, item["caption"])
+                checked += 1
+                if matches(assessment):
+                    matched += 1
+            _save_one(item, assessment)
+        except Exception as exc:
+            errors += 1
+            # Keep the candidate visible even if its AI check failed this run.
             try:
-                if item["video_url"]:
-                    tmp = download_temp_video(item["video_url"])
-                    assessment = classify_radar_video(tmp, item["caption"])
-                    checked += 1
-                    if matches(assessment):
-                        matched += 1
-                save_post(conn, item, assessment)
-            except Exception:
-                save_post(conn, item, None)
-                errors += 1
-            finally:
-                if tmp:
-                    try:
-                        os.unlink(tmp)
-                    except OSError:
-                        pass
-        conn.commit()
+                _save_one(item, None)
+            except Exception as db_exc:
+                warnings.append(f"Не удалось сохранить @{item.get('creator','')}: {str(db_exc)[:80]}")
+            warnings.append(f"AI-проверка @{item.get('creator','')} не завершена: {str(exc)[:100]}")
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
 
     set_radar_status(
         "running", "Считаю аномалии авторов", 86, 80,
@@ -216,6 +230,7 @@ def sync_radar_v2():
 
     if need_baseline:
         try:
+            # Again: external request first, DB write only after the response is complete.
             baseline_rows = run_actor_items(
                 client,
                 APIFY_CREATOR_ACTOR,
@@ -231,9 +246,9 @@ def sync_radar_v2():
             with db_conn() as conn:
                 update_creator_baselines(conn, baseline_rows)
                 refresh_recent_scores(conn)
-        except Exception:
+        except Exception as exc:
             source_errors += 1
-            warnings.append("Не для всех авторов удалось посчитать медиану")
+            warnings.append(f"Не для всех авторов удалось посчитать медиану: {str(exc)[:100]}")
 
     set_radar_status(
         "running", "Собираю мету недели", 95, 35,
@@ -241,6 +256,7 @@ def sync_radar_v2():
         warning=" · ".join(warnings[-2:]),
     )
 
+    # Fetch rows, then release this read connection before the Gemini meta request.
     with db_conn() as conn:
         top_rows = conn.execute(
             """SELECT * FROM radar_posts
@@ -249,11 +265,17 @@ def sync_radar_v2():
                LIMIT ?""",
             (RADAR_KEEP_LIMIT,),
         ).fetchall()
-        try:
-            save_meta_report(conn, top_rows)
-        except Exception:
-            errors += 1
-        conn.commit()
+    top_rows = [dict(row) for row in top_rows]
+
+    try:
+        if top_rows:
+            # save_meta_report calls Gemini before its INSERT; use a fresh isolated connection.
+            with db_conn() as conn:
+                save_meta_report(conn, top_rows)
+                conn.commit()
+    except Exception as exc:
+        errors += 1
+        warnings.append(f"Мета недели не собрана: {str(exc)[:100]}")
 
     result = {
         "raw": len(raw_items),
