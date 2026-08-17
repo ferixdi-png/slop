@@ -2,7 +2,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 
 from flask import Flask, jsonify, render_template, request
 
@@ -26,9 +26,8 @@ try:
 except Exception as exc:
     add_radar_log(f"Облачное восстановление пропущено: {exc}", level="WARN", stage="startup")
 
-# A background thread cannot survive a Gunicorn/Render process restart. If the
-# persisted UI state still says "running", make that interruption explicit now
-# instead of leaving the launch button disabled for many minutes.
+# Background threads cannot survive a Render/Gunicorn process restart. Normalize
+# persisted UI state immediately so a dead old run never blocks a new one.
 try:
     boot_status = get_radar_status()
     if boot_status.get("stage") == "running":
@@ -45,12 +44,41 @@ except Exception as exc:
     add_radar_log(f"Не удалось нормализовать старый статус при старте: {exc}", level="WARN", stage="startup")
 
 radar_run_lock = Lock()
+runtime_state_lock = Lock()
+runtime_state = {"worker": None, "run_id": None, "started_at": None}
 add_radar_log("Сервис запущен и готов принимать команды радара.", stage="startup")
 
 
 def new_run_id():
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     return f"{stamp}-{uuid.uuid4().hex[:6]}"
+
+
+def get_runtime_worker_state():
+    with runtime_state_lock:
+        worker = runtime_state.get("worker")
+        return {
+            "run_id": runtime_state.get("run_id"),
+            "started_at": runtime_state.get("started_at"),
+            "worker_name": getattr(worker, "name", None),
+            "worker_alive": bool(worker and worker.is_alive()),
+            "server_pid": os.getpid(),
+        }
+
+
+def set_runtime_worker(worker, run_id):
+    with runtime_state_lock:
+        runtime_state["worker"] = worker
+        runtime_state["run_id"] = run_id
+        runtime_state["started_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def clear_runtime_worker(run_id):
+    with runtime_state_lock:
+        if runtime_state.get("run_id") == run_id:
+            runtime_state["worker"] = None
+            runtime_state["run_id"] = None
+            runtime_state["started_at"] = None
 
 
 @app.get("/")
@@ -82,7 +110,33 @@ def diagnostics():
 
 @app.get("/api/radar/status")
 def radar_status():
-    return jsonify(get_radar_status())
+    payload = get_radar_status()
+    runtime = get_runtime_worker_state()
+    details = dict(payload.get("details") or {})
+    details.update(runtime)
+    payload["details"] = details
+
+    # Runtime truth wins over a stale/missing SQLite status. If a worker is alive,
+    # the UI must never fall back to the static 0% / idle state.
+    if runtime["worker_alive"] and payload.get("stage") != "running":
+        payload.update(
+            stage="running",
+            label="Поиск выполняется",
+            progress=max(1, int(payload.get("progress") or 1)),
+            eta_seconds=payload.get("eta_seconds") or 360,
+            message=(
+                f"Фоновый worker активен. Run ID: {runtime['run_id']}. "
+                "Подробности смотри в Render → Logs по этому Run ID."
+            ),
+        )
+    elif payload.get("stage") == "running" and not runtime["worker_alive"]:
+        payload.update(
+            stage="error",
+            label="Фоновый worker остановлен",
+            eta_seconds=None,
+            message="Статус был running, но живого worker больше нет. Можно запустить поиск заново.",
+        )
+    return jsonify(payload)
 
 
 @app.get("/api/radar")
@@ -139,10 +193,15 @@ def radar_meta():
     return jsonify(data)
 
 
-def run_radar_background(run_id):
+def run_radar_background(run_id, started_event):
     context_token = set_radar_run_id(run_id)
-    add_radar_log("Фоновый поток радара начал работу.", stage="background")
     try:
+        add_radar_log(
+            "Фоновый worker вошёл в run_radar_background и подтвердил запуск.",
+            stage="background",
+            details={"pid": os.getpid()},
+        )
+        started_event.set()
         with app.app_context():
             try:
                 result = sync_radar()
@@ -162,9 +221,11 @@ def run_radar_background(run_id):
                     pass
                 app.logger.exception("radar background sync failed")
     finally:
+        started_event.set()
         if radar_run_lock.locked():
             radar_run_lock.release()
-        add_radar_log("Блокировка запуска радара освобождена.", stage="background")
+        clear_runtime_worker(run_id)
+        add_radar_log("Фоновый worker завершён; блокировка запуска освобождена.", stage="background")
         reset_radar_run_id(context_token)
 
 
@@ -173,10 +234,20 @@ def radar_sync():
     run_id = new_run_id()
     context_token = set_radar_run_id(run_id)
     try:
-        add_radar_log("Получен POST /api/radar/sync — пользователь нажал запуск.", stage="launch")
+        add_radar_log(
+            "Получен POST /api/radar/sync — пользователь нажал запуск.",
+            stage="launch",
+            details={"pid": os.getpid()},
+        )
         if not radar_run_lock.acquire(blocking=False):
-            add_radar_log("Новый запуск отклонён: поиск уже выполняется.", level="WARN", stage="launch")
-            return jsonify(error="Поиск уже выполняется. Дождись завершения текущего запуска."), 409
+            running = get_runtime_worker_state()
+            add_radar_log(
+                "Новый запуск отклонён: поиск уже выполняется.",
+                level="WARN",
+                stage="launch",
+                details=running,
+            )
+            return jsonify(error="Поиск уже выполняется. Дождись завершения текущего запуска.", runtime=running), 409
 
         try:
             set_radar_status(
@@ -184,19 +255,59 @@ def radar_sync():
                 "Запускаю радар",
                 1,
                 360,
-                "Команда принята сервером. Начинаю сбор источников.",
-                details={"run_id": run_id},
+                "Команда принята сервером. Проверяю запуск фонового worker.",
+                details={"run_id": run_id, "server_pid": os.getpid()},
             )
-            worker = Thread(target=run_radar_background, args=(run_id,), name=f"radar-sync-{run_id}", daemon=True)
+            started_event = Event()
+            worker = Thread(
+                target=run_radar_background,
+                args=(run_id, started_event),
+                name=f"radar-sync-{run_id}",
+                daemon=True,
+            )
+            set_runtime_worker(worker, run_id)
             worker.start()
-            add_radar_log("Команда запуска принята, фоновый поток создан.", stage="launch")
-            return jsonify(ok=True, started=True, run_id=run_id, message="Команда принята. Радар запущен в фоне."), 202
+
+            # Do not return a false-positive 202. The worker must acknowledge that
+            # it actually entered its target function first.
+            if not started_event.wait(timeout=3.0):
+                runtime = get_runtime_worker_state()
+                add_radar_log(
+                    "Worker не подтвердил запуск за 3 секунды.",
+                    level="ERROR",
+                    stage="launch",
+                    details=runtime,
+                )
+                set_radar_status(
+                    "error",
+                    "Worker не подтвердил запуск",
+                    0,
+                    None,
+                    "Фоновый worker не подтвердил старт за 3 секунды. Проверь Render Logs.",
+                    details={"run_id": run_id, **runtime},
+                )
+                return jsonify(error="Фоновый worker не подтвердил запуск за 3 секунды.", run_id=run_id), 503
+
+            runtime = get_runtime_worker_state()
+            add_radar_log(
+                "Команда запуска подтверждена живым фоновым worker.",
+                stage="launch",
+                details=runtime,
+            )
+            return jsonify(
+                ok=True,
+                started=True,
+                run_id=run_id,
+                runtime=runtime,
+                message="Команда принята и подтверждена фоновым worker. Радар запущен.",
+            ), 202
         except Exception as exc:
             if radar_run_lock.locked():
                 radar_run_lock.release()
+            clear_runtime_worker(run_id)
             add_radar_log(f"Ошибка запуска радара: {exc}", level="ERROR", stage="launch")
             app.logger.exception("radar launch failed")
-            return jsonify(error=f"Не удалось запустить радар: {exc}"), 500
+            return jsonify(error=f"Не удалось запустить радар: {exc}", run_id=run_id), 500
     finally:
         reset_radar_run_id(context_token)
 
@@ -288,7 +399,12 @@ def radar_analyze(item_id):
 
 @app.get("/health")
 def health():
-    return jsonify(ok=True, analysis_model=ANALYSIS_MODEL, radar_model=RADAR_MODEL)
+    return jsonify(
+        ok=True,
+        analysis_model=ANALYSIS_MODEL,
+        radar_model=RADAR_MODEL,
+        runtime=get_runtime_worker_state(),
+    )
 
 
 if __name__ == "__main__":
