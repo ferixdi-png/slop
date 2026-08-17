@@ -8,8 +8,8 @@ from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_KEEP_LIMIT, RADAR_SYNC_COO
 from db import db_conn, init_db
 from gemini_service import analyze_video
 from progress import get_radar_status, set_radar_status
+from radar_entry import sync_radar
 from radar_service import download_temp_video
-from radar_service_v2 import sync_radar_v2
 from service_checks import check_all_services
 
 app = Flask(__name__)
@@ -115,7 +115,6 @@ def radar():
 
 @app.get("/api/radar/candidates")
 def radar_candidates():
-    """Fallback visibility: show what Apify brought even when AI filter rejected it."""
     with db_conn() as conn:
         rows = conn.execute(
             """SELECT id,creator,post_url,preview_url,published_at,duration_sec,views,likes,comments,
@@ -144,6 +143,7 @@ def radar_meta():
 
 def reserve_radar_sync():
     now = datetime.now(timezone.utc)
+    current = get_radar_status()
     with db_conn() as conn:
         row = conn.execute("SELECT value FROM app_state WHERE key='last_radar_sync_at'").fetchone()
         if row:
@@ -152,10 +152,9 @@ def reserve_radar_sync():
                 if previous.tzinfo is None:
                     previous = previous.replace(tzinfo=timezone.utc)
                 elapsed = (now - previous.astimezone(timezone.utc)).total_seconds() / 60
-                current = get_radar_status()
                 if current.get("stage") == "running":
                     return False, max(1, int(RADAR_SYNC_COOLDOWN_MINUTES - elapsed))
-                if elapsed < RADAR_SYNC_COOLDOWN_MINUTES:
+                if current.get("stage") == "done" and elapsed < RADAR_SYNC_COOLDOWN_MINUTES:
                     return False, max(1, int(RADAR_SYNC_COOLDOWN_MINUTES - elapsed))
             except Exception:
                 pass
@@ -188,7 +187,7 @@ def radar_sync():
         "Первый полный проход обычно занимает примерно 4–8 минут.",
     )
     try:
-        return jsonify(ok=True, **sync_radar_v2())
+        return jsonify(ok=True, **sync_radar())
     except Exception as exc:
         release_radar_sync_after_error()
         set_radar_status("error", "Поиск остановлен", 0, None, str(exc)[:300])
