@@ -2,7 +2,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
-from threading import Event, Lock, Thread
+from threading import Lock
 
 from flask import Flask, jsonify, render_template, request
 
@@ -21,13 +21,16 @@ from service_checks import check_all_services
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
 init_db()
+
 try:
     restore_radar_snapshot_if_empty()
 except Exception as exc:
     add_radar_log(f"Облачное восстановление пропущено: {exc}", level="WARN", stage="startup")
 
-# Background threads cannot survive a Render/Gunicorn process restart. Normalize
-# persisted UI state immediately so a dead old run never blocks a new one.
+# A long radar run is executed inside the POST request itself. Render supports
+# long-running web requests, while Gunicorn has four threads, so other threads
+# remain free for /api/radar/status and UI polling. This is intentionally simpler
+# and more reliable than a daemon background thread inside a disposable web process.
 try:
     boot_status = get_radar_status()
     if boot_status.get("stage") == "running":
@@ -36,7 +39,7 @@ try:
             "Прошлый поиск прерван рестартом",
             int(boot_status.get("progress") or 0),
             None,
-            "Render перезапустил процесс. Старый фоновый поток остановлен; можно сразу запускать новый поиск.",
+            "Render перезапустил процесс. Старый HTTP-запрос остановлен; можно сразу запускать новый поиск.",
             warning=boot_status.get("warning", ""),
             details={"interrupted_at_startup": True},
         )
@@ -44,8 +47,8 @@ except Exception as exc:
     add_radar_log(f"Не удалось нормализовать старый статус при старте: {exc}", level="WARN", stage="startup")
 
 radar_run_lock = Lock()
-runtime_state_lock = Lock()
-runtime_state = {"worker": None, "run_id": None, "started_at": None}
+active_state_lock = Lock()
+active_state = {"run_id": None, "started_at": None}
 add_radar_log("Сервис запущен и готов принимать команды радара.", stage="startup")
 
 
@@ -54,31 +57,27 @@ def new_run_id():
     return f"{stamp}-{uuid.uuid4().hex[:6]}"
 
 
-def get_runtime_worker_state():
-    with runtime_state_lock:
-        worker = runtime_state.get("worker")
+def set_active_run(run_id):
+    with active_state_lock:
+        active_state["run_id"] = run_id
+        active_state["started_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def clear_active_run(run_id):
+    with active_state_lock:
+        if active_state.get("run_id") == run_id:
+            active_state["run_id"] = None
+            active_state["started_at"] = None
+
+
+def get_active_run_state():
+    with active_state_lock:
         return {
-            "run_id": runtime_state.get("run_id"),
-            "started_at": runtime_state.get("started_at"),
-            "worker_name": getattr(worker, "name", None),
-            "worker_alive": bool(worker and worker.is_alive()),
+            "run_id": active_state.get("run_id"),
+            "started_at": active_state.get("started_at"),
+            "request_active": radar_run_lock.locked(),
             "server_pid": os.getpid(),
         }
-
-
-def set_runtime_worker(worker, run_id):
-    with runtime_state_lock:
-        runtime_state["worker"] = worker
-        runtime_state["run_id"] = run_id
-        runtime_state["started_at"] = datetime.now(timezone.utc).isoformat()
-
-
-def clear_runtime_worker(run_id):
-    with runtime_state_lock:
-        if runtime_state.get("run_id") == run_id:
-            runtime_state["worker"] = None
-            runtime_state["run_id"] = None
-            runtime_state["started_at"] = None
 
 
 @app.get("/")
@@ -111,30 +110,30 @@ def diagnostics():
 @app.get("/api/radar/status")
 def radar_status():
     payload = get_radar_status()
-    runtime = get_runtime_worker_state()
+    active = get_active_run_state()
     details = dict(payload.get("details") or {})
-    details.update(runtime)
+    details.update(active)
     payload["details"] = details
 
-    # Runtime truth wins over a stale/missing SQLite status. If a worker is alive,
-    # the UI must never fall back to the static 0% / idle state.
-    if runtime["worker_alive"] and payload.get("stage") != "running":
+    # The in-memory request lock is the immediate source of truth while the
+    # synchronous radar POST is alive. Persisted state remains useful across UI reloads.
+    if active["request_active"] and payload.get("stage") != "running":
         payload.update(
             stage="running",
             label="Поиск выполняется",
             progress=max(1, int(payload.get("progress") or 1)),
             eta_seconds=payload.get("eta_seconds") or 360,
             message=(
-                f"Фоновый worker активен. Run ID: {runtime['run_id']}. "
-                "Подробности смотри в Render → Logs по этому Run ID."
+                f"Радар выполняется в активном HTTP-запросе. Run ID: {active['run_id']}. "
+                "Подробности — Render → Logs."
             ),
         )
-    elif payload.get("stage") == "running" and not runtime["worker_alive"]:
+    elif payload.get("stage") == "running" and not active["request_active"]:
         payload.update(
             stage="error",
-            label="Фоновый worker остановлен",
+            label="Поиск больше не выполняется",
             eta_seconds=None,
-            message="Статус был running, но живого worker больше нет. Можно запустить поиск заново.",
+            message="Статус остался running, но активного запроса уже нет. Можно запустить поиск заново.",
         )
     return jsonify(payload)
 
@@ -193,122 +192,67 @@ def radar_meta():
     return jsonify(data)
 
 
-def run_radar_background(run_id, started_event):
-    context_token = set_radar_run_id(run_id)
-    try:
-        add_radar_log(
-            "Фоновый worker вошёл в run_radar_background и подтвердил запуск.",
-            stage="background",
-            details={"pid": os.getpid()},
-        )
-        started_event.set()
-        with app.app_context():
-            try:
-                result = sync_radar()
-                add_radar_log("Фоновый поиск завершён успешно.", stage="done", details=result)
-            except Exception as exc:
-                add_radar_log(str(exc), level="ERROR", stage="background")
-                try:
-                    set_radar_status(
-                        "error",
-                        "Поиск остановлен",
-                        0,
-                        None,
-                        str(exc)[:300],
-                        details={"run_id": run_id},
-                    )
-                except Exception:
-                    pass
-                app.logger.exception("radar background sync failed")
-    finally:
-        started_event.set()
-        if radar_run_lock.locked():
-            radar_run_lock.release()
-        clear_runtime_worker(run_id)
-        add_radar_log("Фоновый worker завершён; блокировка запуска освобождена.", stage="background")
-        reset_radar_run_id(context_token)
-
-
 @app.post("/api/radar/sync")
 def radar_sync():
     run_id = new_run_id()
     context_token = set_radar_run_id(run_id)
+    acquired = False
     try:
         add_radar_log(
-            "Получен POST /api/radar/sync — пользователь нажал запуск.",
+            "Получен POST /api/radar/sync — запускаю полный радар в этом HTTP-запросе.",
             stage="launch",
             details={"pid": os.getpid()},
         )
-        if not radar_run_lock.acquire(blocking=False):
-            running = get_runtime_worker_state()
+        acquired = radar_run_lock.acquire(blocking=False)
+        if not acquired:
+            active = get_active_run_state()
             add_radar_log(
-                "Новый запуск отклонён: поиск уже выполняется.",
+                "Новый запуск отклонён: радар уже выполняется.",
                 level="WARN",
                 stage="launch",
-                details=running,
+                details=active,
             )
-            return jsonify(error="Поиск уже выполняется. Дождись завершения текущего запуска.", runtime=running), 409
+            return jsonify(error="Поиск уже выполняется. Дождись завершения текущего запуска.", runtime=active), 409
 
+        set_active_run(run_id)
+        set_radar_status(
+            "running",
+            "Запускаю радар",
+            1,
+            720,
+            "Команда принята. Один HTTP-запрос выполняет весь pipeline; статус обновляется параллельно.",
+            details={"run_id": run_id, "server_pid": os.getpid(), "mode": "synchronous_request"},
+        )
+        add_radar_log(
+            "Синхронный radar pipeline START.",
+            stage="launch",
+            details=get_active_run_state(),
+        )
+
+        result = sync_radar()
+        add_radar_log("Синхронный radar pipeline DONE.", stage="done", details=result)
+        return jsonify(ok=True, completed=True, run_id=run_id, result=result), 200
+
+    except Exception as exc:
+        add_radar_log(f"Radar pipeline ERROR: {exc}", level="ERROR", stage="launch")
         try:
             set_radar_status(
-                "running",
-                "Запускаю радар",
-                1,
-                360,
-                "Команда принята сервером. Проверяю запуск фонового worker.",
-                details={"run_id": run_id, "server_pid": os.getpid()},
+                "error",
+                "Поиск остановлен",
+                0,
+                None,
+                str(exc)[:300],
+                details={"run_id": run_id, "mode": "synchronous_request"},
             )
-            started_event = Event()
-            worker = Thread(
-                target=run_radar_background,
-                args=(run_id, started_event),
-                name=f"radar-sync-{run_id}",
-                daemon=True,
-            )
-            set_runtime_worker(worker, run_id)
-            worker.start()
-
-            # Do not return a false-positive 202. The worker must acknowledge that
-            # it actually entered its target function first.
-            if not started_event.wait(timeout=3.0):
-                runtime = get_runtime_worker_state()
-                add_radar_log(
-                    "Worker не подтвердил запуск за 3 секунды.",
-                    level="ERROR",
-                    stage="launch",
-                    details=runtime,
-                )
-                set_radar_status(
-                    "error",
-                    "Worker не подтвердил запуск",
-                    0,
-                    None,
-                    "Фоновый worker не подтвердил старт за 3 секунды. Проверь Render Logs.",
-                    details={"run_id": run_id, **runtime},
-                )
-                return jsonify(error="Фоновый worker не подтвердил запуск за 3 секунды.", run_id=run_id), 503
-
-            runtime = get_runtime_worker_state()
-            add_radar_log(
-                "Команда запуска подтверждена живым фоновым worker.",
-                stage="launch",
-                details=runtime,
-            )
-            return jsonify(
-                ok=True,
-                started=True,
-                run_id=run_id,
-                runtime=runtime,
-                message="Команда принята и подтверждена фоновым worker. Радар запущен.",
-            ), 202
-        except Exception as exc:
-            if radar_run_lock.locked():
-                radar_run_lock.release()
-            clear_runtime_worker(run_id)
-            add_radar_log(f"Ошибка запуска радара: {exc}", level="ERROR", stage="launch")
-            app.logger.exception("radar launch failed")
-            return jsonify(error=f"Не удалось запустить радар: {exc}", run_id=run_id), 500
+        except Exception:
+            pass
+        app.logger.exception("radar sync failed")
+        return jsonify(error=str(exc), run_id=run_id), 500
     finally:
+        clear_active_run(run_id)
+        if acquired and radar_run_lock.locked():
+            radar_run_lock.release()
+        add_radar_log("HTTP-запрос радара завершён; блокировка запуска освобождена.", stage="launch")
         reset_radar_run_id(context_token)
 
 
@@ -403,7 +347,7 @@ def health():
         ok=True,
         analysis_model=ANALYSIS_MODEL,
         radar_model=RADAR_MODEL,
-        runtime=get_runtime_worker_state(),
+        radar_request=get_active_run_state(),
     )
 
 
