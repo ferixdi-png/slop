@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 from threading import Lock, Thread
 
@@ -8,11 +9,11 @@ from flask import Flask, jsonify, render_template, request
 from cloud_state import restore_radar_snapshot_if_empty
 from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_KEEP_LIMIT
 from db import db_conn, init_db
-from gemini_service import analyze_video
+from gemini_pipeline_logged import analyze_video_logged
 from progress import get_radar_status, set_radar_status
 from prompt_target import lock_generation_target
 from radar_entry import sync_radar
-from radar_logs import add_radar_log, get_radar_logs
+from radar_logs import add_radar_log, reset_radar_run_id, set_radar_run_id
 from radar_quality import recommendation_status_for_row, top_eligible
 from reel_media import download_reel_for_analysis
 from service_checks import check_all_services
@@ -26,6 +27,11 @@ except Exception as exc:
     add_radar_log(f"Облачное восстановление пропущено: {exc}", level="WARN", stage="startup")
 radar_run_lock = Lock()
 add_radar_log("Сервис запущен и готов принимать команды радара.", stage="startup")
+
+
+def new_run_id():
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return f"{stamp}-{uuid.uuid4().hex[:6]}"
 
 
 @app.get("/")
@@ -58,15 +64,6 @@ def diagnostics():
 @app.get("/api/radar/status")
 def radar_status():
     return jsonify(get_radar_status())
-
-
-@app.get("/api/radar/logs")
-def radar_logs():
-    try:
-        limit = int(request.args.get("limit", "120"))
-    except Exception:
-        limit = 120
-    return jsonify(get_radar_logs(limit))
 
 
 @app.get("/api/radar")
@@ -123,7 +120,8 @@ def radar_meta():
     return jsonify(data)
 
 
-def run_radar_background():
+def run_radar_background(run_id):
+    context_token = set_radar_run_id(run_id)
     add_radar_log("Фоновый поток радара начал работу.", stage="background")
     try:
         with app.app_context():
@@ -133,7 +131,14 @@ def run_radar_background():
             except Exception as exc:
                 add_radar_log(str(exc), level="ERROR", stage="background")
                 try:
-                    set_radar_status("error", "Поиск остановлен", 0, None, str(exc)[:300])
+                    set_radar_status(
+                        "error",
+                        "Поиск остановлен",
+                        0,
+                        None,
+                        str(exc)[:300],
+                        details={"run_id": run_id},
+                    )
                 except Exception:
                     pass
                 app.logger.exception("radar background sync failed")
@@ -141,33 +146,40 @@ def run_radar_background():
         if radar_run_lock.locked():
             radar_run_lock.release()
         add_radar_log("Блокировка запуска радара освобождена.", stage="background")
+        reset_radar_run_id(context_token)
 
 
 @app.post("/api/radar/sync")
 def radar_sync():
-    add_radar_log("Получен POST /api/radar/sync — пользователь нажал запуск.", stage="launch")
-    if not radar_run_lock.acquire(blocking=False):
-        add_radar_log("Новый запуск отклонён: поиск уже выполняется.", level="WARN", stage="launch")
-        return jsonify(error="Поиск уже выполняется. Дождись завершения текущего запуска."), 409
-
+    run_id = new_run_id()
+    context_token = set_radar_run_id(run_id)
     try:
-        set_radar_status(
-            "running",
-            "Запускаю радар",
-            1,
-            360,
-            "Команда принята сервером. Начинаю сбор источников.",
-        )
-        worker = Thread(target=run_radar_background, name="radar-sync", daemon=True)
-        worker.start()
-        add_radar_log("Команда запуска принята, фоновый поток создан.", stage="launch")
-        return jsonify(ok=True, started=True, message="Команда принята. Радар запущен в фоне."), 202
-    except Exception as exc:
-        if radar_run_lock.locked():
-            radar_run_lock.release()
-        add_radar_log(f"Ошибка запуска радара: {exc}", level="ERROR", stage="launch")
-        app.logger.exception("radar launch failed")
-        return jsonify(error=f"Не удалось запустить радар: {exc}"), 500
+        add_radar_log("Получен POST /api/radar/sync — пользователь нажал запуск.", stage="launch")
+        if not radar_run_lock.acquire(blocking=False):
+            add_radar_log("Новый запуск отклонён: поиск уже выполняется.", level="WARN", stage="launch")
+            return jsonify(error="Поиск уже выполняется. Дождись завершения текущего запуска."), 409
+
+        try:
+            set_radar_status(
+                "running",
+                "Запускаю радар",
+                1,
+                360,
+                "Команда принята сервером. Начинаю сбор источников.",
+                details={"run_id": run_id},
+            )
+            worker = Thread(target=run_radar_background, args=(run_id,), name=f"radar-sync-{run_id}", daemon=True)
+            worker.start()
+            add_radar_log("Команда запуска принята, фоновый поток создан.", stage="launch")
+            return jsonify(ok=True, started=True, run_id=run_id, message="Команда принята. Радар запущен в фоне."), 202
+        except Exception as exc:
+            if radar_run_lock.locked():
+                radar_run_lock.release()
+            add_radar_log(f"Ошибка запуска радара: {exc}", level="ERROR", stage="launch")
+            app.logger.exception("radar launch failed")
+            return jsonify(error=f"Не удалось запустить радар: {exc}"), 500
+    finally:
+        reset_radar_run_id(context_token)
 
 
 def save_analysis(title, source_url, views, viral_score, result):
@@ -190,51 +202,69 @@ def save_analysis(title, source_url, views, viral_score, result):
 
 @app.post("/api/radar/<int:item_id>/analyze")
 def radar_analyze(item_id):
-    owned = bool((request.get_json(silent=True) or {}).get("owned_or_licensed"))
-    with db_conn() as conn:
-        row = conn.execute("SELECT * FROM radar_posts WHERE id=?", (item_id,)).fetchone()
-    if not row:
-        return jsonify(error="Ролик не найден"), 404
-
-    row = dict(row)
-    if not bool(row.get("ai_match")) or not top_eligible(row):
-        return jsonify(error="Этот ролик не прошёл финальный фильтр качества TOP."), 400
-
-    tmp = None
-    add_radar_log(f"Запущен детальный анализ Reel #{item_id} @{row.get('creator','')}", stage="prompts")
+    analysis_run_id = f"prompt-{item_id}-{uuid.uuid4().hex[:6]}"
+    context_token = set_radar_run_id(analysis_run_id)
     try:
-        tmp, refreshed_duration = download_reel_for_analysis(row)
-        source_duration = round(float(refreshed_duration or row.get("duration_sec") or 0), 2)
-        if source_duration <= 0 or source_duration > 10.05:
-            raise RuntimeError("Нет корректной длительности выбранного Reel до 10 секунд")
+        owned = bool((request.get_json(silent=True) or {}).get("owned_or_licensed"))
+        with db_conn() as conn:
+            row = conn.execute("SELECT * FROM radar_posts WHERE id=?", (item_id,)).fetchone()
+        if not row:
+            return jsonify(error="Ролик не найден"), 404
 
-        package = lock_generation_target(analyze_video(tmp, owned, source_duration))
-        result = package.model_dump()
-        analysis_id = save_analysis(
-            (f"@{row['creator']} — {row['hook'] or 'ролик из радара'}")[:160],
-            row["post_url"],
-            row["views"],
-            row.get("viral_score_v2", 0),
-            result,
+        row = dict(row)
+        if not bool(row.get("ai_match")) or not top_eligible(row):
+            return jsonify(error="Этот ролик не прошёл финальный фильтр качества TOP."), 400
+
+        tmp = None
+        add_radar_log(
+            f"Запущен детальный анализ Reel #{item_id} @{row.get('creator','')}",
+            stage="prompts",
+            details={"views": row.get("views"), "duration_sec": row.get("duration_sec")},
         )
-        add_radar_log(f"Ультра-промпты для @{row.get('creator','')} готовы.", stage="prompts")
-        return jsonify(
-            id=analysis_id,
-            model=ANALYSIS_MODEL,
-            generation_target="gemini-omni-flash-preview",
-            source_duration_sec=source_duration,
-            result=result,
-        )
-    except Exception as exc:
-        add_radar_log(f"Ошибка промптов @{row.get('creator','')}: {exc}", level="ERROR", stage="prompts")
-        app.logger.exception("radar analysis failed")
-        return jsonify(error=str(exc)), 500
+        try:
+            add_radar_log("Скачиваю исходный MP4 для production-анализа.", stage="prompts")
+            tmp, refreshed_duration = download_reel_for_analysis(row)
+            source_duration = round(float(refreshed_duration or row.get("duration_sec") or 0), 2)
+            if source_duration <= 0 or source_duration > 10.05:
+                raise RuntimeError("Нет корректной длительности выбранного Reel до 10 секунд")
+            add_radar_log(
+                f"MP4 готов. Фактическая длительность {source_duration:.2f} сек.",
+                stage="prompts",
+            )
+
+            package = lock_generation_target(analyze_video_logged(tmp, owned, source_duration))
+            result = package.model_dump()
+            analysis_id = save_analysis(
+                (f"@{row['creator']} — {row['hook'] or 'ролик из радара'}")[:160],
+                row["post_url"],
+                row["views"],
+                row.get("viral_score_v2", 0),
+                result,
+            )
+            add_radar_log(
+                f"Ультра-промпты для @{row.get('creator','')} готовы.",
+                stage="prompts",
+                details={"analysis_id": analysis_id, "qa": result.get("reconstruction_confidence")},
+            )
+            return jsonify(
+                id=analysis_id,
+                model=ANALYSIS_MODEL,
+                generation_target="gemini-omni-flash-preview",
+                source_duration_sec=source_duration,
+                result=result,
+            )
+        except Exception as exc:
+            add_radar_log(f"Ошибка промптов @{row.get('creator','')}: {exc}", level="ERROR", stage="prompts")
+            app.logger.exception("radar analysis failed")
+            return jsonify(error=str(exc)), 500
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
     finally:
-        if tmp:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+        reset_radar_run_id(context_token)
 
 
 @app.get("/health")
