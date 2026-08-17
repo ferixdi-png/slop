@@ -1,0 +1,57 @@
+name: Source Alias Smoke
+
+on:
+  push:
+    branches: [fix/source-alias-720]
+  workflow_dispatch:
+
+jobs:
+  alias-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile Python
+        run: python -m compileall -q .
+      - name: Verify renamed Apify sources reach legacy candidate pipeline
+        env:
+          SECRET_KEY: smoke-test
+        run: |
+          python - <<'PY'
+          import radar_request_job as r
+          import sitecustomize
+
+          assert getattr(r, '_SOURCE_ALIAS_COMPAT_APPLIED', False)
+
+          original = sitecustomize._original_collect_source_rows
+          try:
+              sitecustomize._original_collect_source_rows = lambda client, job: {
+                  'popular_ai': [{'id': 'p1'} for _ in range(65)],
+                  'ai_hashtags': [{'id': f'h{i}'} for i in range(389)],
+                  'ai_keywords': [{'id': f'k{i}'} for i in range(264)],
+                  'known_ai_creators': [{'id': 'c1'}, {'id': 'c2'}],
+              }
+              aliased = r._collect_source_rows(None, {})
+              assert len(aliased['popular']) == 65
+              assert len(aliased['hashtags']) == 653
+              assert len(aliased['creators']) == 2
+              assert len(aliased['popular']) + len(aliased['hashtags']) + len(aliased['creators']) == 720
+              print('alias bridge OK:', {k: len(aliased[k]) for k in ('popular','hashtags','creators')})
+          finally:
+              sitecustomize._original_collect_source_rows = original
+          PY
+      - name: Verify app imports with mass profile
+        env:
+          SECRET_KEY: smoke-test
+        run: |
+          python - <<'PY'
+          import app
+          import radar_request_job as r
+          assert getattr(r, '_SOURCE_ALIAS_COMPAT_APPLIED', False)
+          assert app.app is not None
+          print('app import OK')
+          PY
