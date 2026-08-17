@@ -39,9 +39,9 @@ jobs:
           assert health['radar_runtime'] == 'request_state_machine_v5'
           assert health['radar_profile'] == 'mass_10s_ai_v6'
           assert status['radar_keep_limit'] == 60
-          assert status['radar_duration_min'] == 9.0
+          assert status['radar_duration_min'] == 1.0
           assert status['radar_duration_max'] == 10.05
-          assert radar_job.RADAR_AI_ANALYZE_LIMIT == 240
+          assert radar_job.RADAR_AI_ANALYZE_LIMIT == 360
 
           # Status polling must never call KVS/network.
           set_radar_status('ready', 'Готов к поиску', 0, None, 'local-only-status')
@@ -76,7 +76,7 @@ jobs:
           # New discovery topology: 3 AI-specific feeds even before learned creators.
           sources = radar_job._build_sources()
           assert {'popular_ai', 'ai_hashtags', 'ai_keywords'} <= set(sources)
-          assert sources['popular_ai']['input']['searchLimit'] == 60
+          assert sources['popular_ai']['input']['searchLimit'] == 80
           assert sources['ai_keywords']['input']['keywordSearch'] is True
 
           print('GENERAL SMOKE OK')
