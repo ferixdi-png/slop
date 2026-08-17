@@ -18,7 +18,9 @@ APIFY_HASHTAG_ACTOR = os.environ.get("APIFY_HASHTAG_ACTOR", "apify/instagram-has
 APIFY_CREATOR_ACTOR = os.environ.get("APIFY_CREATOR_ACTOR", "apify/instagram-reel-scraper")
 SEARCH_LIMIT = int(os.environ.get("APIFY_SEARCH_LIMIT", "64"))
 HASHTAG_LIMIT = int(os.environ.get("APIFY_HASHTAG_LIMIT", "80"))
-RADAR_AI_ANALYZE_LIMIT = int(os.environ.get("RADAR_AI_ANALYZE_LIMIT", "60"))
+# The radar only needs the strongest discovery pool. Detailed prompts are generated
+# later on demand for the chosen winners, so checking more than 30 videos wastes time/tokens.
+RADAR_AI_ANALYZE_LIMIT = min(30, int(os.environ.get("RADAR_AI_ANALYZE_LIMIT", "30")))
 RADAR_KEEP_LIMIT = int(os.environ.get("RADAR_KEEP_LIMIT", "30"))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "120"))
 
@@ -26,10 +28,11 @@ MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "120"))
 FORENSIC_VIDEO_FPS = float(os.environ.get("FORENSIC_VIDEO_FPS", "5"))
 RADAR_VIDEO_FPS = float(os.environ.get("RADAR_VIDEO_FPS", "2"))
 
-# Без отдельного RADAR_SYNC_KEY: сервер сам не разрешает запускать полный парсинг слишком часто.
-RADAR_SYNC_COOLDOWN_MINUTES = 60
+# Kept only for backwards compatibility with old deployments; launch concurrency is
+# now controlled by an in-process request lock rather than a time-based cooldown.
+RADAR_SYNC_COOLDOWN_MINUTES = 0
 
-# Instagram Search Scraper принимает несколько поисковых фраз одной строкой через запятую.
+# Instagram Search Scraper accepts multiple search phrases in one comma-separated query.
 SEARCH_TERMS = [
     "нейроюмор, ии юмор, нейросеть прикол, нейросеть юмор, AI прикол, AI юмор, "
     "AI бабушка, нейросеть бабушка, AI деревня, нейросеть деревня, AI семья, "
