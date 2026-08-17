@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import uuid
 from datetime import datetime, timezone
 from threading import Lock
@@ -9,7 +10,6 @@ from flask import Flask, jsonify, render_template, request
 from cloud_state import restore_radar_snapshot_if_empty
 from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_KEEP_LIMIT
 from db import db_conn, init_db
-from gemini_pipeline_logged import analyze_video_logged
 from progress import get_radar_status, set_radar_status
 from prompt_target import lock_generation_target
 from radar_entry import sync_radar
@@ -27,10 +27,6 @@ try:
 except Exception as exc:
     add_radar_log(f"Облачное восстановление пропущено: {exc}", level="WARN", stage="startup")
 
-# A long radar run is executed inside the POST request itself. Render supports
-# long-running web requests, while Gunicorn has four threads, so other threads
-# remain free for /api/radar/status and UI polling. This is intentionally simpler
-# and more reliable than a daemon background thread inside a disposable web process.
 try:
     boot_status = get_radar_status()
     if boot_status.get("stage") == "running":
@@ -49,7 +45,16 @@ except Exception as exc:
 radar_run_lock = Lock()
 active_state_lock = Lock()
 active_state = {"run_id": None, "started_at": None}
-add_radar_log("Сервис запущен и готов принимать команды радара.", stage="startup")
+add_radar_log(
+    "Сервис запущен и готов принимать команды радара.",
+    stage="startup",
+    details={
+        "python": sys.version.split()[0],
+        "analysis_model": ANALYSIS_MODEL,
+        "radar_model": RADAR_MODEL,
+        "render_cpu_count": os.environ.get("RENDER_CPU_COUNT", ""),
+    },
+)
 
 
 def new_run_id():
@@ -99,6 +104,9 @@ def status():
         radar_model=RADAR_MODEL,
         radar_matches=radar,
         tracked_creators=creators,
+        render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
+        render_instance=os.environ.get("RENDER_INSTANCE_ID", ""),
+        render_cpu_count=os.environ.get("RENDER_CPU_COUNT", ""),
     )
 
 
@@ -113,10 +121,9 @@ def radar_status():
     active = get_active_run_state()
     details = dict(payload.get("details") or {})
     details.update(active)
+    details["render_commit"] = str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12]
     payload["details"] = details
 
-    # The in-memory request lock is the immediate source of truth while the
-    # synchronous radar POST is alive. Persisted state remains useful across UI reloads.
     if active["request_active"] and payload.get("stage") != "running":
         payload.update(
             stage="running",
@@ -199,9 +206,8 @@ def radar_sync():
     acquired = False
     try:
         add_radar_log(
-            "Получен POST /api/radar/sync — запускаю полный радар в этом HTTP-запросе.",
+            "Получен POST /api/radar/sync — запускаю полный радар.",
             stage="launch",
-            details={"pid": os.getpid()},
         )
         acquired = radar_run_lock.acquire(blocking=False)
         if not acquired:
@@ -220,17 +226,22 @@ def radar_sync():
             "Запускаю радар",
             1,
             720,
-            "Команда принята. Один HTTP-запрос выполняет весь pipeline; статус обновляется параллельно.",
-            details={"run_id": run_id, "server_pid": os.getpid(), "mode": "synchronous_request"},
+            "Команда принята. Радар работает в low-memory режиме; статус обновляется параллельно.",
+            details={
+                "run_id": run_id,
+                "server_pid": os.getpid(),
+                "mode": "low_memory_synchronous_request",
+                "render_commit": str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
+            },
         )
         add_radar_log(
-            "Синхронный radar pipeline START.",
+            "Radar pipeline START.",
             stage="launch",
             details=get_active_run_state(),
         )
 
         result = sync_radar()
-        add_radar_log("Синхронный radar pipeline DONE.", stage="done", details=result)
+        add_radar_log("Radar pipeline DONE.", stage="done", details=result)
         return jsonify(ok=True, completed=True, run_id=run_id, result=result), 200
 
     except Exception as exc:
@@ -242,7 +253,11 @@ def radar_sync():
                 0,
                 None,
                 str(exc)[:300],
-                details={"run_id": run_id, "mode": "synchronous_request"},
+                details={
+                    "run_id": run_id,
+                    "mode": "low_memory_synchronous_request",
+                    "render_commit": str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
+                },
             )
         except Exception:
             pass
@@ -302,9 +317,13 @@ def radar_analyze(item_id):
             if source_duration <= 0 or source_duration > 10.05:
                 raise RuntimeError("Нет корректной длительности выбранного Reel до 10 секунд")
             add_radar_log(
-                f"MP4 готов. Фактическая длительность {source_duration:.2f} сек.",
+                f"MP4 готов. Фактическая длительность {source_duration:.2f} сек. Загружаю Gemini runtime.",
                 stage="prompts",
             )
+
+            # Heavy Gemini/Pydantic modules are imported only for an actual prompt job,
+            # never during ordinary web startup or the Apify discovery phase.
+            from gemini_pipeline_logged import analyze_video_logged
 
             package = lock_generation_target(analyze_video_logged(tmp, owned, source_duration))
             result = package.model_dump()
@@ -348,6 +367,7 @@ def health():
         analysis_model=ANALYSIS_MODEL,
         radar_model=RADAR_MODEL,
         radar_request=get_active_run_state(),
+        render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
     )
 
 
