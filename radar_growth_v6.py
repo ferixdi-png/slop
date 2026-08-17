@@ -78,14 +78,9 @@ LOCALIZATION QA OVERRIDE.
 A non-Russian source is NOT an audit failure. For non-Russian speech, dialogue_text_and_order_ok means the package contains a natural Russian translation/adaptation that preserves source meaning, joke, speaker ownership, order and timing window. Fail the audit if foreign dialogue leaks into the final package, if a speaker is changed, or if the Russian line is so long that it cannot fit the source timing.
 """.strip()
 
-def forensic_system_prompt_v7(owned,expected_duration=None):
-    return _ORIGINAL_FORENSIC_PROMPT(owned,expected_duration)+"\n\n"+LANGUAGE_FORENSIC_OVERRIDE
-
-def production_system_prompt_v7(owned,expected_duration=None):
-    return _ORIGINAL_PRODUCTION_PROMPT(owned,expected_duration)+"\n\n"+LANGUAGE_PRODUCTION_OVERRIDE
-
-def audit_system_prompt_v7(expected_duration=None):
-    return _ORIGINAL_AUDIT_PROMPT(expected_duration)+"\n\n"+LANGUAGE_AUDIT_OVERRIDE
+def forensic_system_prompt_v7(owned,expected_duration=None): return _ORIGINAL_FORENSIC_PROMPT(owned,expected_duration)+"\n\n"+LANGUAGE_FORENSIC_OVERRIDE
+def production_system_prompt_v7(owned,expected_duration=None): return _ORIGINAL_PRODUCTION_PROMPT(owned,expected_duration)+"\n\n"+LANGUAGE_PRODUCTION_OVERRIDE
+def audit_system_prompt_v7(expected_duration=None): return _ORIGINAL_AUDIT_PROMPT(expected_duration)+"\n\n"+LANGUAGE_AUDIT_OVERRIDE
 
 def _build_mass_sources():
     sources={
@@ -94,10 +89,19 @@ def _build_mass_sources():
         "ai_keywords":{"actor_id":radar_job.APIFY_HASHTAG_ACTOR,"input":{"hashtags":KEYWORD_TERMS,"keywordSearch":True,"resultsType":"reels","resultsLimit":12}},
     }
     tracked=radar_job._tracked_creators()[:100]
-    if tracked:
-        sources["known_ai_creators"]={"actor_id":radar_job.APIFY_CREATOR_ACTOR,"input":{"username":tracked,"resultsLimit":12,"onlyPostsNewerThan":"7 days","skipPinnedPosts":True,"includeTranscript":False,"includeDownloadedVideo":False}}
+    if tracked: sources["known_ai_creators"]={"actor_id":radar_job.APIFY_CREATOR_ACTOR,"input":{"username":tracked,"resultsLimit":12,"onlyPostsNewerThan":"7 days","skipPinnedPosts":True,"includeTranscript":False,"includeDownloadedVideo":False}}
     for source in sources.values(): source.update(run_id="",status="NOT_STARTED",dataset_id="",status_message="",started_at="")
     return sources
+
+def _is_v7_source_set(job):
+    sources=job.get("sources") or {}; popular=sources.get("popular_ai") or {}
+    return (popular.get("input") or {}).get("search")==SEARCH_QUERY
+
+def _reset_stale_job_to_v7(job,stage):
+    job["profile"]=PROFILE_VERSION; job["phase"]="queued"; job["sources"]=_build_mass_sources(); job["candidates"]=[]; job["stats"]={}; job["result"]={}; job["error"]=""; job["current_ai_index"]=None; job["current_ai_post_url"]=""
+    radar_job._persist(job)
+    add_radar_log("Старый незавершённый radar job автоматически сброшен: начинаю новый GLOBAL AI v7 discovery вместо продолжения старой узкой выборки.",stage=stage,details={"profile":PROFILE_VERSION,"sources":list(job["sources"].keys())})
+    return job
 
 def matches_v6(a):
     humor_ok=bool(a.is_comedy_scene or a.one_clear_joke_or_twist or (a.simple_situation and a.strong_first_frame))
@@ -113,36 +117,19 @@ def classify_radar_video_v6(file_path,caption=""):
     def run(client,uploaded):
         prompt=f"""Ты high-recall классификатор коротких AI-комедийных/абсурдных Reels для радара повторяемых вирусных механик.
 Цель — НЕ искать только русский исходник. Цель — находить сильные AI-механики по всему миру, которые можно пересобрать как реалистичное видео с русским липсингом.
-
-PASS если:
-1 само видео явно сгенерировано или существенно создано генеративным AI;
-2 есть короткий развлекательный бит: комедийная сценка, абсурд, визуальный гэг, смешная реакция, странный поворот, AI-персонаж, животное, семья, бабушка/дед, пара, деревня, интервью, POV или иной понятный мини-сюжет;
-3 механику реально повторить/адаптировать в новом генеративном видео;
-4 это не урок, не обзор AI-сервиса и не обычная реальная съёмка.
-
-ЯЗЫК:
-is_russian должен честно отражать исходник: TRUE только если речь/контекст реально русский. НО is_russian НЕ является причиной REJECT. Английский, испанский, португальский, немецкий, французский и другие языки допустимы: production-пайплайн потом переведёт реплики на русский с сохранением тайминга, спикеров и панчлайна. Ролик без речи тоже допустим.
-
-ВАЖНО ДЛЯ HIGH RECALL:
-is_comedy_scene TRUE также для одного AI-персонажа, однокадрового абсурда, визуального гэга и короткой странной ситуации.
-one_clear_joke_or_twist TRUE для панчлайна, нелепого действия, неожиданной реакции или визуального поворота.
-is_talking_head TRUE только для обычного РЕАЛЬНОГО автора/эксперта. Сгенерированный AI-персонаж, обращающийся в камеру внутри гэга, НЕ talking head.
-simple_situation TRUE если механику можно пересказать в 1–2 предложениях.
-reproducible_format TRUE если можно заменить персонажа, локацию или реплику, сохранив структуру.
-Не отклоняй ролик только потому, что он примитивный, кринжовый, дешёвый, без диалога, с одним персонажем или не на русском.
-
-ЖЁСТКИЙ REJECT только: не-AI реальная съёмка/чужой реальный мем; tutorial/review; чистый продукт/пейзаж без развлекательной механики; музыкальный монтаж без понятного действия/гэга; формат невозможно воспроизвести.
-Смотри всё видео и слушай аудио. Caption — только вторичный сигнал.
-
-Instagram caption:\n{caption[:2000]}""".strip()
+PASS если: само видео AI; есть короткий развлекательный бит/сценка/абсурд/визуальный гэг/реакция/поворот; механику реально повторить; это не tutorial/review и не обычная реальная съёмка.
+ЯЗЫК: is_russian честно отражает исходник, но НЕ является причиной REJECT. Любой язык допустим: production потом переводит реплики на русский с сохранением тайминга, спикеров и панчлайна. Безречевые визуальные гэги тоже допустимы.
+is_comedy_scene TRUE также для одного AI-персонажа, однокадрового абсурда и короткой странной ситуации. one_clear_joke_or_twist TRUE для панчлайна, нелепого действия, неожиданной реакции или визуального поворота. is_talking_head TRUE только для обычного РЕАЛЬНОГО автора/эксперта; AI-персонаж в камеру внутри гэга НЕ talking head. simple_situation TRUE если механику можно пересказать в 1–2 предложениях. reproducible_format TRUE если можно заменить персонажа/локацию/реплику, сохранив структуру.
+Не отклоняй только потому, что ролик примитивный, кринжовый, дешёвый, без диалога, с одним персонажем или не на русском.
+ЖЁСТКИЙ REJECT: не-AI реальная съёмка/реальный мем; tutorial/review; продукт/пейзаж без развлекательной механики; музыкальный монтаж без понятного действия; формат невозможно воспроизвести.
+Смотри всё видео и слушай аудио. Caption — только вторичный сигнал.\nInstagram caption:\n{caption[:2000]}""".strip()
         response=client.models.generate_content(model=gemini_service.RADAR_MODEL,contents=types.Content(parts=[gemini_service.video_part(uploaded,gemini_service.RADAR_VIDEO_FPS),types.Part(text=prompt)]),config=types.GenerateContentConfig(thinking_config=types.ThinkingConfig(thinking_level="minimal"),response_mime_type="application/json",response_schema=RadarAssessment))
         return gemini_service.parse_response(response,RadarAssessment)
     return gemini_service.with_uploaded_file(file_path,run)
 
 def top_eligible_v6(row):
     duration=float(row.get("duration_sec") or 0); score=float(row.get("viral_score_v2") or 0); views=int(row.get("views") or 0); likes=int(row.get("likes") or 0); comments=int(row.get("comments") or 0); vph=float(row.get("views_per_hour") or 0)
-    if duration<RADAR_MIN_DURATION_SEC or duration>RADAR_MAX_DURATION_SEC: return False
-    if score<8: return False
+    if duration<RADAR_MIN_DURATION_SEC or duration>RADAR_MAX_DURATION_SEC or score<8: return False
     return views>=100 or likes>=1 or comments>=1 or vph>=200
 
 def _save_post_and_learn_ai_creator(conn,item,assessment):
@@ -152,11 +139,11 @@ def _save_post_and_learn_ai_creator(conn,item,assessment):
     conn.execute("""INSERT INTO tracked_creators(username,first_seen_at,last_seen_at,best_views_per_hour,matching_reels,followers_count,usual_views,sample_size) VALUES(?,?,?,?,0,?,?,0) ON CONFLICT(username) DO UPDATE SET last_seen_at=excluded.last_seen_at,best_views_per_hour=MAX(tracked_creators.best_views_per_hour,excluded.best_views_per_hour),followers_count=CASE WHEN excluded.followers_count>0 THEN excluded.followers_count ELSE tracked_creators.followers_count END,usual_views=CASE WHEN excluded.usual_views>0 THEN excluded.usual_views ELSE tracked_creators.usual_views END""",(item.get("creator",""),now,now,float(item.get("views_per_hour") or 0),int(item.get("followers_count") or 0),float(item.get("creator_usual_views") or 0)))
 
 def _prepare_candidates_v6(client,job):
-    job=_ORIGINAL_PREPARE(client,job); candidates=job.get("candidates") or []
-    for item in candidates:
-        item["ai_done"]=False; item["ai_match"]=False; item["ai_attempts"]=0; item["ai_error"]=""; item.pop("assessment",None)
+    if job.get("profile")!=PROFILE_VERSION and not _is_v7_source_set(job): return _reset_stale_job_to_v7(job,"migration")
+    job=_ORIGINAL_PREPARE(client,job); job["profile"]=PROFILE_VERSION; candidates=job.get("candidates") or []
+    for item in candidates: item["ai_done"]=False; item["ai_match"]=False; item["ai_attempts"]=0; item["ai_error"]=""; item.pop("assessment",None)
     job.setdefault("stats",{})["ai_total"]=len(candidates); radar_job._persist(job)
-    add_radar_log("GLOBAL AI queue prepared: все кандидаты будут перепроверены Gemini; язык исходника не ограничивает PASS.",stage="filter",details={"ai_total":len(candidates),"target_matches":TARGET_MATCHES})
+    add_radar_log("GLOBAL AI queue prepared: все кандидаты будут перепроверены Gemini; язык исходника не ограничивает PASS.",stage="filter",details={"ai_total":len(candidates),"target_matches":TARGET_MATCHES,"profile":PROFILE_VERSION})
     return job
 
 def _snapshot_throttled():
@@ -166,6 +153,7 @@ def _snapshot_throttled():
     return True
 
 def _process_one_ai_v6(job):
+    if job.get("profile")!=PROFILE_VERSION: return _reset_stale_job_to_v7(job,"migration")
     job=_ORIGINAL_PROCESS_AI(job); candidates=job.get("candidates") or []; done=sum(1 for x in candidates if x.get("ai_done")); matched=sum(1 for x in candidates if x.get("ai_done") and x.get("ai_match"))
     if job.get("phase")=="ai" and done>=MIN_AI_CHECKS_BEFORE_EARLY_STOP and matched>=TARGET_MATCHES:
         job["phase"]="finalizing"; job.setdefault("stats",{})["early_stop_after_ai"]=done; job["stats"]["early_stop_matches"]=matched; radar_job._persist(job)
@@ -178,8 +166,7 @@ def _rebuild_checked_rows_from_job(job):
         for item in job.get("candidates") or []:
             payload=item.get("assessment")
             if not(item.get("ai_done") and isinstance(payload,dict)): continue
-            try:
-                radar_quality.save_post_preserve_ai(conn,item,RadarAssessment.model_validate(payload)); rebuilt+=1
+            try: radar_quality.save_post_preserve_ai(conn,item,RadarAssessment.model_validate(payload)); rebuilt+=1
             except Exception: continue
         conn.commit()
     return rebuilt
