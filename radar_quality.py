@@ -1,6 +1,11 @@
 import math
 
-from radar_service import calculate_viral_score, load_creator_stats, save_post as _legacy_save_post
+from radar_service import (
+    calculate_viral_score,
+    load_creator_stats,
+    save_meta_report as _legacy_save_meta_report,
+    save_post as _legacy_save_post,
+)
 
 
 def _clamp01(value):
@@ -25,11 +30,8 @@ def quality_adjusted_score(item):
     comments_component = _clamp01(math.log1p(max(0, comments)) / math.log1p(1_000))
     social_component = 0.78 * likes_component + 0.22 * comments_component
 
-    # 65% = viral dynamics, 35% = hard evidence that people actually reacted.
     score = 0.65 * base + 35.0 * (0.68 * views_component + 0.32 * social_component)
 
-    # Absolute-evidence caps. These are deliberately conservative because the
-    # product promises "what is worth repeating", not merely "what is new".
     if views < 1_000:
         score = min(score, 28)
     elif views < 5_000:
@@ -44,19 +46,14 @@ def quality_adjusted_score(item):
     elif 25 <= likes < 50:
         score = min(score, 61)
 
-    # Huge play count with almost no reaction is low-confidence / suspicious.
     if views >= 100_000 and 0 < likes < 50:
         score = min(score, 54)
     if views >= 50_000 and 0 < likes and likes / max(1, views) < 0.0004:
         score = min(score, 52)
 
-    # If likes are unavailable (0 can mean hidden/missing), do not hard-reject;
-    # just prevent an evidence-free Reel from becoming S-tier.
     if likes == 0:
         score = min(score, 68 if views >= 100_000 else 52)
 
-    # Extremely fast growth can recover some confidence, but never bypass the
-    # hard low-like caps above.
     if views >= 50_000 and vph >= 20_000 and likes >= 50:
         score = max(score, min(88, base))
 
@@ -70,10 +67,6 @@ def apply_quality_score(item):
 
 
 def top_eligible(row):
-    """Only evidence-backed Reels enter the recommendation TOP.
-
-    Weak/noisy candidates remain visible in the Apify candidates section.
-    """
     score = float(row.get("viral_score_v2") or 0)
     views = int(row.get("views") or 0)
     likes = int(row.get("likes") or 0)
@@ -138,7 +131,6 @@ def recommendation_status_for_row(row):
 
 
 def _update_metrics_only(conn, item):
-    """Refresh numeric/media fields without erasing a previous Gemini verdict."""
     conn.execute(
         """UPDATE radar_posts SET
             video_url=CASE WHEN ?<>'' THEN ? ELSE video_url END,
@@ -163,7 +155,7 @@ def _update_metrics_only(conn, item):
 
 
 def save_post_preserve_ai(conn, item, assessment):
-    """Do not make already-approved results disappear while a new run is in progress."""
+    """A fresh candidate pass can update metrics but never erase an old Gemini verdict."""
     if assessment is None:
         existing = conn.execute(
             "SELECT ai_checked FROM radar_posts WHERE post_url=?", (item.get("post_url", ""),)
@@ -212,3 +204,10 @@ def refresh_recent_scores_quality(conn):
             ),
         )
     conn.commit()
+
+
+def save_meta_report_quality(conn, rows):
+    filtered = [row for row in rows if top_eligible(dict(row))]
+    if not filtered:
+        return None
+    return _legacy_save_meta_report(conn, filtered)
