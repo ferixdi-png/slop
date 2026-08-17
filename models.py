@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class DirectorBlock(BaseModel):
@@ -51,6 +51,30 @@ class VideoPromptBlock(BaseModel):
     narrative_timeline: list[str]
     realism_lock: str
     hard_rules: list[str]
+
+    @model_validator(mode="after")
+    def enforce_lip_sync_rules(self):
+        required_speaker = [
+            "Only the visually described active speaker may produce speech for the current line",
+            "Never swap voices or dialogue lines between visible characters",
+            "If a voice is off screen all visible characters remain silent with lips motionless",
+        ]
+        required_lip = [
+            "The active speaker begins visible lip movement only when that speaker line begins",
+            "The active speaker stops speech driven lip movement immediately when that line ends",
+            "Every non speaking visible character keeps the mouth closed and lips completely motionless during another characters line",
+            "No anticipatory lip movement before a characters own line",
+            "No residual pseudo speech lip movement after a characters own line",
+            "No silent chewing jaw flapping or lip motion synchronized to another characters voice",
+            "Laughter or vocal reactions move the mouth only when that exact character audibly produces that reaction",
+        ]
+        for rule in required_speaker:
+            if rule not in self.speaker_lock:
+                self.speaker_lock.append(rule)
+        for rule in required_lip:
+            if rule not in self.lip_sync_lock:
+                self.lip_sync_lock.append(rule)
+        return self
 
 
 class AudioLine(BaseModel):
