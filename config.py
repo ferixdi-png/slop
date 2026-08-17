@@ -19,15 +19,17 @@ APIFY_CREATOR_ACTOR = os.environ.get("APIFY_CREATOR_ACTOR", "apify/instagram-ree
 
 # MASS RADAR PROFILE. Search Scraper's limit is per search term. With an AI-specific
 # comma-separated query this intentionally creates a much larger discovery pool.
-SEARCH_LIMIT = min(250, int(os.environ.get("APIFY_SEARCH_LIMIT", "60")))
-HASHTAG_LIMIT = int(os.environ.get("APIFY_HASHTAG_LIMIT", "24"))
-RADAR_AI_ANALYZE_LIMIT = min(300, int(os.environ.get("RADAR_AI_ANALYZE_LIMIT", "240")))
+SEARCH_LIMIT = min(250, int(os.environ.get("APIFY_SEARCH_LIMIT", "80")))
+HASHTAG_LIMIT = min(100, int(os.environ.get("APIFY_HASHTAG_LIMIT", "30")))
+RADAR_AI_ANALYZE_LIMIT = min(500, int(os.environ.get("RADAR_AI_ANALYZE_LIMIT", "360")))
 RADAR_KEEP_LIMIT = min(100, int(os.environ.get("RADAR_KEEP_LIMIT", "60")))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "120"))
 
-# User target: a repeatable ~10-second format, verified later from the downloaded MP4.
-RADAR_MIN_DURATION_SEC = float(os.environ.get("RADAR_MIN_DURATION_SEC", "9.0"))
-RADAR_MAX_DURATION_SEC = float(os.environ.get("RADAR_MAX_DURATION_SEC", "10.05"))
+# ABSOLUTE DURATION TARGET: the product promise is "UP TO 10 seconds", not
+# "approximately 10 seconds". Keep this locked in code so stale Render env values
+# from the old 9–10 second experiment cannot silently narrow the radar again.
+RADAR_MIN_DURATION_SEC = 1.0
+RADAR_MAX_DURATION_SEC = 10.05
 
 # Fine-grained video sampling for clips up to 10 seconds.
 FORENSIC_VIDEO_FPS = float(os.environ.get("FORENSIC_VIDEO_FPS", "5"))
