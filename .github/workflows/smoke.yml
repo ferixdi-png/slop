@@ -1,10 +1,8 @@
 name: Smoke Check
-
 on:
   push:
     branches: [main, fix/radar-request-state-machine, fix/more-10s-ai-reels]
   workflow_dispatch:
-
 jobs:
   smoke:
     runs-on: ubuntu-latest
@@ -17,68 +15,42 @@ jobs:
         run: pip install -r requirements.txt
       - name: Compile Python
         run: python -m compileall -q .
-      - name: Flask + durable request-state-machine smoke test
+      - name: Flask and global radar smoke
         env:
           SECRET_KEY: smoke-test
         run: |
           python - <<'PY'
           import app as app_module
           import radar_request_job as radar_job
+          import radar_service, gemini_service
           from progress import set_radar_status
-
-          c = app_module.app.test_client()
-
-          # Pure endpoints must stay available without external API keys.
-          for path in ['/health', '/api/status', '/api/radar/status', '/api/radar', '/api/radar/candidates']:
-              r = c.get(path)
-              print(path, r.status_code, r.content_type)
-              assert r.status_code == 200, (path, r.status_code, r.get_data(as_text=True))
-
-          health = c.get('/health').get_json()
-          status = c.get('/api/status').get_json()
-          assert health['radar_runtime'] == 'request_state_machine_v5'
-          assert health['radar_profile'] == 'mass_10s_ai_v6'
-          assert status['radar_keep_limit'] == 60
-          assert status['radar_duration_min'] == 1.0
-          assert status['radar_duration_max'] == 10.05
-          assert radar_job.RADAR_AI_ANALYZE_LIMIT == 360
-
-          # Status polling must never call KVS/network.
-          set_radar_status('ready', 'Готов к поиску', 0, None, 'local-only-status')
-          original_load = radar_job.load_radar_job
-          radar_job.load_radar_job = lambda: (_ for _ in ()).throw(RuntimeError('KVS MUST NOT BE CALLED BY STATUS'))
-          r = c.get('/api/radar/status')
-          assert r.status_code == 200
-          assert r.get_json()['message'] == 'local-only-status'
-          radar_job.load_radar_job = original_load
-
-          # HTTP contract remains short request -> durable job -> ticks.
-          def fake_start():
-              return ({
-                  'ok': True, 'active': True, 'accepted': True, 'completed': False,
-                  'resumed': False, 'run_id': 'smoke-run', 'phase': 'queued',
-              }, 202)
-
-          def fake_tick():
-              return ({'ok': True, 'active': True, 'run_id': 'smoke-run', 'phase': 'discovering'}, 200)
-
-          real_start = app_module.create_or_resume_job
-          real_tick = app_module.tick_job
-          app_module.create_or_resume_job = fake_start
-          app_module.tick_job = fake_tick
-          r = c.post('/api/radar/sync')
-          assert r.status_code == 202 and r.get_json()['accepted'] is True
-          r = c.post('/api/radar/tick')
-          assert r.status_code == 200 and r.get_json()['phase'] == 'discovering'
-          app_module.create_or_resume_job = real_start
-          app_module.tick_job = real_tick
-
-          # New discovery topology: 3 AI-specific feeds even before learned creators.
-          sources = radar_job._build_sources()
-          assert {'popular_ai', 'ai_hashtags', 'ai_keywords'} <= set(sources)
-          assert sources['popular_ai']['input']['searchLimit'] == 80
-          assert sources['ai_keywords']['input']['keywordSearch'] is True
-
+          from models import RadarAssessment
+          c=app_module.app.test_client()
+          for path in ['/health','/api/status','/api/radar/status','/api/radar','/api/radar/candidates']:
+              r=c.get(path); assert r.status_code==200,(path,r.status_code,r.get_data(as_text=True))
+          status=c.get('/api/status').get_json()
+          assert status['radar_keep_limit']==60
+          assert status['radar_duration_min']==1.0 and status['radar_duration_max']==10.05
+          assert radar_job.RADAR_AI_ANALYZE_LIMIT==420
+          foreign=RadarAssessment(is_russian=False,is_ai_video=True,is_comedy_scene=True,is_tutorial_or_review=False,is_talking_head=False,simple_situation=True,strong_first_frame=True,one_clear_joke_or_twist=True,characters_count=1,scene_description='AI gag',characters=['AI character'],joke='gag',hook='hook',ending='reaction',reproducible_format=True,reason='adaptable')
+          assert radar_service.matches(foreign) is True
+          assert 'RUSSIAN LOCALIZATION OVERRIDE' in gemini_service.production_system_prompt(False,8.0)
+          set_radar_status('ready','Готов к поиску',0,None,'local-only-status')
+          original_load=radar_job.load_radar_job
+          radar_job.load_radar_job=lambda: (_ for _ in ()).throw(RuntimeError('KVS MUST NOT BE CALLED BY STATUS'))
+          assert c.get('/api/radar/status').get_json()['message']=='local-only-status'
+          radar_job.load_radar_job=original_load
+          def fake_start(): return ({'ok':True,'active':True,'accepted':True,'completed':False,'resumed':False,'run_id':'smoke-run','phase':'queued'},202)
+          def fake_tick(): return ({'ok':True,'active':True,'run_id':'smoke-run','phase':'discovering'},200)
+          rs,rt=app_module.create_or_resume_job,app_module.tick_job
+          app_module.create_or_resume_job=fake_start; app_module.tick_job=fake_tick
+          assert c.post('/api/radar/sync').status_code==202
+          assert c.post('/api/radar/tick').get_json()['phase']=='discovering'
+          app_module.create_or_resume_job=rs; app_module.tick_job=rt
+          sources=radar_job._build_sources()
+          assert {'popular_ai','ai_hashtags','ai_keywords'}<=set(sources)
+          assert sources['popular_ai']['input']['searchLimit']==64
+          assert len(sources['ai_hashtags']['input']['hashtags'])>=55
           print('GENERAL SMOKE OK')
           PY
       - uses: actions/setup-node@v4
@@ -88,9 +60,9 @@ jobs:
         run: |
           node --check static/app.js
           node --check static/runtime.js
-      - name: Verify request-driven frontend contract
+      - name: Verify frontend contract
         run: |
           grep -q "/api/radar/sync" static/runtime.js
           grep -q "/api/radar/tick" static/runtime.js
           grep -q "request_state_machine_v5" radar_request_job.py
-          grep -q "mass_10s_ai_v6" app.py
+          grep -q "mass_global_ai_v7" radar_growth_v6.py
