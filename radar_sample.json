@@ -1,0 +1,13 @@
+{
+  "posts": [
+    {
+      "platform": "instagram",
+      "creator": "creator_name",
+      "post_url": "https://example.com/reel/123",
+      "published_at": "2026-08-17T08:00:00+00:00",
+      "views": 1250000,
+      "followers": 28000,
+      "title": "Пример залетевшего AI-ролика"
+    }
+  ]
+}
