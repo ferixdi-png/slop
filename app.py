@@ -10,6 +10,7 @@ from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_KEEP_LIMIT, RADAR_SYNC_COO
 from db import db_conn, init_db
 from gemini_service import analyze_video
 from progress import get_radar_status, set_radar_status
+from prompt_target import lock_generation_target
 from radar_entry import sync_radar
 from reel_media import download_reel_for_analysis
 from service_checks import check_all_services
@@ -240,14 +241,12 @@ def radar_analyze(item_id):
     row = dict(row)
     tmp = None
     try:
-        # Instagram CDN links expire. The helper first tries the stored URL and, if needed,
-        # refreshes the exact Reel through Apify before sending it to Gemini.
         tmp, refreshed_duration = download_reel_for_analysis(row)
         source_duration = round(float(refreshed_duration or row.get("duration_sec") or 0), 2)
         if source_duration <= 0 or source_duration > 10.05:
             raise RuntimeError("Нет корректной длительности выбранного Reel до 10 секунд")
 
-        package = analyze_video(tmp, owned, source_duration)
+        package = lock_generation_target(analyze_video(tmp, owned, source_duration))
         result = package.model_dump()
         analysis_id = save_analysis(
             (f"@{row['creator']} — {row['hook'] or 'ролик из радара'}")[:160],
@@ -259,6 +258,7 @@ def radar_analyze(item_id):
         return jsonify(
             id=analysis_id,
             model=ANALYSIS_MODEL,
+            generation_target="gemini-omni-flash-preview",
             source_duration_sec=source_duration,
             result=result,
         )
