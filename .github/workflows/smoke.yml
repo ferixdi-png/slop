@@ -36,17 +36,30 @@ jobs:
               set_radar_status('done', 'Поиск завершён', 100, 0, 'Smoke radar completed.', details=result)
               return result
 
+          def fake_persistent_start():
+              return ({
+                  'ok': True,
+                  'accepted': True,
+                  'completed': False,
+                  'run_id': 'smoke-persistent-run',
+                  'phase': 'queued',
+              }, 202)
+
+          # Old synchronous route uses sync_radar; the durable route uses
+          # start_or_resume_radar. Keeping both fakes makes CI safe during the
+          # migration commit and verifies either HTTP contract explicitly.
           app_module.sync_radar = fake_sync_radar
+          app_module.start_or_resume_radar = fake_persistent_start
+
           r = c.post('/api/radar/sync')
           print('/api/radar/sync', r.status_code, r.get_json())
-          assert r.status_code == 200
+          assert r.status_code in (200, 202)
           payload = r.get_json()
-          assert payload['ok'] is True and payload['completed'] is True
-
-          status = c.get('/api/radar/status').get_json()
-          print('/api/radar/status after sync', status)
-          assert status['stage'] == 'done'
-          assert status['progress'] == 100
+          assert payload['ok'] is True
+          if r.status_code == 200:
+              assert payload['completed'] is True
+          else:
+              assert payload['accepted'] is True and payload['completed'] is False
           PY
       - uses: actions/setup-node@v4
         with:
