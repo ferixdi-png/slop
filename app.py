@@ -2,7 +2,7 @@ import json, os, tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from flask import Flask, jsonify, render_template, request
-from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_KEEP_LIMIT, MAX_UPLOAD_MB
+from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_KEEP_LIMIT, MAX_UPLOAD_MB, AFFILIATE_NAME, AFFILIATE_URL
 from db import db_conn, init_db
 from gemini_service import analyze_video
 from radar_service import download_temp_video, sync_radar
@@ -32,7 +32,7 @@ def status():
         analyses=conn.execute("SELECT COUNT(*) FROM analyses").fetchone()[0]
         radar=conn.execute("SELECT COUNT(*) FROM radar_posts WHERE ai_match=1").fetchone()[0]
         creators=conn.execute("SELECT COUNT(*) FROM tracked_creators").fetchone()[0]
-    return jsonify(gemini_configured=bool(os.environ.get("GEMINI_API_KEY")),apify_configured=bool(os.environ.get("APIFY_API_TOKEN")),analysis_model=ANALYSIS_MODEL,radar_model=RADAR_MODEL,analyses=analyses,radar_matches=radar,tracked_creators=creators)
+    return jsonify(gemini_configured=bool(os.environ.get("GEMINI_API_KEY")),apify_configured=bool(os.environ.get("APIFY_API_TOKEN")),analysis_model=ANALYSIS_MODEL,radar_model=RADAR_MODEL,analyses=analyses,radar_matches=radar,tracked_creators=creators,affiliate_configured=bool(AFFILIATE_NAME or AFFILIATE_URL))
 
 @app.get("/api/analysis/<int:item_id>")
 def get_analysis(item_id):
