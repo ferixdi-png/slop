@@ -5,7 +5,6 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Validates the current production branch after radar/runtime changes.
 jobs:
   smoke:
     runs-on: ubuntu-latest
@@ -23,12 +22,31 @@ jobs:
           SECRET_KEY: smoke-test
         run: |
           python - <<'PY'
-          from app import app
-          c = app.test_client()
+          import app as app_module
+          from progress import set_radar_status
+
+          c = app_module.app.test_client()
           for path in ['/health', '/api/status', '/api/radar/status', '/api/radar', '/api/radar/candidates']:
               r = c.get(path)
               print(path, r.status_code, r.content_type)
               assert r.status_code == 200, (path, r.status_code, r.get_data(as_text=True))
+
+          def fake_sync_radar():
+              result = {'raw': 3, 'after_numeric_filter': 2, 'ai_checked': 1, 'matched': 1, 'kept': 1}
+              set_radar_status('done', 'Поиск завершён', 100, 0, 'Smoke radar completed.', details=result)
+              return result
+
+          app_module.sync_radar = fake_sync_radar
+          r = c.post('/api/radar/sync')
+          print('/api/radar/sync', r.status_code, r.get_json())
+          assert r.status_code == 200
+          payload = r.get_json()
+          assert payload['ok'] is True and payload['completed'] is True
+
+          status = c.get('/api/radar/status').get_json()
+          print('/api/radar/status after sync', status)
+          assert status['stage'] == 'done'
+          assert status['progress'] == 100
           PY
       - uses: actions/setup-node@v4
         with:
