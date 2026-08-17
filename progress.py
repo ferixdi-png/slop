@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timezone
 
 from db import db_conn
+from radar_logs import add_radar_log
 
 STALE_RUNNING_SECONDS = 20 * 60
 
@@ -24,6 +25,15 @@ def set_radar_status(stage, label, progress=0, eta_seconds=None, message="", war
             (json.dumps(payload, ensure_ascii=False),),
         )
         conn.commit()
+
+    level = "ERROR" if stage == "error" else ("WARN" if warning else "INFO")
+    log_text = f"{label}: {message}" if message else str(label or stage)
+    add_radar_log(log_text, level=level, stage=stage, details={
+        "progress": payload["progress"],
+        "eta_seconds": payload["eta_seconds"],
+        "warning": warning,
+        **(details or {}),
+    })
     return payload
 
 
