@@ -1,5 +1,5 @@
-import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from apify_client import ApifyClient
 
@@ -11,13 +11,19 @@ from config import (
     HASHTAG_LIMIT,
     RADAR_AI_ANALYZE_LIMIT,
     RADAR_KEEP_LIMIT,
+    RADAR_MODEL,
     SEARCH_LIMIT,
     SEARCH_TERMS,
 )
 from db import db_conn
 from gemini_service import classify_radar_video
 from progress import set_radar_status
-from radar_logs import add_radar_log
+from radar_logs import (
+    add_radar_log,
+    get_radar_run_id,
+    reset_radar_run_id,
+    set_radar_run_id,
+)
 from radar_normalize import normalize_reel
 from radar_service import (
     load_creator_stats,
@@ -54,15 +60,25 @@ def _assessment_details(assessment):
     }
 
 
+def _run_source(token, run_id, actor_id, run_input):
+    """Run one Apify source in its own thread/client while preserving Render runId logs."""
+    context_token = set_radar_run_id(run_id)
+    try:
+        client = ApifyClient(token)
+        return run_actor_items(client, actor_id, run_input)
+    finally:
+        reset_radar_run_id(context_token)
+
+
 def sync_radar_v2():
     token = os.environ.get("APIFY_API_TOKEN")
     if not token:
         raise RuntimeError("Не задан APIFY_API_TOKEN")
 
-    client = ApifyClient(token)
     raw_items = []
     source_errors = 0
     warnings = []
+    run_id = get_radar_run_id()
 
     add_radar_log(
         "Старт полного радара.",
@@ -74,12 +90,13 @@ def sync_radar_v2():
             "hashtags": len(HASHTAGS),
             "ai_limit": RADAR_AI_ANALYZE_LIMIT,
             "top_limit": RADAR_KEEP_LIMIT,
+            "source_mode": "parallel",
         },
     )
 
     set_radar_status(
-        "running", "Подготавливаю поиск", 3, 360,
-        "Проверяю источники и базу уже найденных авторов.",
+        "running", "Подготавливаю поиск", 3, 600,
+        "Читаю базу авторов и готовлю параллельный сбор Apify.",
     )
 
     with db_conn() as conn:
@@ -90,93 +107,103 @@ def sync_radar_v2():
         ]
     add_radar_log(f"В базе наблюдения {len(tracked)} авторов.", stage="creators")
 
-    creator_rows = []
+    term = SEARCH_TERMS[0] if SEARCH_TERMS else ""
+    source_specs = {
+        "popular": (
+            APIFY_SEARCH_ACTOR,
+            {"search": term, "searchType": "popular", "searchLimit": SEARCH_LIMIT},
+        ),
+        "hashtags": (
+            APIFY_HASHTAG_ACTOR,
+            {"hashtags": HASHTAGS, "resultsType": "reels", "resultsLimit": HASHTAG_LIMIT},
+        ),
+    }
     if tracked:
-        set_radar_status(
-            "running", "Проверяю сильных авторов", 8, 330,
-            f"Смотрю свежие Reels у {len(tracked)} уже найденных авторов.",
-            details={"tracked_creators": len(tracked)},
+        source_specs["creators"] = (
+            APIFY_CREATOR_ACTOR,
+            {
+                "username": tracked,
+                "resultsLimit": 10,
+                "onlyPostsNewerThan": "7 days",
+                "skipPinnedPosts": True,
+                "includeTranscript": False,
+                "includeDownloadedVideo": False,
+            },
         )
-        try:
-            creator_rows = run_actor_items(
-                client,
-                APIFY_CREATOR_ACTOR,
-                {
-                    "username": tracked,
-                    "resultsLimit": 10,
-                    "onlyPostsNewerThan": "7 days",
-                    "skipPinnedPosts": True,
-                    "includeTranscript": False,
-                    "includeDownloadedVideo": False,
-                },
+
+    set_radar_status(
+        "running", "Собираю источники параллельно", 10, 260,
+        f"Одновременно запускаю {len(source_specs)} источника: Popular Reels, хештеги"
+        + (" и наблюдаемые авторы." if tracked else "."),
+        details={"sources_total": len(source_specs), "sources_done": 0, "tracked_creators": len(tracked)},
+    )
+    add_radar_log(
+        "Запускаю Apify-источники параллельно.",
+        stage="sources",
+        details={"sources": list(source_specs.keys())},
+    )
+
+    source_results = {}
+    completed_sources = 0
+    with ThreadPoolExecutor(max_workers=len(source_specs), thread_name_prefix="apify-source") as executor:
+        future_map = {
+            executor.submit(_run_source, token, run_id, actor_id, run_input): name
+            for name, (actor_id, run_input) in source_specs.items()
+        }
+        for future in as_completed(future_map):
+            name = future_map[future]
+            completed_sources += 1
+            try:
+                rows = future.result() or []
+                source_results[name] = rows
+                add_radar_log(
+                    f"Источник {name} завершён: {len(rows)} элементов.",
+                    stage="sources",
+                )
+            except Exception as exc:
+                source_errors += 1
+                source_results[name] = []
+                if name == "popular":
+                    warning = f"Popular Reels недоступен — продолжаю по другим источникам: {str(exc)[:220]}"
+                elif name == "hashtags":
+                    warning = f"Hashtag Scraper временно недоступен: {str(exc)[:220]}"
+                else:
+                    warning = f"Мониторинг авторов временно недоступен: {str(exc)[:220]}"
+                warnings.append(warning)
+                add_radar_log(warning, level="WARN", stage="sources")
+
+            progress = 10 + int(20 * completed_sources / max(1, len(source_specs)))
+            set_radar_status(
+                "running", "Собираю источники параллельно", progress, max(30, 260 - completed_sources * 60),
+                f"Готово источников: {completed_sources}/{len(source_specs)}.",
+                warning=" · ".join(warnings[-2:]),
+                details={"sources_total": len(source_specs), "sources_done": completed_sources},
             )
-            raw_items.extend((x, "наблюдаемый автор") for x in creator_rows)
+
+    creator_rows = source_results.get("creators", [])
+    if creator_rows:
+        try:
             with db_conn() as conn:
                 update_creator_baselines(conn, creator_rows)
             add_radar_log(
-                f"Мониторинг авторов дал {len(creator_rows)} сырых Reels.",
+                f"История наблюдаемых авторов обновлена по {len(creator_rows)} строкам.",
                 stage="creators",
             )
         except Exception as exc:
-            source_errors += 1
-            warning = f"Мониторинг авторов временно недоступен: {str(exc)[:220]}"
+            warning = f"Не удалось обновить baseline наблюдаемых авторов: {str(exc)[:180]}"
             warnings.append(warning)
             add_radar_log(warning, level="WARN", stage="creators")
 
-    set_radar_status(
-        "running", "Ищу Popular Reels", 15, 300,
-        "Один общий поиск по всем ключевым фразам. Если Instagram блокирует этот источник, радар продолжит по хештегам.",
-    )
-    try:
-        term = SEARCH_TERMS[0] if SEARCH_TERMS else ""
-        rows = run_actor_items(
-            client,
-            APIFY_SEARCH_ACTOR,
-            {"search": term, "searchType": "popular", "searchLimit": SEARCH_LIMIT},
-        )
-        for x in rows:
-            x.setdefault("searchTerm", x.get("searchTerm") or "ключевой поиск")
-            raw_items.append((x, "Popular Reels"))
-        add_radar_log(
-            f"Popular Reels источник вернул {len(rows)} элементов.",
-            stage="sources",
-        )
-    except Exception as exc:
-        source_errors += 1
-        warning = f"Popular Reels недоступен — продолжаю по хештегам: {str(exc)[:220]}"
-        warnings.append(warning)
-        add_radar_log(warning, level="WARN", stage="sources")
-        set_radar_status(
-            "running", "Popular Reels недоступен — продолжаю", 22, 280,
-            "Поисковый источник Instagram недоступен. Это не означает ошибку API-ключа. Перехожу к хештегам.",
-            warning=warnings[-1],
-        )
+    for x in source_results.get("popular", []):
+        x.setdefault("searchTerm", x.get("searchTerm") or "ключевой поиск")
+        raw_items.append((x, "Popular Reels"))
+    for x in source_results.get("hashtags", []):
+        raw_items.append((x, f"хештег: {x.get('hashtag') or x.get('searchTerm') or ''}"))
+    raw_items.extend((x, "наблюдаемый автор") for x in creator_rows)
 
     set_radar_status(
-        "running", "Собираю Reels по хештегам", 27, 250,
-        f"Проверяю {len(HASHTAGS)} хештегов и собираю сырые кандидаты.",
-        warning=" · ".join(warnings[-2:]),
-    )
-    try:
-        rows = run_actor_items(
-            client,
-            APIFY_HASHTAG_ACTOR,
-            {"hashtags": HASHTAGS, "resultsType": "reels", "resultsLimit": HASHTAG_LIMIT},
-        )
-        raw_items.extend((x, f"хештег: {x.get('hashtag') or x.get('searchTerm') or ''}") for x in rows)
-        add_radar_log(
-            f"Hashtag источник вернул {len(rows)} элементов.",
-            stage="sources",
-        )
-    except Exception as exc:
-        source_errors += 1
-        warning = f"Hashtag Scraper временно недоступен: {str(exc)[:220]}"
-        warnings.append(warning)
-        add_radar_log(warning, level="WARN", stage="sources")
-
-    set_radar_status(
-        "running", "Фильтрую кандидатов", 36, 220,
-        f"Получено {len(raw_items)} сырых записей. Оставляю только последние 7 дней и длительность до 10 секунд.",
+        "running", "Фильтрую кандидатов", 34, 420,
+        f"Получено {len(raw_items)} сырых записей. Оставляю последние 7 дней, длительность ≤10 секунд и минимальный сигнал охватов.",
         warning=" · ".join(warnings[-2:]),
         details={"raw": len(raw_items)},
     )
@@ -226,21 +253,21 @@ def sync_radar_v2():
 
     total = len(candidates)
     set_radar_status(
-        "running", "Начинаю AI-проверку видео", 42, max(60, total * 6 + 60),
-        f"После числового фильтра осталось {len(unique)}. На сайте уже видны лучшие кандидаты; теперь AI проверит до {total} роликов.",
+        "running", "Начинаю AI-проверку видео", 40, max(90, total * 10 + 60),
+        f"После числового фильтра осталось {len(unique)}. Gemini проверит только {total} сильнейших кандидатов.",
         warning=" · ".join(warnings[-2:]),
         details={"raw": len(raw_items), "numeric_candidates": len(unique), "ai_total": total, "ai_done": 0},
     )
 
     checked = matched = errors = 0
     for index, item in enumerate(candidates, start=1):
-        progress = 42 + int(40 * (index - 1) / max(1, total))
+        progress = 40 + int(44 * (index - 1) / max(1, total))
         remaining = max(0, total - index + 1)
         set_radar_status(
             "running",
             f"AI-проверка роликов {index}/{total}",
             progress,
-            max(35, remaining * 6 + 45),
+            max(40, remaining * 10 + 45),
             "Проверяю русский язык, AI-природу, комедийную сценку, простой сюжет и возможность повторения.",
             warning=" · ".join(warnings[-2:]),
             details={
@@ -272,7 +299,7 @@ def sync_radar_v2():
             if refreshed_duration and 0 < float(refreshed_duration) <= 10.05:
                 item["duration_sec"] = float(refreshed_duration)
             add_radar_log(
-                f"AI {index}/{total}: MP4 готов, отправляю @{creator} в {os.environ.get('RADAR_MODEL','gemini-3.1-flash-lite')}.",
+                f"AI {index}/{total}: MP4 готов, отправляю @{creator} в {RADAR_MODEL}.",
                 stage="gemini-radar",
                 details={"duration_sec": item.get("duration_sec")},
             )
@@ -310,8 +337,8 @@ def sync_radar_v2():
                     pass
 
     set_radar_status(
-        "running", "Считаю аномалии авторов", 86, 80,
-        f"AI-проверка завершена: просмотрено {checked}, подошло {matched}. Собираю базовый уровень просмотров авторов.",
+        "running", "Обновляю рейтинги и аномалии", 87, 55,
+        f"AI-проверка завершена: просмотрено {checked}, подошло {matched}. Пересчитываю рейтинги по уже накопленной истории авторов.",
         warning=" · ".join(warnings[-2:]),
         details={"ai_done": checked, "matched": matched, "errors": errors},
     )
@@ -321,45 +348,17 @@ def sync_radar_v2():
         details={"checked": checked, "matched": matched, "errors": errors},
     )
 
-    with db_conn() as conn:
-        need_baseline = [
-            r[0] for r in conn.execute(
-                """SELECT username FROM tracked_creators
-                   WHERE sample_size=0
-                   ORDER BY best_views_per_hour DESC LIMIT 50"""
-            ).fetchall()
-        ]
-
-    if need_baseline:
-        add_radar_log(
-            f"Собираю baseline просмотров для {len(need_baseline)} авторов.",
-            stage="baselines",
-        )
-        try:
-            baseline_rows = run_actor_items(
-                client,
-                APIFY_CREATOR_ACTOR,
-                {
-                    "username": need_baseline,
-                    "resultsLimit": 10,
-                    "onlyPostsNewerThan": "30 days",
-                    "skipPinnedPosts": True,
-                    "includeTranscript": False,
-                    "includeDownloadedVideo": False,
-                },
-            )
-            with db_conn() as conn:
-                update_creator_baselines(conn, baseline_rows)
-                refresh_recent_scores(conn)
-            add_radar_log(
-                f"Baseline обновлён по {len(baseline_rows)} строкам.",
-                stage="baselines",
-            )
-        except Exception as exc:
-            source_errors += 1
-            warning = f"Не для всех авторов удалось посчитать медиану: {str(exc)[:180]}"
-            warnings.append(warning)
-            add_radar_log(warning, level="WARN", stage="baselines")
+    # Do not launch another potentially long creator Actor here. Existing tracked
+    # creators were refreshed in parallel at the start; newly discovered creators
+    # receive a stable baseline on the next radar run. This keeps one run bounded.
+    try:
+        with db_conn() as conn:
+            refresh_recent_scores(conn)
+        add_radar_log("Рейтинги пересчитаны по доступной истории авторов.", stage="baselines")
+    except Exception as exc:
+        warning = f"Часть аномалий автора будет доступна на следующем запуске: {str(exc)[:180]}"
+        warnings.append(warning)
+        add_radar_log(warning, level="WARN", stage="baselines")
 
     set_radar_status(
         "running", "Собираю мету недели", 95, 35,
