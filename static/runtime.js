@@ -8,28 +8,33 @@
   const eta = document.querySelector('#radarEta');
   const bar = document.querySelector('#radarProgressBar');
 
-  async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 870000) {
+  function paintStart(message = 'Создаю устойчивый radar job…') {
+    if (pct) pct.textContent = '1%';
+    if (stage) stage.textContent = 'Запускаю радар';
+    if (eta) eta.textContent = '≈ 6–10 мин';
+    if (bar) bar.style.width = '1%';
+    if (status) status.textContent = message;
+  }
+
+  async function postStart() {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), 20000);
     try {
-      const response = await fetch(url, {
+      const response = await fetch('/api/radar/sync', {
+        method: 'POST',
         cache: 'no-store',
-        ...options,
+        headers: {Accept: 'application/json'},
         signal: controller.signal,
-        headers: {
-          Accept: 'application/json',
-          ...(options.headers || {}),
-        },
       });
       const text = await response.text();
       const contentType = String(response.headers.get('content-type') || '').toLowerCase();
       if (contentType.includes('text/html') || /^\s*</.test(text)) {
-        throw new Error(`Render вернул HTML вместо API-ответа (HTTP ${response.status}). Проверь Render → Logs.`);
+        throw new Error(`Render вернул HTML вместо API-ответа (HTTP ${response.status})`);
       }
-      let data = null;
+      let data = {};
       if (text.trim()) {
         try { data = JSON.parse(text); }
-        catch (_) { throw new Error(`Некорректный JSON от сервера (HTTP ${response.status}).`); }
+        catch (_) { throw new Error(`Некорректный JSON от сервера (HTTP ${response.status})`); }
       }
       if (!response.ok) {
         const error = new Error(data?.error || data?.message || `HTTP ${response.status}`);
@@ -37,59 +42,58 @@
         throw error;
       }
       return data;
-    } catch (error) {
-      if (error?.name === 'AbortError') {
-        throw new Error('Поиск превысил безопасный лимит ожидания браузера. Проверь текущий статус и Render → Logs; сервер мог продолжить работу до своего timeout.');
-      }
-      throw error;
     } finally {
       clearTimeout(timer);
     }
   }
 
-  function paintImmediateStart() {
-    if (pct) pct.textContent = '1%';
-    if (stage) stage.textContent = 'Запускаю радар';
-    if (eta) eta.textContent = '≈ 8–12 мин';
-    if (bar) bar.style.width = '1%';
-    if (status) status.textContent = 'Команда отправлена. Один HTTP-запрос выполняет весь радар; этапы обновляются автоматически.';
+  async function refreshTruth() {
+    try {
+      if (typeof loadRadarStatus === 'function') await loadRadarStatus();
+      if (typeof loadCandidates === 'function') await loadCandidates();
+      if (typeof loadRadar === 'function') await loadRadar();
+    } catch (_) {}
   }
 
   async function startRadar() {
     button.disabled = true;
-    button.textContent = 'ПОИСК ИДЁТ…';
-    paintImmediateStart();
+    button.textContent = 'ЗАПУСКАЮ…';
+    paintStart();
 
-    // app.js continues polling /api/radar/status every 4 seconds while this long
-    // POST stays open, so progress, candidates and TOP update during the request.
     try {
-      const data = await fetchJsonWithTimeout('/api/radar/sync', {method: 'POST'}, 870000);
+      const data = await postStart();
+      const runId = data?.run_id || '—';
       if (status) {
-        status.textContent = data?.completed
-          ? `Поиск завершён. Run ID: ${data?.run_id || '—'}.`
-          : 'Запрос завершён. Обновляю результаты.';
+        status.textContent = data?.resumed
+          ? `Найден незавершённый поиск ${runId}. Продолжаю его, повторно Actor-ы не запускаю.`
+          : `Поиск принят. Run ID: ${runId}. Job сохранён в Apify KVS; Render может перезапуститься без потери поиска.`;
       }
-      if (typeof refreshEverything === 'function') await refreshEverything();
+      await refreshTruth();
     } catch (error) {
-      // 409 means another tab/request already runs the radar. Do not paint this as
-      // a dead failure: refresh server truth and keep the UI aligned with it.
       if (Number(error?.status || 0) === 409) {
         if (status) status.textContent = error.message;
-        if (typeof loadRadarStatus === 'function') await loadRadarStatus();
       } else {
-        if (status) status.textContent = `Поиск остановлен: ${error.message}`;
-        if (typeof loadRadarStatus === 'function') await loadRadarStatus();
+        // A 502 can happen exactly while Render swaps/restarts an instance. The
+        // launch may already have been persisted, so never call it "stopped" here.
+        if (status) status.textContent = `Связь с Render оборвалась: ${error.message}. Проверяю сохранённый job автоматически…`;
       }
+      setTimeout(refreshTruth, 1500);
+      setTimeout(refreshTruth, 4000);
     } finally {
-      // Server status is authoritative; loadRadarStatus will immediately disable
-      // the button again if a request is genuinely still running.
-      button.disabled = false;
-      button.textContent = 'ЗАПУСТИТЬ ПОИСК';
-      if (typeof loadRadarStatus === 'function') await loadRadarStatus();
+      setTimeout(async () => {
+        await refreshTruth();
+        // loadRadarStatus is authoritative and will disable the button again when
+        // the persistent job is actually active.
+        if (!button.disabled || button.textContent === 'ЗАПУСКАЮ…') {
+          button.disabled = false;
+          button.textContent = 'ЗАПУСТИТЬ ПОИСК';
+          await refreshTruth();
+        }
+      }, 1200);
     }
   }
 
-  // Capture phase guarantees that the old app.js click handler cannot also fire.
+  // Capture phase prevents the legacy app.js click handler from making a second POST.
   button.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopImmediatePropagation();
