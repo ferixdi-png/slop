@@ -1,5 +1,7 @@
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
+const copyRegistry = new Map();
+let copyCounter = 0;
 
 function escapeHtml(v = '') {
   return String(v).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
@@ -18,14 +20,33 @@ function formatEta(seconds) {
   if (s < 60) return `≈ ${Math.ceil(s)} сек`;
   return `≈ ${Math.ceil(s / 60)} мин`;
 }
+function registerCopy(text) {
+  const id = `copy-${++copyCounter}`;
+  copyRegistry.set(id, String(text || ''));
+  return id;
+}
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (_) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+}
 
 async function loadStatus() {
   const el = $('#serviceStatus');
   try {
-    const r = await fetch('/api/status');
+    const r = await fetch('/api/status', {cache:'no-store'});
     const s = await r.json();
     const ready = s.gemini_configured && s.apify_configured;
-    el.innerHTML = `<i></i>${ready ? 'ключи заданы' : 'нужны API ключи'}`;
+    el.innerHTML = `<i></i>${ready ? `готово · ${escapeHtml(s.analysis_model || '')}` : 'нужны API ключи'}`;
     el.classList.toggle('warn', !ready);
   } catch (_) {
     el.textContent = 'статус недоступен';
@@ -60,7 +81,7 @@ async function checkApis() {
   paintApiCard('gemini', null);
   paintApiCard('apify', null);
   try {
-    const r = await fetch('/api/diagnostics', {cache: 'no-store'});
+    const r = await fetch('/api/diagnostics', {cache:'no-store'});
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Не удалось проверить API');
     paintApiCard('gemini', d.gemini);
@@ -75,13 +96,13 @@ async function checkApis() {
 
 async function loadRadarStatus() {
   try {
-    const r = await fetch('/api/radar/status', {cache: 'no-store'});
+    const r = await fetch('/api/radar/status', {cache:'no-store'});
     const s = await r.json();
     if (!r.ok) return;
     const pct = Math.max(0, Math.min(100, Number(s.progress || 0)));
     $('#radarProgressPct').textContent = `${pct}%`;
     $('#radarStage').textContent = s.label || 'Радар';
-    $('#radarEta').textContent = s.stage === 'done' ? 'ГОТОВО' : formatEta(s.eta_seconds);
+    $('#radarEta').textContent = s.stage === 'done' ? 'ГОТОВО' : (s.stage === 'error' ? 'ОШИБКА' : formatEta(s.eta_seconds));
     $('#radarProgressBar').style.width = `${pct}%`;
     $('#radarStatusMessage').textContent = s.message || '';
 
@@ -99,7 +120,7 @@ async function loadRadarStatus() {
     if (d.raw !== undefined) stats.push(`<div><b>${formatNum(d.raw)}</b><span>сырых</span></div>`);
     if (d.numeric_candidates !== undefined) stats.push(`<div><b>${formatNum(d.numeric_candidates)}</b><span>≤10 сек / 7 дней</span></div>`);
     if (d.ai_total !== undefined) stats.push(`<div><b>${formatNum(d.ai_done || 0)}/${formatNum(d.ai_total)}</b><span>AI проверка</span></div>`);
-    if (d.matched !== undefined) stats.push(`<div><b>${formatNum(d.matched)}</b><span>подошло</span></div>`);
+    if (d.matched !== undefined) stats.push(`<div><b>${formatNum(d.matched)}</b><span>в TOP</span></div>`);
     $('#radarPipelineStats').innerHTML = stats.join('');
 
     const syncBtn = $('#syncRadar');
@@ -109,24 +130,6 @@ async function loadRadarStatus() {
       syncBtn.textContent = running ? 'ПОИСК ИДЁТ…' : 'ЗАПУСТИТЬ ПОИСК';
     }
   } catch (_) {}
-}
-
-async function loadRadar() {
-  const host = $('#radarRows');
-  if (!host) return;
-  try {
-    const r = await fetch('/api/radar', {cache: 'no-store'});
-    const rows = await r.json();
-    if (!r.ok) throw new Error(rows.error || 'Не удалось загрузить TOP');
-    if (!rows.length) {
-      host.innerHTML = '<div class="empty">Пока никто не прошёл финальный AI-фильтр. Ниже смотри кандидатов, уже полученных от Apify.</div>';
-      return;
-    }
-    host.innerHTML = rows.map((x, i) => radarCard(x, i)).join('');
-    $$('[data-radar-analyze]', host).forEach(btn => btn.addEventListener('click', () => analyzeRadar(btn.dataset.radarAnalyze)));
-  } catch (e) {
-    host.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
-  }
 }
 
 function radarCard(x, i) {
@@ -154,9 +157,27 @@ function radarCard(x, i) {
     <div class="radar-number"><b class="accent">${formatNum(x.views_per_hour)}/ч</b><small>скорость</small></div>
     <div class="radar-actions">
       <a href="${escapeAttr(x.post_url)}" target="_blank" rel="noopener">ОРИГИНАЛ</a>
-      <button data-radar-analyze="${x.id}">СОБРАТЬ ПРОМПТЫ 1:1</button>
+      <button data-radar-analyze="${x.id}">ПОЛУЧИТЬ УЛЬТРА-ПРОМПТЫ</button>
     </div>
   </div>`;
+}
+
+async function loadRadar() {
+  const host = $('#radarRows');
+  if (!host) return;
+  try {
+    const r = await fetch('/api/radar', {cache:'no-store'});
+    const rows = await r.json();
+    if (!r.ok) throw new Error(rows.error || 'Не удалось загрузить TOP');
+    if (!rows.length) {
+      host.innerHTML = '<div class="empty">TOP пока формируется. Ниже уже видны кандидаты, полученные от Apify.</div>';
+      return;
+    }
+    host.innerHTML = rows.map((x, i) => radarCard(x, i)).join('');
+    $$('[data-radar-analyze]', host).forEach(btn => btn.addEventListener('click', () => analyzeRadar(btn.dataset.radarAnalyze, btn)));
+  } catch (e) {
+    host.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
+  }
 }
 
 async function loadCandidates() {
@@ -166,8 +187,8 @@ async function loadCandidates() {
     const r = await fetch('/api/radar/candidates', {cache:'no-store'});
     const rows = await r.json();
     if (!r.ok) throw new Error('Не удалось загрузить кандидатов');
-    if (!rows.length) {
-      host.innerHTML = '<div class="empty">Apify ещё не передал ни одного ролика, прошедшего фильтр 7 дней + ≤10 секунд.</div>';
+    if (!Array.isArray(rows) || !rows.length) {
+      host.innerHTML = '<div class="empty">Apify ещё не передал ни одного Reel, прошедшего объективный фильтр 7 дней + ≤10 секунд.</div>';
       return;
     }
     host.innerHTML = rows.map((x, i) => {
@@ -216,62 +237,93 @@ async function refreshEverything() {
 
 async function syncRadar() {
   const btn = $('#syncRadar');
-  if (btn) { btn.disabled = true; btn.textContent = 'ПОИСК ИДЁТ…'; }
-  const poll = setInterval(refreshEverything, 5000);
+  if (btn) { btn.disabled = true; btn.textContent = 'ЗАПУСКАЮ…'; }
   try {
     const r = await fetch('/api/radar/sync', {method:'POST'});
     const d = await r.json();
-    if (!r.ok) throw new Error(d.error || 'Ошибка синхронизации');
+    if (!r.ok) throw new Error(d.error || 'Ошибка запуска радара');
+    $('#radarStatusMessage').textContent = 'Радар запущен в фоне. Можно оставаться на странице — статус и результаты обновляются автоматически.';
+    await refreshEverything();
   } catch (e) {
     $('#radarStatusMessage').textContent = e.message;
-  } finally {
-    clearInterval(poll);
-    await refreshEverything();
+    if (btn) { btn.disabled = false; btn.textContent = 'ЗАПУСТИТЬ ПОИСК'; }
   }
 }
 
-async function analyzeRadar(id) {
+async function analyzeRadar(id, button = null) {
   const progress = $('#analysisProgress');
   const result = $('#analysisResult');
+  const old = button?.textContent;
+  if (button) { button.disabled = true; button.textContent = 'GEMINI АНАЛИЗИРУЕТ…'; }
   progress.classList.remove('hidden');
   result.classList.add('hidden');
   result.innerHTML = '';
   window.scrollTo({top: progress.offsetTop - 20, behavior:'smooth'});
   try {
-    const r = await fetch(`/api/radar/${id}/analyze`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({owned_or_licensed:false})});
+    const r = await fetch(`/api/radar/${id}/analyze`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({owned_or_licensed:false})
+    });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || 'Ошибка разбора');
-    renderResult(data.result);
+    renderResult(data.result, data.model || '');
   } catch (e) {
     result.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
     result.classList.remove('hidden');
   } finally {
     progress.classList.add('hidden');
+    if (button) { button.disabled = false; button.textContent = old || 'ПОЛУЧИТЬ УЛЬТРА-ПРОМПТЫ'; }
   }
 }
 
-function renderResult(d) {
+function renderResult(d, modelName = '') {
   const result = $('#analysisResult');
   const b0 = d.block_0_director || {};
   const b2 = d.block_2_compliance || {};
   const b3 = d.block_3_video || {};
   const b4 = d.block_4_audio || {};
   const b5 = d.block_5_publication || {};
+  const photoPrompt = d.block_1_frame0_prompt || '';
+  const videoPrompt = JSON.stringify(b3, null, 2);
   const all = buildWholePackage(d);
-  result.innerHTML = `<div class="result-top"><div class="stat"><span>Исходная длина</span><b>${Number(d.source_duration_sec || 0).toFixed(2)} сек</b></div><div class="stat"><span>Итоговая длина</span><b class="accent">${Number(b3.exact_duration_sec || d.source_duration_sec || 0).toFixed(2)} сек</b></div><div class="stat"><span>Язык</span><b>${escapeHtml(d.source_language || 'русский')}</b></div><div class="stat"><span>QA точность</span><b>${Number(d.reconstruction_confidence || 0)}%</b></div></div>
-    <div class="card master-copy"><div><span class="step">ГОТОВО</span><h2>Frame 0 + production package</h2><p>Сначала стартовый кадр из Блока 1, затем оживление Блоком 3.</p></div><button class="copy-all" data-copy="${escapeAttr(all)}">КОПИРОВАТЬ ВСЁ</button></div>
-    ${blockCard('БЛОК 0','Режиссёрское решение',directorText(b0))}${blockCard('БЛОК 1','PHOTO PROMPT — стартовый кадр',d.block_1_frame0_prompt || '')}${blockCard('БЛОК 2','Проверка Frame 0',complianceText(b2))}${blockCard('БЛОК 3','VIDEO PROMPT — оживление',JSON.stringify(b3,null,2))}${blockCard('БЛОК 4','Русская речь и аудио',audioText(b4))}${blockCard('БЛОК 5','Публикация',publicationText(b5))}`;
+  const photoId = registerCopy(photoPrompt);
+  const videoId = registerCopy(videoPrompt);
+  const allId = registerCopy(all);
+
+  result.innerHTML = `
+    <div class="result-top">
+      <div class="stat"><span>Исходная длина</span><b>${Number(d.source_duration_sec || 0).toFixed(2)} сек</b></div>
+      <div class="stat"><span>Итоговая длина</span><b class="accent">${Number(b3.exact_duration_sec || d.source_duration_sec || 0).toFixed(2)} сек</b></div>
+      <div class="stat"><span>Язык</span><b>${escapeHtml(d.source_language || 'русский')}</b></div>
+      <div class="stat"><span>QA точность</span><b>${Number(d.reconstruction_confidence || 0)}%</b></div>
+    </div>
+    <div class="card master-copy">
+      <div><span class="step">ГОТОВО</span><h2>Frame 0 + ультра-детальный Video Prompt</h2><p>${escapeHtml(modelName || b3.model || 'Gemini')} · сначала генерируй стартовый кадр, затем оживляй его Video Prompt.</p></div>
+      <div class="prompt-actions">
+        <button class="copy-primary" data-copy-id="${photoId}">КОПИРОВАТЬ PHOTO PROMPT</button>
+        <button class="copy-primary" data-copy-id="${videoId}">КОПИРОВАТЬ VIDEO PROMPT</button>
+        <button class="copy-all" data-copy-id="${allId}">КОПИРОВАТЬ ВСЁ</button>
+      </div>
+    </div>
+    ${blockCard('БЛОК 0','Режиссёрское решение',directorText(b0))}
+    ${blockCard('БЛОК 1','PHOTO PROMPT — стартовый кадр',photoPrompt)}
+    ${blockCard('БЛОК 2','Проверка Frame 0',complianceText(b2))}
+    ${blockCard('БЛОК 3','VIDEO PROMPT — оживление',videoPrompt)}
+    ${blockCard('БЛОК 4','Русская речь и аудио',audioText(b4))}
+    ${blockCard('БЛОК 5','Публикация',publicationText(b5))}`;
   result.classList.remove('hidden');
   bindCopyButtons(result);
   window.scrollTo({top: result.offsetTop - 20, behavior:'smooth'});
 }
+
 function directorText(b){return [`Механика шутки\n${b.joke_mechanics||''}`,`Стратегия реконструкции\n${b.exact_copy_strategy||''}`,`Безопасные изменения\n${b.safety_adjustments||''}`,`Визуальная привязка\n${(b.visual_bindings||[]).join('\n')}`,`Локация\n${b.location||''}`,`Реализм\n${b.realism_decision||''}`].join('\n\n');}
 function complianceText(b){return [`Персонажи\n${(b.characters||[]).join('\n')}`,`Позы и позиции\n${(b.poses_and_positions||[]).join('\n')}`,`Руки и предметы\n${(b.hands_and_objects||[]).join('\n')}`,`Отсутствие текста\n${b.no_text_check||''}`,`Первая фонема\n${b.first_phoneme_readiness||''}`,`Проверка реализма\n${(b.realism_check||[]).join('\n')}`].join('\n\n');}
 function audioText(b){const d=(b.dialogue||[]).map(x=>`Линия ${x.line_number}\n${x.visual_speaker_binding}\n${x.text}`).join('\n\n');return [d,`Произношение\n${(b.pronunciation_hints||[]).join('\n')}`,`Интонации и смех\n${(b.intonation_and_laughter_map||[]).join('\n')}`].join('\n\n');}
 function publicationText(b){return [`Пост\n${b.short_post||''}`,`Заголовок\n${b.shorts_title||''}`,`Фраза удержания\n${b.retention_phrase||''}`,`Хэштеги\n${(b.hashtags||[]).join(' ')}`].join('\n\n');}
 function buildWholePackage(d){return [`БЛОК 0. РЕЖИССЁРСКОЕ РЕШЕНИЕ\n${directorText(d.block_0_director||{})}`,`БЛОК 1. PHOTO PROMPT — FRAME 0\n${d.block_1_frame0_prompt||''}`,`БЛОК 2. ПРОВЕРКА FRAME 0\n${complianceText(d.block_2_compliance||{})}`,`БЛОК 3. VIDEO PROMPT\n${JSON.stringify(d.block_3_video||{},null,2)}`,`БЛОК 4. РУССКАЯ РЕЧЬ И АУДИО\n${audioText(d.block_4_audio||{})}`,`БЛОК 5. ПУБЛИКАЦИЯ\n${publicationText(d.block_5_publication||{})}`].join('\n\n════════════════════════════════\n\n');}
-function blockCard(tag,title,text){return `<div class="card block-card"><div class="card-head"><div><span class="step">${tag}</span><h2>${escapeHtml(title)}</h2></div><button class="copy-mini" data-copy="${escapeAttr(text)}">КОПИРОВАТЬ</button></div><pre>${escapeHtml(text)}</pre></div>`;}
-function bindCopyButtons(root=document){$$('[data-copy]',root).forEach(btn=>btn.addEventListener('click',async()=>{await navigator.clipboard.writeText(btn.dataset.copy||'');const old=btn.textContent;btn.textContent='СКОПИРОВАНО';setTimeout(()=>btn.textContent=old,1200);}));}
+function blockCard(tag,title,text){const id=registerCopy(text);return `<div class="card block-card"><div class="card-head"><div><span class="step">${tag}</span><h2>${escapeHtml(title)}</h2></div><button class="copy-mini" data-copy-id="${id}">КОПИРОВАТЬ</button></div><pre>${escapeHtml(text)}</pre></div>`;}
+function bindCopyButtons(root=document){$$('[data-copy-id]',root).forEach(btn=>btn.addEventListener('click',async()=>{const text=copyRegistry.get(btn.dataset.copyId)||'';await copyText(text);const old=btn.textContent;btn.textContent='СКОПИРОВАНО';setTimeout(()=>btn.textContent=old,1200);}));}
 
 $('#syncRadar')?.addEventListener('click', syncRadar);
 $('#refreshRadar')?.addEventListener('click', refreshEverything);
@@ -281,4 +333,5 @@ loadStatus();
 checkApis();
 refreshEverything();
 setInterval(loadRadarStatus, 4000);
-setInterval(() => { loadRadar(); loadCandidates(); }, 12000);
+setInterval(() => { loadRadar(); loadCandidates(); }, 10000);
+setInterval(loadRadarMeta, 30000);
