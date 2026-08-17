@@ -85,6 +85,106 @@ class ProductionPackage(BaseModel):
     block_5_publication: PublicationBlock
 
 
+# ─────────────────────────────────────────────────────────────
+# INTERNAL FORENSIC SOURCE MAP
+# Used before the public 0–5 package is created.
+# ─────────────────────────────────────────────────────────────
+
+
+class ForensicCharacter(BaseModel):
+    stable_visual_binding: str
+    full_visual_description: str
+    clothing_and_colors: str
+    initial_screen_position: str
+    initial_body_pose: str
+    initial_head_and_gaze: str
+    role_in_scene: str
+    identity_continuity_notes: list[str]
+
+
+class ForensicObject(BaseModel):
+    object_description: str
+    initial_location_or_holder: str
+    initial_orientation_state: str
+    continuity_rule: str
+
+
+class ForensicFrameZero(BaseModel):
+    camera_position_and_height: str
+    framing_and_composition: str
+    lens_and_perspective: str
+    character_states: list[str]
+    hand_states: list[str]
+    object_states: list[str]
+    gaze_and_expression_states: list[str]
+    mouth_states: list[str]
+    lighting_and_environment: str
+    first_speaker_binding: str
+    first_phoneme_readiness: str
+
+
+class ForensicDialogueTurn(BaseModel):
+    line_number: int
+    start_sec: float
+    end_sec: float
+    speaker_binding: str
+    exact_russian_text: str
+    voice_description: str
+    emotion_and_intonation: str
+    speaker_mouth_behavior: str
+    listener_mouth_states: list[str]
+
+
+class ForensicTimelineEvent(BaseModel):
+    start_sec: float
+    end_sec: float
+    event_index: int
+    shot_or_segment: str
+    character_positions: list[str]
+    body_actions: list[str]
+    hand_actions: list[str]
+    gaze_and_expressions: list[str]
+    object_states: list[str]
+    camera_and_framing: str
+    audio_and_speech: str
+    mouth_states: list[str]
+    causal_link_to_next: str
+
+
+class ForensicSourceAnalysis(BaseModel):
+    measured_duration_sec: float
+    detected_language: str
+    shot_count: int = Field(ge=1)
+    is_single_continuous_take: bool
+    frame_zero: ForensicFrameZero
+    characters: list[ForensicCharacter]
+    objects: list[ForensicObject]
+    dialogue_turns: list[ForensicDialogueTurn]
+    timeline_events: list[ForensicTimelineEvent]
+    camera_path_summary: list[str]
+    lighting_continuity: list[str]
+    final_frame_state: list[str]
+    exact_story_mechanics: str
+    uncertainties: list[str]
+
+
+class ReconstructionAudit(BaseModel):
+    exact_duration_ok: bool
+    frame_zero_match_ok: bool
+    dialogue_text_and_order_ok: bool
+    speaker_binding_ok: bool
+    lip_sync_lock_ok: bool
+    spatial_positions_ok: bool
+    object_continuity_ok: bool
+    action_order_and_single_occurrence_ok: bool
+    camera_logic_ok: bool
+    source_story_mechanics_ok: bool
+    realism_override_ok: bool
+    overall_match_score: int = Field(ge=0, le=100)
+    critical_issues: list[str]
+    repair_instructions: list[str]
+
+
 class RadarAssessment(BaseModel):
     is_russian: bool
     is_ai_video: bool
