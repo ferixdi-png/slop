@@ -16,13 +16,18 @@ RADAR_MODEL = "gemini-3.1-flash-lite"
 APIFY_SEARCH_ACTOR = os.environ.get("APIFY_SEARCH_ACTOR", "apify/instagram-search-scraper")
 APIFY_HASHTAG_ACTOR = os.environ.get("APIFY_HASHTAG_ACTOR", "apify/instagram-hashtag-scraper")
 APIFY_CREATOR_ACTOR = os.environ.get("APIFY_CREATOR_ACTOR", "apify/instagram-reel-scraper")
-SEARCH_LIMIT = int(os.environ.get("APIFY_SEARCH_LIMIT", "64"))
-HASHTAG_LIMIT = int(os.environ.get("APIFY_HASHTAG_LIMIT", "80"))
-# The radar only needs the strongest discovery pool. Detailed prompts are generated
-# later on demand for the chosen winners, so checking more than 30 videos wastes time/tokens.
-RADAR_AI_ANALYZE_LIMIT = min(30, int(os.environ.get("RADAR_AI_ANALYZE_LIMIT", "30")))
-RADAR_KEEP_LIMIT = int(os.environ.get("RADAR_KEEP_LIMIT", "30"))
+
+# MASS RADAR PROFILE. Search Scraper's limit is per search term. With an AI-specific
+# comma-separated query this intentionally creates a much larger discovery pool.
+SEARCH_LIMIT = min(250, int(os.environ.get("APIFY_SEARCH_LIMIT", "60")))
+HASHTAG_LIMIT = int(os.environ.get("APIFY_HASHTAG_LIMIT", "24"))
+RADAR_AI_ANALYZE_LIMIT = min(300, int(os.environ.get("RADAR_AI_ANALYZE_LIMIT", "240")))
+RADAR_KEEP_LIMIT = min(100, int(os.environ.get("RADAR_KEEP_LIMIT", "60")))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "120"))
+
+# User target: a repeatable ~10-second format, verified later from the downloaded MP4.
+RADAR_MIN_DURATION_SEC = float(os.environ.get("RADAR_MIN_DURATION_SEC", "9.0"))
+RADAR_MAX_DURATION_SEC = float(os.environ.get("RADAR_MAX_DURATION_SEC", "10.05"))
 
 # Fine-grained video sampling for clips up to 10 seconds.
 FORENSIC_VIDEO_FPS = float(os.environ.get("FORENSIC_VIDEO_FPS", "5"))
@@ -32,15 +37,22 @@ RADAR_VIDEO_FPS = float(os.environ.get("RADAR_VIDEO_FPS", "2"))
 # now controlled by an in-process request lock rather than a time-based cooldown.
 RADAR_SYNC_COOLDOWN_MINUTES = 0
 
-# Instagram Search Scraper accepts multiple search phrases in one comma-separated query.
+# AI-SPECIFIC DISCOVERY ONLY. No generic #юмор/#приколы/#бабушка pool: those flooded
+# Gemini with normal non-AI videos in the previous run.
 SEARCH_TERMS = [
-    "нейроюмор, ии юмор, нейросеть прикол, нейросеть юмор, AI прикол, AI юмор, "
-    "AI бабушка, нейросеть бабушка, AI деревня, нейросеть деревня, AI семья, "
-    "AI муж жена, AI дед, AI животные юмор, AI скетч"
+    "нейроюмор, ии юмор, AI юмор, нейросеть прикол, AI прикол, нейровидео юмор, "
+    "ии видео юмор, AI video comedy russian, AI бабушка юмор, нейросеть бабушка, "
+    "AI дед юмор, нейросеть дед, AI деревня юмор, нейросеть деревня юмор, "
+    "AI муж жена юмор, нейросеть муж жена, AI семья юмор, нейросеть семья прикол, "
+    "AI животные юмор, нейросеть животные прикол, Veo 3 юмор, Veo 3 прикол, "
+    "Veo3 русский юмор, Kling AI юмор, Seedance юмор, Sora юмор, AI slop русский, "
+    "нейрослоп, AI скетч русский, нейросеть скетч"
 ]
 HASHTAGS = [
-    "нейроюмор", "ииюмор", "аиюмор", "нейросеть", "нейросети",
-    "aivideo", "бабушка", "деревня", "приколы", "юмор",
+    "нейроюмор", "ииюмор", "аиюмор", "нейровидео", "иивидео", "аивидео",
+    "нейроконтент", "нейромем", "нейросетьюмор", "нейросетьприкол",
+    "aicomedy", "aihumor", "aivideo", "aislop", "veo3", "veo3ai",
+    "нейросеть", "нейросети",
 ]
 
 REALISM_LOCK = """
