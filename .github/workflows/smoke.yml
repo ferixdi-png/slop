@@ -17,12 +17,13 @@ jobs:
         run: pip install -r requirements.txt
       - name: Compile Python
         run: python -m compileall -q .
-      - name: Flask smoke test
+      - name: Flask + persistent restart smoke test
         env:
           SECRET_KEY: smoke-test
         run: |
           python - <<'PY'
           import app as app_module
+          import persistent_radar
           from progress import set_radar_status
 
           c = app_module.app.test_client()
@@ -31,35 +32,79 @@ jobs:
               print(path, r.status_code, r.content_type)
               assert r.status_code == 200, (path, r.status_code, r.get_data(as_text=True))
 
-          def fake_sync_radar():
-              result = {'raw': 3, 'after_numeric_filter': 2, 'ai_checked': 1, 'matched': 1, 'kept': 1}
-              set_radar_status('done', 'Поиск завершён', 100, 0, 'Smoke radar completed.', details=result)
-              return result
-
+          # 1) Button contract: launch is short and returns 202, never waits for the full radar.
           def fake_persistent_start():
               return ({
                   'ok': True,
                   'accepted': True,
                   'completed': False,
+                  'resumed': False,
                   'run_id': 'smoke-persistent-run',
                   'phase': 'queued',
               }, 202)
 
-          # Old synchronous route uses sync_radar; the durable route uses
-          # start_or_resume_radar. Keeping both fakes makes CI safe during the
-          # migration commit and verifies either HTTP contract explicitly.
-          app_module.sync_radar = fake_sync_radar
           app_module.start_or_resume_radar = fake_persistent_start
-
           r = c.post('/api/radar/sync')
-          print('/api/radar/sync', r.status_code, r.get_json())
-          assert r.status_code in (200, 202)
           payload = r.get_json()
+          print('/api/radar/sync', r.status_code, payload)
+          assert r.status_code == 202
           assert payload['ok'] is True
-          if r.status_code == 200:
-              assert payload['completed'] is True
-          else:
-              assert payload['accepted'] is True and payload['completed'] is False
+          assert payload['accepted'] is True
+          assert payload['completed'] is False
+
+          # 2) Simulate a Render restart: local SQLite says READY, no local worker,
+          # but an active durable job exists in KVS. /api/radar/status MUST resume it.
+          set_radar_status('ready', 'Готов к поиску', 0, None, 'local state lost')
+          state = {'resumed': False}
+          durable_job = {
+              'version': 4,
+              'run_id': 'smoke-resume-run',
+              'phase': 'discovering',
+              'sources': {
+                  'hashtags': {'run_id': 'apify-run-1', 'status': 'RUNNING'},
+              },
+          }
+
+          def fake_runtime_state():
+              return {
+                  'run_id': 'smoke-resume-run' if state['resumed'] else None,
+                  'started_at': None,
+                  'worker_active': state['resumed'],
+                  'worker_pending': False,
+                  'server_pid': 1,
+                  'runtime': 'persistent_apify_job_v4',
+              }
+
+          def fake_resume_if_needed():
+              state['resumed'] = True
+              set_radar_status(
+                  'running', 'Возобновляю поиск после рестарта', 12, 300,
+                  'durable KVS job resumed',
+                  details={'run_id': durable_job['run_id'], 'persistent_job': True},
+              )
+              return durable_job
+
+          app_module.runtime_state = fake_runtime_state
+          app_module.resume_if_needed = fake_resume_if_needed
+          r = c.get('/api/radar/status')
+          status = r.get_json()
+          print('/api/radar/status restart simulation', status)
+          assert r.status_code == 200
+          assert state['resumed'] is True
+          assert status['stage'] == 'running'
+          assert status['progress'] >= 1
+          assert status['details']['persistent_run_id'] == 'smoke-resume-run'
+
+          # 3) Persistent core: an already-active KVS job is resumed, not duplicated.
+          called = {'worker': 0}
+          persistent_radar.load_radar_job = lambda: durable_job
+          persistent_radar.ensure_worker = lambda job: called.__setitem__('worker', called['worker'] + 1) or True
+          payload, code = persistent_radar.start_or_resume()
+          print('persistent_radar.start_or_resume existing job', code, payload)
+          assert code == 202
+          assert payload['resumed'] is True
+          assert payload['run_id'] == durable_job['run_id']
+          assert called['worker'] == 1
           PY
       - uses: actions/setup-node@v4
         with:
@@ -68,3 +113,7 @@ jobs:
         run: |
           node --check static/app.js
           node --check static/runtime.js
+      - name: Verify single launch contract in HTML
+        run: |
+          grep -q 'runtime.js?v=20260817-1905' templates/index.html
+          grep -q "fetch('/api/radar/sync'" static/runtime.js
