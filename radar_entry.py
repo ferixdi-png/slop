@@ -1,11 +1,14 @@
 import radar_service_v2 as _pipeline
 from actor_utils import run_actor_items_checked
 from cloud_state import save_radar_snapshot
+from db import db_conn
+from progress import set_radar_status
 from radar_normalize import normalize_reel
 from radar_quality import (
     refresh_recent_scores_quality,
     save_meta_report_quality,
     save_post_preserve_ai,
+    top_eligible,
 )
 
 # Live pipeline patches:
@@ -23,6 +26,29 @@ _pipeline.save_meta_report = save_meta_report_quality
 
 def sync_radar():
     result = _pipeline.sync_radar_v2()
+
+    with db_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM radar_posts
+               WHERE datetime(published_at)>=datetime('now','-7 days') AND ai_match=1
+               ORDER BY viral_score_v2 DESC,views_per_hour DESC,views DESC
+               LIMIT 120"""
+        ).fetchall()
+    visible_top = [dict(row) for row in rows if top_eligible(dict(row))]
+    result["kept"] = min(len(visible_top), 30)
+
+    set_radar_status(
+        "done",
+        "Поиск завершён",
+        100,
+        0,
+        (
+            f"Собрано {result.get('raw', 0)} → после фильтра {result.get('after_numeric_filter', 0)} "
+            f"→ Gemini проверил {result.get('ai_checked', 0)} → достойных повторения в TOP {result['kept']}."
+        ),
+        details=result,
+    )
+
     try:
         save_radar_snapshot()
     except Exception:
