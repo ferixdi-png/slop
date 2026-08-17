@@ -1,8 +1,8 @@
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from apify_client import ApifyClient
 
+from actor_utils import run_actor_group_checked
 from config import (
     APIFY_CREATOR_ACTOR,
     APIFY_HASHTAG_ACTOR,
@@ -16,20 +16,13 @@ from config import (
     SEARCH_TERMS,
 )
 from db import db_conn
-from gemini_service import classify_radar_video
 from progress import set_radar_status
-from radar_logs import (
-    add_radar_log,
-    get_radar_run_id,
-    reset_radar_run_id,
-    set_radar_run_id,
-)
+from radar_logs import add_radar_log
 from radar_normalize import normalize_reel
 from radar_service import (
     load_creator_stats,
     matches,
     refresh_recent_scores,
-    run_actor_items,
     save_meta_report,
     save_post,
     update_creator_baselines,
@@ -60,28 +53,18 @@ def _assessment_details(assessment):
     }
 
 
-def _run_source(token, run_id, actor_id, run_input):
-    """Run one Apify source in its own thread/client while preserving Render runId logs."""
-    context_token = set_radar_run_id(run_id)
-    try:
-        client = ApifyClient(token)
-        return run_actor_items(client, actor_id, run_input)
-    finally:
-        reset_radar_run_id(context_token)
-
-
 def sync_radar_v2():
     token = os.environ.get("APIFY_API_TOKEN")
     if not token:
         raise RuntimeError("Не задан APIFY_API_TOKEN")
 
+    client = ApifyClient(token)
     raw_items = []
     source_errors = 0
     warnings = []
-    run_id = get_radar_run_id()
 
     add_radar_log(
-        "Старт полного радара.",
+        "Старт полного радара в low-memory режиме Starter 512 MB.",
         stage="pipeline",
         details={
             "search_actor": APIFY_SEARCH_ACTOR,
@@ -90,13 +73,13 @@ def sync_radar_v2():
             "hashtags": len(HASHTAGS),
             "ai_limit": RADAR_AI_ANALYZE_LIMIT,
             "top_limit": RADAR_KEEP_LIMIT,
-            "source_mode": "parallel",
+            "source_mode": "remote_parallel_single_local_poll",
         },
     )
 
     set_radar_status(
         "running", "Подготавливаю поиск", 3, 600,
-        "Читаю базу авторов и готовлю параллельный сбор Apify.",
+        "Читаю базу авторов и готовлю Apify. Actor-ы работают на стороне Apify; Render только опрашивает их одним лёгким циклом.",
     )
 
     with db_conn() as conn:
@@ -132,53 +115,46 @@ def sync_radar_v2():
         )
 
     set_radar_status(
-        "running", "Собираю источники параллельно", 10, 260,
-        f"Одновременно запускаю {len(source_specs)} источника: Popular Reels, хештеги"
-        + (" и наблюдаемые авторы." if tracked else "."),
+        "running", "Запускаю источники Apify", 10, 260,
+        f"Запускаю {len(source_specs)} Actor на стороне Apify без локальных Python worker-потоков.",
         details={"sources_total": len(source_specs), "sources_done": 0, "tracked_creators": len(tracked)},
     )
     add_radar_log(
-        "Запускаю Apify-источники параллельно.",
+        "Стартую Actor-ы удалённо; локальная параллельность отключена для экономии RAM.",
         stage="sources",
         details={"sources": list(source_specs.keys())},
     )
 
-    source_results = {}
-    completed_sources = 0
-    with ThreadPoolExecutor(max_workers=len(source_specs), thread_name_prefix="apify-source") as executor:
-        future_map = {
-            executor.submit(_run_source, token, run_id, actor_id, run_input): name
-            for name, (actor_id, run_input) in source_specs.items()
-        }
-        for future in as_completed(future_map):
-            name = future_map[future]
-            completed_sources += 1
-            try:
-                rows = future.result() or []
-                source_results[name] = rows
-                add_radar_log(
-                    f"Источник {name} завершён: {len(rows)} элементов.",
-                    stage="sources",
-                )
-            except Exception as exc:
-                source_errors += 1
-                source_results[name] = []
-                if name == "popular":
-                    warning = f"Popular Reels недоступен — продолжаю по другим источникам: {str(exc)[:220]}"
-                elif name == "hashtags":
-                    warning = f"Hashtag Scraper временно недоступен: {str(exc)[:220]}"
-                else:
-                    warning = f"Мониторинг авторов временно недоступен: {str(exc)[:220]}"
-                warnings.append(warning)
-                add_radar_log(warning, level="WARN", stage="sources")
+    source_results, source_failures = run_actor_group_checked(client, source_specs)
+    source_errors = len(source_failures)
 
-            progress = 10 + int(20 * completed_sources / max(1, len(source_specs)))
-            set_radar_status(
-                "running", "Собираю источники параллельно", progress, max(30, 260 - completed_sources * 60),
-                f"Готово источников: {completed_sources}/{len(source_specs)}.",
-                warning=" · ".join(warnings[-2:]),
-                details={"sources_total": len(source_specs), "sources_done": completed_sources},
+    for name, error_text in source_failures.items():
+        if name == "popular":
+            warning = f"Popular Reels недоступен — продолжаю по другим источникам: {str(error_text)[:220]}"
+        elif name == "hashtags":
+            warning = f"Hashtag Scraper временно недоступен: {str(error_text)[:220]}"
+        else:
+            warning = f"Мониторинг авторов временно недоступен: {str(error_text)[:220]}"
+        warnings.append(warning)
+        add_radar_log(warning, level="WARN", stage="sources")
+
+    for name, rows in source_results.items():
+        if name not in source_failures:
+            add_radar_log(
+                f"Источник {name} завершён: {len(rows or [])} элементов.",
+                stage="sources",
             )
+
+    set_radar_status(
+        "running", "Источники Apify собраны", 30, 45,
+        f"Завершено источников: {len(source_results)}/{len(source_specs)}. Перехожу к фильтрации.",
+        warning=" · ".join(warnings[-2:]),
+        details={
+            "sources_total": len(source_specs),
+            "sources_done": len(source_results),
+            "source_errors": source_errors,
+        },
+    )
 
     creator_rows = source_results.get("creators", [])
     if creator_rows:
@@ -230,13 +206,15 @@ def sync_radar_v2():
         reverse=True,
     )[:RADAR_AI_ANALYZE_LIMIT]
 
+    raw_count = len(raw_items)
+    numeric_count = len(unique)
     add_radar_log(
         "Числовой фильтр завершён.",
         stage="filter",
         details={
-            "raw": len(raw_items),
+            "raw": raw_count,
             "rejected_or_invalid": rejected_numeric,
-            "unique_under_10s_last_7d": len(unique),
+            "unique_under_10s_last_7d": numeric_count,
             "sent_to_ai": len(candidates),
         },
     )
@@ -251,13 +229,30 @@ def sync_radar_v2():
             stage="database",
         )
 
+    # Free the bulky Apify payload before importing the Gemini SDK. On a Starter
+    # instance this keeps peak RSS well below the 512 MB limit.
+    del raw_items
+    del source_results
+    del creator_rows
+    del creator_stats
+    del unique
+
     total = len(candidates)
     set_radar_status(
         "running", "Начинаю AI-проверку видео", 40, max(90, total * 10 + 60),
-        f"После числового фильтра осталось {len(unique)}. Gemini проверит только {total} сильнейших кандидатов.",
+        f"После числового фильтра осталось {numeric_count}. Gemini проверит только {total} сильнейших кандидатов.",
         warning=" · ".join(warnings[-2:]),
-        details={"raw": len(raw_items), "numeric_candidates": len(unique), "ai_total": total, "ai_done": 0},
+        details={"raw": raw_count, "numeric_candidates": numeric_count, "ai_total": total, "ai_done": 0},
     )
+
+    classify_radar_video = None
+    if total:
+        add_radar_log(
+            f"Загружаю Gemini runtime только сейчас, после освобождения Apify payload. Модель: {RADAR_MODEL}.",
+            stage="gemini-radar",
+        )
+        from gemini_service import classify_radar_video as _classify_radar_video
+        classify_radar_video = _classify_radar_video
 
     checked = matched = errors = 0
     for index, item in enumerate(candidates, start=1):
@@ -271,8 +266,8 @@ def sync_radar_v2():
             "Проверяю русский язык, AI-природу, комедийную сценку, простой сюжет и возможность повторения.",
             warning=" · ".join(warnings[-2:]),
             details={
-                "raw": len(raw_items),
-                "numeric_candidates": len(unique),
+                "raw": raw_count,
+                "numeric_candidates": numeric_count,
                 "ai_total": total,
                 "ai_done": index - 1,
                 "matched": matched,
@@ -348,9 +343,6 @@ def sync_radar_v2():
         details={"checked": checked, "matched": matched, "errors": errors},
     )
 
-    # Do not launch another potentially long creator Actor here. Existing tracked
-    # creators were refreshed in parallel at the start; newly discovered creators
-    # receive a stable baseline on the next radar run. This keeps one run bounded.
     try:
         with db_conn() as conn:
             refresh_recent_scores(conn)
@@ -395,8 +387,8 @@ def sync_radar_v2():
         add_radar_log(warning, level="ERROR", stage="meta")
 
     result = {
-        "raw": len(raw_items),
-        "after_numeric_filter": len(unique),
+        "raw": raw_count,
+        "after_numeric_filter": numeric_count,
         "ai_checked": checked,
         "matched": matched,
         "errors": errors,
@@ -405,7 +397,7 @@ def sync_radar_v2():
     }
     set_radar_status(
         "done", "Поиск завершён", 100, 0,
-        f"Собрано {len(raw_items)} → после фильтра {len(unique)} → AI проверил {checked} → в TOP {len(top_rows)}.",
+        f"Собрано {raw_count} → после фильтра {numeric_count} → AI проверил {checked} → в TOP {len(top_rows)}.",
         warning=" · ".join(warnings[-2:]),
         details=result,
     )
