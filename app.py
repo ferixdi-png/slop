@@ -5,61 +5,26 @@ from threading import Lock, Thread
 
 from flask import Flask, jsonify, render_template, request
 
+from cloud_state import restore_radar_snapshot_if_empty
 from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_KEEP_LIMIT, RADAR_SYNC_COOLDOWN_MINUTES
 from db import db_conn, init_db
 from gemini_service import analyze_video
 from progress import get_radar_status, set_radar_status
 from prompt_target import lock_generation_target
 from radar_entry import sync_radar
+from radar_quality import recommendation_status_for_row, top_eligible
 from reel_media import download_reel_for_analysis
 from service_checks import check_all_services
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
 init_db()
+try:
+    restore_radar_snapshot_if_empty()
+except Exception:
+    # A cloud restore failure must never prevent the web app from starting.
+    pass
 radar_run_lock = Lock()
-
-
-def recommendation_status(row):
-    score = float(row.get("viral_score_v2") or 0)
-    anomaly = float(row.get("anomaly_multiplier") or 0)
-    hours = float(row.get("hours_since_publish") or 999)
-    views = int(row.get("views") or 0)
-    vph = float(row.get("views_per_hour") or 0)
-    usual = float(row.get("creator_usual_views") or 0)
-
-    if score >= 85 or (score >= 78 and anomaly >= 5 and hours <= 72):
-        level, label = "S", "🔥 СРОЧНО БРАТЬ В РАБОТУ"
-    elif score >= 72 or (score >= 65 and anomaly >= 3) or (score >= 65 and vph >= 20000):
-        level, label = "A", "🟢 СИЛЬНЫЙ КАНДИДАТ"
-    elif score >= 56:
-        level, label = "B", "🟡 МОЖНО ТЕСТИРОВАТЬ"
-    else:
-        level, label = "C", "⚪ НИЗКИЙ ПРИОРИТЕТ"
-
-    reasons = []
-    if score >= 80:
-        reasons.append(f"Viral Score {score:.0f}/100")
-    if anomaly >= 2 and usual > 0:
-        reasons.append(f"аномалия автора ×{anomaly:.1f}")
-    elif usual <= 0:
-        reasons.append("база автора ещё собирается")
-    if vph >= 50000:
-        reasons.append(f"очень высокая скорость {round(vph):,}/ч".replace(",", " "))
-    elif vph >= 10000:
-        reasons.append(f"сильная скорость {round(vph):,}/ч".replace(",", " "))
-    if hours <= 24:
-        reasons.append("опубликован меньше суток назад")
-    elif hours <= 72:
-        reasons.append("свежий ролик до 72 часов")
-    if views >= 100000:
-        reasons.append("уже перешёл 100K просмотров")
-
-    return {
-        "priority_level": level,
-        "priority_label": label,
-        "priority_reason": " · ".join(reasons[:4]) or "средний сигнал без сильной аномалии",
-    }
 
 
 @app.get("/")
@@ -96,28 +61,36 @@ def radar_status():
 
 @app.get("/api/radar")
 def radar():
+    # Fetch more than the visible TOP because weak-evidence items are intentionally
+    # removed here rather than allowed to appear as false winners.
     with db_conn() as conn:
         rows = conn.execute(
             """SELECT * FROM radar_posts
                WHERE datetime(published_at)>=datetime('now','-7 days') AND ai_match=1
                ORDER BY viral_score_v2 DESC, views_per_hour DESC, views DESC
-               LIMIT ?""",
-            (RADAR_KEEP_LIMIT,),
+               LIMIT 120"""
         ).fetchall()
+
     out = []
     for row in rows:
         x = dict(row)
+        if not top_eligible(x):
+            continue
         try:
             x["characters"] = json.loads(x.pop("characters_json") or "[]")
         except Exception:
             x["characters"] = []
-        x.update(recommendation_status(x))
+        x.update(recommendation_status_for_row(x))
         out.append(x)
+        if len(out) >= RADAR_KEEP_LIMIT:
+            break
     return jsonify(out)
 
 
 @app.get("/api/radar/candidates")
 def radar_candidates():
+    # Candidates never disappear merely because Gemini is re-checking them.
+    # Low-evidence items can stay here for transparency, but cannot enter TOP.
     with db_conn() as conn:
         rows = conn.execute(
             """SELECT id,creator,post_url,preview_url,published_at,duration_sec,views,likes,comments,
@@ -125,7 +98,7 @@ def radar_candidates():
                FROM radar_posts
                WHERE datetime(published_at)>=datetime('now','-7 days')
                ORDER BY viral_score_v2 DESC, views_per_hour DESC, views DESC
-               LIMIT 30"""
+               LIMIT 50"""
         ).fetchall()
     return jsonify([dict(x) for x in rows])
 
@@ -212,7 +185,7 @@ def radar_sync():
             "Запускаю радар",
             1,
             360,
-            "Поиск запущен в фоне. Первый полный проход обычно занимает примерно 4–8 минут.",
+            "Поиск запущен в фоне. Старый стабильный TOP остаётся на экране, пока новый проход не проверит кандидатов.",
         )
         Thread(target=run_radar_background, name="radar-sync", daemon=True).start()
         return jsonify(ok=True, started=True, message="Радар запущен в фоне"), 202
@@ -249,6 +222,9 @@ def radar_analyze(item_id):
         return jsonify(error="Ролик не найден"), 404
 
     row = dict(row)
+    if not bool(row.get("ai_match")) or not top_eligible(row):
+        return jsonify(error="Этот ролик не прошёл финальный фильтр качества TOP."), 400
+
     tmp = None
     try:
         tmp, refreshed_duration = download_reel_for_analysis(row)
