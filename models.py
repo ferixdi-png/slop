@@ -80,3 +80,19 @@ class RadarAssessment(BaseModel):
     ending: str
     reproducible_format: bool
     reason: str
+
+class TrendCluster(BaseModel):
+    label: str
+    reels_count: int = Field(ge=1)
+    description: str
+    examples: list[str]
+
+class RadarMetaReport(BaseModel):
+    summary: str
+    clusters: list[TrendCluster]
+    recurring_characters: list[str]
+    recurring_settings: list[str]
+    recurring_hooks: list[str]
+    recurring_conflicts: list[str]
+    question_hook_count: int = Field(ge=0)
+    key_takeaways: list[str]
