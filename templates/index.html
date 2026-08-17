@@ -4,9 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>ФАБРИКА СЛОПА — Радар недели</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260817-1612" />
-  <link rel="stylesheet" href="/static/upgrade.css?v=20260817-1612" />
-  <link rel="stylesheet" href="/static/logs.css?v=20260817-1612" />
+  <link rel="stylesheet" href="/static/style.css?v=20260817-1630" />
+  <link rel="stylesheet" href="/static/upgrade.css?v=20260817-1630" />
 </head>
 <body>
   <div class="app-shell">
@@ -52,7 +51,7 @@
         <div class="card radar-intro">
           <div>
             <b>Сначала находим победителей, потом тратим детальный Gemini-анализ</b>
-            <span>Apify собирает Reels → фильтр последних 7 дней и ≤10 сек → кандидаты появляются сразу → Gemini проверяет само видео и русскую речь → Viral Score 2.0 → итоговый TOP со статусами S / A / B / C. Кнопка ультра-промптов есть только у прошедших AI-фильтр роликов.</span>
+            <span>Apify собирает Reels → фильтр последних 7 дней и ≤10 сек → кандидаты появляются сразу → Gemini проверяет само видео и русскую речь → Viral Score 2.0 → итоговый TOP со статусами S / A / B / C. Подробная диагностика каждого этапа пишется в Render → Logs.</span>
           </div>
           <div class="radar-controls">
             <button id="syncRadar" class="secondary">ЗАПУСТИТЬ ПОИСК</button>
@@ -72,14 +71,6 @@
           <div id="radarStatusMessage" class="radar-status-message">Нажми «ЗАПУСТИТЬ ПОИСК».</div>
           <div id="radarWarning" class="radar-warning hidden"></div>
           <div id="radarPipelineStats" class="pipeline-stats"></div>
-        </div>
-
-        <div class="card log-card">
-          <div class="log-head">
-            <div><b>ЖУРНАЛ РАБОТЫ</b><span>Все этапы запуска, Apify, Gemini, предупреждения и ошибки в реальном времени</span></div>
-            <button id="copyRadarLogs" class="log-copy">КОПИРОВАТЬ ЛОГ</button>
-          </div>
-          <div id="radarLogs" class="log-console"><div class="log-empty">Загружаю журнал…</div></div>
         </div>
 
         <div id="analysisProgress" class="card progress hidden">
@@ -117,7 +108,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260817-1612"></script>
-  <script src="/static/logs.js?v=20260817-1612"></script>
+  <script src="/static/app.js?v=20260817-1630"></script>
 </body>
 </html>
