@@ -1,7 +1,7 @@
 import json
 import os
 from datetime import datetime, timezone
-from threading import Thread
+from threading import Lock, Thread
 
 from flask import Flask, jsonify, render_template, request
 
@@ -17,6 +17,7 @@ from service_checks import check_all_services
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
 init_db()
+radar_run_lock = Lock()
 
 
 def recommendation_status(row):
@@ -117,8 +118,6 @@ def radar():
 
 @app.get("/api/radar/candidates")
 def radar_candidates():
-    # GET endpoints are intentionally read-only. They never trigger Apify recovery or DB writes,
-    # so browser polling cannot compete with the background radar writer.
     with db_conn() as conn:
         rows = conn.execute(
             """SELECT id,creator,post_url,preview_url,published_at,duration_sec,views,likes,comments,
@@ -178,36 +177,49 @@ def release_radar_sync_after_error():
 
 
 def run_radar_background():
-    with app.app_context():
-        try:
-            sync_radar()
-        except Exception as exc:
+    try:
+        with app.app_context():
             try:
-                release_radar_sync_after_error()
-            except Exception:
-                pass
-            try:
-                set_radar_status("error", "Поиск остановлен", 0, None, str(exc)[:300])
-            except Exception:
-                pass
-            app.logger.exception("radar background sync failed")
+                sync_radar()
+            except Exception as exc:
+                try:
+                    release_radar_sync_after_error()
+                except Exception:
+                    pass
+                try:
+                    set_radar_status("error", "Поиск остановлен", 0, None, str(exc)[:300])
+                except Exception:
+                    pass
+                app.logger.exception("radar background sync failed")
+    finally:
+        if radar_run_lock.locked():
+            radar_run_lock.release()
 
 
 @app.post("/api/radar/sync")
 def radar_sync():
-    allowed, retry_minutes = reserve_radar_sync()
-    if not allowed:
-        return jsonify(error=f"Повторный полный поиск будет доступен примерно через {retry_minutes} мин."), 429
+    if not radar_run_lock.acquire(blocking=False):
+        return jsonify(error="Поиск уже выполняется. Дождись завершения текущего запуска."), 409
 
-    set_radar_status(
-        "running",
-        "Запускаю радар",
-        1,
-        360,
-        "Поиск запущен в фоне. Первый полный проход обычно занимает примерно 4–8 минут.",
-    )
-    Thread(target=run_radar_background, name="radar-sync", daemon=True).start()
-    return jsonify(ok=True, started=True, message="Радар запущен в фоне"), 202
+    try:
+        allowed, retry_minutes = reserve_radar_sync()
+        if not allowed:
+            radar_run_lock.release()
+            return jsonify(error=f"Повторный полный поиск будет доступен примерно через {retry_minutes} мин."), 429
+
+        set_radar_status(
+            "running",
+            "Запускаю радар",
+            1,
+            360,
+            "Поиск запущен в фоне. Первый полный проход обычно занимает примерно 4–8 минут.",
+        )
+        Thread(target=run_radar_background, name="radar-sync", daemon=True).start()
+        return jsonify(ok=True, started=True, message="Радар запущен в фоне"), 202
+    except Exception:
+        if radar_run_lock.locked():
+            radar_run_lock.release()
+        raise
 
 
 def save_analysis(title, source_url, views, viral_score, result):
