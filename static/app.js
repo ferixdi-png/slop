@@ -4,7 +4,7 @@ const copyRegistry = new Map();
 let copyCounter = 0;
 let refreshBundleInFlight = false;
 
-const RETRYABLE_HTTP = new Set([408, 429, 500, 502, 503, 504]);
+const RETRYABLE_HTTP = new Set([408, 500, 502, 503, 504]);
 
 class ApiError extends Error {
   constructor(message, {status = 0, transient = false} = {}) {
@@ -55,6 +55,7 @@ async function copyText(text) {
 }
 
 function isTransientError(error) {
+  if (Number(error?.status || 0) === 429) return false;
   return Boolean(error?.transient || error instanceof TypeError || RETRYABLE_HTTP.has(Number(error?.status || 0)));
 }
 
@@ -278,7 +279,7 @@ async function loadRadar() {
   } catch (e) {
     if (isTransientError(e)) {
       markReconnect();
-      return; // never erase an already visible TOP during a Render restart
+      return;
     }
     if (!host.querySelector('.radar-card')) host.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
   }
@@ -308,7 +309,7 @@ async function loadCandidates() {
   } catch (e) {
     if (isTransientError(e)) {
       markReconnect();
-      return; // preserve current candidates
+      return;
     }
     if (!host.querySelector('.candidate-row')) host.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
   }
@@ -337,7 +338,7 @@ async function loadRadarMeta() {
   } catch (e) {
     if (isTransientError(e)) {
       markReconnect();
-      return; // keep the last good weekly meta visible
+      return;
     }
     if (!host.querySelector('.meta-card')) host.innerHTML = `<div class="card"><div class="error">${escapeHtml(e.message)}</div></div>`;
   }
@@ -357,7 +358,6 @@ async function syncRadar() {
   const btn = $('#syncRadar');
   if (btn) { btn.disabled = true; btn.textContent = 'ЗАПУСКАЮ…'; }
   try {
-    // Do not start an expensive radar request while Render is between workers.
     await apiJson('/health', {}, {retries: 4, baseDelay: 800});
     const d = await apiJson('/api/radar/sync', {method:'POST'}, {retries:0});
     $('#radarStatusMessage').textContent = d?.message || 'Радар запущен в фоне. Статус и результаты обновляются автоматически.';
