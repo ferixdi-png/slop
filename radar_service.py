@@ -91,12 +91,11 @@ def sync_radar():
         tracked=[r[0] for r in conn.execute("SELECT username FROM tracked_creators ORDER BY best_views_per_hour DESC LIMIT 100").fetchall()]
     if tracked:
         try:
-            profiles=run_actor_items(client,APIFY_PROFILE_ACTOR,{"usernames":tracked})
-            for profile in profiles:
-                username=profile.get("username") or profile.get("ownerUsername") or ""
-                for post in (profile.get("latestPosts") or []) + (profile.get("latestIgtvVideos") or []):
-                    if username and not post.get("ownerUsername"): post["ownerUsername"]=username
-                    raw_items.append((post,"наблюдаемый автор"))
+            reels=run_actor_items(client,APIFY_CREATOR_ACTOR,{
+                "username": tracked, "resultsLimit": 10, "onlyPostsNewerThan": "7 days",
+                "skipPinnedPosts": True, "includeTranscript": False, "includeDownloadedVideo": False
+            })
+            raw_items.extend((x,"наблюдаемый автор") for x in reels)
         except Exception: source_errors += 1
     for term in SEARCH_TERMS:
         try:
