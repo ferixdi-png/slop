@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>ФАБРИКА СЛОПА — личная панель AI-креатора</title>
+  <title>ФАБРИКА СЛОПА — Радар недели</title>
   <link rel="stylesheet" href="/static/style.css" />
   <link rel="stylesheet" href="/static/upgrade.css" />
 </head>
@@ -12,138 +12,64 @@
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark">ФС</div>
-        <div><strong>ФАБРИКА СЛОПА</strong><small>личная панель охватов</small></div>
+        <div><strong>ФАБРИКА СЛОПА</strong><small>радар AI-охватов</small></div>
       </div>
-      <nav>
-        <button class="nav active" data-target="analyzer">⚡ Копировать ролик</button>
-        <button class="nav" data-target="radar">🔥 Радар недели</button>
-        <button class="nav" data-target="library">▦ Мои разборы</button>
-        <button class="nav" data-target="about">◎ Как работает</button>
-      </nav>
-      <div class="side-note">Исходное видео задаёт содержание, постановку, речь и точную длительность. Любая мультяшная или AI-стилистика принудительно переводится в живую реалистичную съёмку на смартфон.</div>
+      <div class="side-note">
+        Только один рабочий экран: радар находит короткие русские AI-комедийные Reels до 10 секунд, ранжирует их и позволяет сразу собрать Frame 0 + production prompt по выбранному победителю.
+      </div>
     </aside>
 
     <main>
       <header>
         <div>
-          <div class="eyebrow">ЛИЧНАЯ ПАНЕЛЬ AI-КРЕАТОРА</div>
-          <h1>Нашёл залетевший ролик.<br><span>Разложил. Повторил.</span></h1>
+          <div class="eyebrow">РАДАР НЕДЕЛИ</div>
+          <h1>Что залетает прямо сейчас.<br><span>Бери сильнейшее.</span></h1>
         </div>
         <div class="status" id="serviceStatus"><i></i> проверяю API…</div>
       </header>
 
-      <section id="analyzer" class="screen active">
-        <div class="grid two">
-          <div class="card upload-card">
-            <div class="card-head">
-              <div><span class="step">01</span><h2>Загрузи исходный ролик</h2></div>
-              <span class="pill">строго до 10 секунд</span>
-            </div>
-
-            <form id="analyzeForm">
-              <label class="dropzone" id="dropzone">
-                <input id="video" name="video" type="file" accept="video/*" required hidden />
-                <div class="drop-icon">↑</div>
-                <strong id="dropTitle">Перетащи видео сюда</strong>
-                <span id="dropSub">длительность считывается автоматически и фиксируется 1:1</span>
-              </label>
-
-              <div class="form-grid">
-                <label>Название<input name="title" placeholder="Например Бабушка и курьер" /></label>
-                <label>Ссылка на исходник<input name="source_url" placeholder="https://..." /></label>
-                <label>Просмотры<input name="views" type="number" min="0" placeholder="1500000" /></label>
-                <label>Режим<input value="1:1 длительность + live-action реализм" disabled /></label>
-              </div>
-
-              <label class="check"><input id="rights" type="checkbox" /> <span>У меня есть право на точное использование исходной речи и узнаваемых элементов</span></label>
-
-              <button class="primary" id="analyzeBtn" type="submit">РАЗОБРАТЬ И СОБРАТЬ ПАКЕТ <span>→</span></button>
-            </form>
-          </div>
-
-          <div class="card explainer">
-            <div class="card-head"><div><span class="step">02</span><h2>На выходе 6 блоков</h2></div></div>
-            <div class="metric-list">
-              <div><b>0. Режиссёрское решение</b><span>механика шутки и постановка</span></div>
-              <div><b>1. Первый кадр</b><span>ультра-детальный real smartphone Frame 0</span></div>
-              <div><b>2. Карта проверки</b><span>поза руки предметы первая фонема</span></div>
-              <div><b>3. Видео</b><span>ультра-детальный production prompt с полными locks</span></div>
-              <div><b>4. Аудио</b><span>русская речь speaker lock ударения интонации</span></div>
-              <div><b>5. Публикация</b><span>заголовок удержание хэштеги</span></div>
-            </div>
-            <div class="realism-banner"><b>ABSOLUTE REALISM + DURATION LOCK</b><span>Если исходник 7.60 сек, пакет строится ровно под 7.60 сек. Даже мультик или пластиковый AI-ролик переводится в live-action: реальные кожа волосы руки ткань материалы свет автофокус автоэкспозиция и бытовая ручная съёмка.</span></div>
-          </div>
+      <section id="radar" class="screen active">
+        <div class="section-title">
+          <div><span class="step">7 ДНЕЙ</span><h2>Русские AI-комедийные Reels до 10 секунд</h2></div>
+          <span class="muted">{{ creator_count }} авторов уже в наблюдении</span>
         </div>
 
-        <div id="progress" class="card progress hidden">
-          <div class="spinner"></div>
-          <div><strong>Смотрю ролик целиком и собираю пакет 0–5…</strong><span>Фиксирую точную длину, русскую речь, действия, персонажей, камеру, continuity и перевод в живой смартфонный реализм. Не закрывай вкладку.</span></div>
-        </div>
-
-        <div id="result" class="result hidden"></div>
-      </section>
-
-      <section id="radar" class="screen">
-        <div class="section-title"><div><span class="step">7 ДНЕЙ</span><h2>Радар залетевших AI-сценок</h2></div><span class="muted">{{ creator_count }} авторов уже в наблюдении</span></div>
         <div class="card radar-intro">
           <div>
-            <b>Система сама говорит, что брать в работу</b>
-            <span>Русские AI-комедийные Reels до 10 секунд · последние 7 дней · Viral Score 2.0 учитывает скорость просмотров, аномалию автора, размер аккаунта, реакции и свежесть · затем каждый подходящий ролик получает понятный статус от «СРОЧНО БРАТЬ В РАБОТУ» до «НИЗКИЙ ПРИОРИТЕТ».</span>
+            <b>Система сама говорит, что стоит повторять</b>
+            <span>Поисковые запросы + хештеги + уже найденные сильные авторы → фильтр последних 7 дней → только ролики до 10 секунд → AI-проверка самого видео → Viral Score 2.0 → понятный приоритет S / A / B / C.</span>
           </div>
           <div class="radar-controls">
             <button id="syncRadar" class="secondary">ЗАПУСТИТЬ ПОИСК</button>
-            <button id="refreshRadar" class="secondary ghost">ОБНОВИТЬ СПИСОК</button>
+            <button id="refreshRadar" class="secondary ghost">ОБНОВИТЬ</button>
           </div>
         </div>
+
         <div id="radarSyncResult" class="muted sync-result"></div>
 
+        <div id="analysisProgress" class="card progress hidden">
+          <div class="spinner"></div>
+          <div>
+            <strong>Разбираю выбранный ролик 1:1…</strong>
+            <span>Forensic pass → production package → QA audit → при необходимости repair-pass. Сохраняю точную длительность, русскую речь, липсинк, позиции, предметы и камеру.</span>
+          </div>
+        </div>
+
+        <div id="analysisResult" class="result hidden"></div>
+
         <div id="radarMeta" class="meta-wrap">
-          <div class="card"><div class="empty">После первого полного поиска здесь появится текущая мета TOP-30: персонажи, локации, хуки, конфликты и повторяющиеся механики.</div></div>
+          <div class="card"><div class="empty">После первого полного поиска здесь появится мета TOP-30: персонажи, локации, хуки, конфликты и повторяющиеся механики.</div></div>
         </div>
 
         <div class="card">
-          <div id="radarRows" class="radar-table"><div class="empty">Радар пока пуст. Подключи Apify и запусти первый поиск.</div></div>
-        </div>
-      </section>
-
-      <section id="library" class="screen">
-        <div class="section-title"><div><span class="step">БАЗА</span><h2>Мои готовые пакеты</h2></div><span class="muted">{{ items|length }} сохранено</span></div>
-        <div class="library-grid">
-          {% for item in items %}
-          <button class="library-card" data-id="{{ item.id }}">
-            <div class="library-top"><span>#{{ item.id }}</span><b>{{ item.confidence }}%</b></div>
-            <h3>{{ item.title }}</h3>
-            <p>{{ item.source_url or 'Локальный файл' }}</p>
-            <div class="tags"><span>{{ item.duration_sec }} сек</span><span>{{ item.views }} просмотров</span></div>
-          </button>
-          {% else %}
-          <div class="empty">Пока пусто. Первый готовый пакет появится здесь автоматически.</div>
-          {% endfor %}
-        </div>
-      </section>
-
-      <section id="about" class="screen">
-        <div class="card prose">
-          <span class="step">ЛОГИКА</span>
-          <h2>Один сервис на весь курс</h2>
-          <p>Радар ищет короткие российские AI-комедийные Reels за последние 7 дней. Сначала остаются ролики строго до 10 секунд, затем они ранжируются по Viral Score 2.0 и проходят дополнительную проверку по самому видео.</p>
-          <p>Рейтинг дополнен человеческими статусами: S — срочно брать в работу, A — сильный кандидат, B — можно тестировать, C — низкий приоритет. У каждого статуса есть объяснение: скорость, аномалия автора, свежесть и достигнутые просмотры.</p>
-          <p>Для авторов, которые уже попали в наблюдение, система собирает историю просмотров. Поэтому она может отличать просто крупный ролик от аномалии: например, когда автор обычно получает 35 тысяч просмотров, а новый Reel получает 1.2 миллиона.</p>
-          <p>TOP-30 анализируется целиком: система показывает текущие повторяющиеся персонажи, локации, типы хуков, конфликты и комедийные механики. Это позволяет видеть не отдельные ролики, а текущую мету.</p>
-          <p>Из радара можно сразу открыть подходящий ролик на разбор. Исходник определяет происходящее, русскую речь и фактическую длительность. Если исходник 7.60 секунды, в Block 3 жёстко записывается 7.60 секунды — без растягивания до 10.</p>
-          <p>Block 3 содержит отдельные locks для длительности, continuity персонажей, объектов, speaker/lip-sync, поведения тела и рук, окружения, движения, камеры и запрещённых искусственных визуальных признаков. Визуальный слой всегда переводится в максимально реалистичный live-action — как настоящее случайное видео из галереи смартфона.</p>
-          <div class="economy">
-            <b>Для запуска нужны только два API-ключа</b>
-            <span>Google AI Studio для анализа видео и Apify для поиска Reels. Отдельный ключ радара и настройки партнёрки не нужны.</span>
-            <b>Генерация отдельно от панели</b>
-            <span>Сервис не запускает видеогенерацию и не расходует видеокредиты. Он анализирует исходник и собирает готовый Frame 0 + production prompt, который пользователь переносит в свой генератор.</span>
-            <b>Важно для Render Free</b>
-            <span>Локальная SQLite база подходит для теста, но бесплатный веб сервис имеет временную файловую систему. Для постоянной библиотеки следующим этапом подключаем PostgreSQL или persistent disk.</span>
+          <div id="radarRows" class="radar-table">
+            <div class="empty">Радар пока пуст. Нажми «ЗАПУСТИТЬ ПОИСК».</div>
           </div>
         </div>
       </section>
     </main>
   </div>
+
   <script src="/static/app.js"></script>
 </body>
 </html>
