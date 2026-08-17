@@ -25,6 +25,25 @@ try:
     restore_radar_snapshot_if_empty()
 except Exception as exc:
     add_radar_log(f"Облачное восстановление пропущено: {exc}", level="WARN", stage="startup")
+
+# A background thread cannot survive a Gunicorn/Render process restart. If the
+# persisted UI state still says "running", make that interruption explicit now
+# instead of leaving the launch button disabled for many minutes.
+try:
+    boot_status = get_radar_status()
+    if boot_status.get("stage") == "running":
+        set_radar_status(
+            "error",
+            "Прошлый поиск прерван рестартом",
+            int(boot_status.get("progress") or 0),
+            None,
+            "Render перезапустил процесс. Старый фоновый поток остановлен; можно сразу запускать новый поиск.",
+            warning=boot_status.get("warning", ""),
+            details={"interrupted_at_startup": True},
+        )
+except Exception as exc:
+    add_radar_log(f"Не удалось нормализовать старый статус при старте: {exc}", level="WARN", stage="startup")
+
 radar_run_lock = Lock()
 add_radar_log("Сервис запущен и готов принимать команды радара.", stage="startup")
 
