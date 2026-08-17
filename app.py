@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from flask import Flask, jsonify, render_template, request
 
-from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_KEEP_LIMIT
+from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_KEEP_LIMIT, RADAR_MIN_DURATION_SEC, RADAR_MAX_DURATION_SEC
 from db import db_conn, init_db
 from progress import get_radar_status, set_radar_status
 from prompt_target import lock_generation_target
@@ -24,6 +24,12 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
 init_db()
 
+# Keep the stable request-driven Render architecture; only upgrade discovery,
+# classification recall, strict measured duration and result volume.
+from radar_growth_v6 import apply_growth_overrides, top_eligible_v6
+apply_growth_overrides()
+top_eligible = top_eligible_v6
+
 
 @app.get("/")
 def index():
@@ -35,7 +41,11 @@ def index():
 @app.get("/api/status")
 def status():
     with db_conn() as conn:
-        radar = conn.execute("SELECT COUNT(*) FROM radar_posts WHERE ai_match=1").fetchone()[0]
+        radar = conn.execute(
+            """SELECT COUNT(*) FROM radar_posts
+               WHERE ai_match=1 AND duration_sec>=? AND duration_sec<=?""",
+            (RADAR_MIN_DURATION_SEC, RADAR_MAX_DURATION_SEC),
+        ).fetchone()[0]
         creators = conn.execute("SELECT COUNT(*) FROM tracked_creators").fetchone()[0]
     return jsonify(
         gemini_configured=bool(os.environ.get("GEMINI_API_KEY")),
@@ -48,6 +58,10 @@ def status():
         render_instance=os.environ.get("RENDER_INSTANCE_ID", ""),
         render_cpu_count=os.environ.get("RENDER_CPU_COUNT", ""),
         radar_runtime=RADAR_RUNTIME,
+        radar_profile="mass_10s_ai_v6",
+        radar_keep_limit=RADAR_KEEP_LIMIT,
+        radar_duration_min=RADAR_MIN_DURATION_SEC,
+        radar_duration_max=RADAR_MAX_DURATION_SEC,
     )
 
 
@@ -58,12 +72,14 @@ def diagnostics():
 
 @app.get("/api/radar/status")
 def radar_status():
-    # CRITICAL: status is deliberately local-only. No Apify/Gemini/network calls
-    # are allowed here, so page polling can never block the Render web process.
     payload = get_radar_status()
     details = dict(payload.get("details") or {})
     details.update(
         runtime=RADAR_RUNTIME,
+        radar_profile="mass_10s_ai_v6",
+        radar_keep_limit=RADAR_KEEP_LIMIT,
+        radar_duration_min=RADAR_MIN_DURATION_SEC,
+        radar_duration_max=RADAR_MAX_DURATION_SEC,
         render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
         render_instance=os.environ.get("RENDER_INSTANCE_ID", ""),
         server_pid=os.getpid(),
@@ -77,9 +93,12 @@ def radar():
     with db_conn() as conn:
         rows = conn.execute(
             """SELECT * FROM radar_posts
-               WHERE datetime(published_at)>=datetime('now','-7 days') AND ai_match=1
+               WHERE datetime(published_at)>=datetime('now','-7 days')
+                 AND ai_match=1
+                 AND duration_sec>=? AND duration_sec<=?
                ORDER BY viral_score_v2 DESC, views_per_hour DESC, views DESC
-               LIMIT 120"""
+               LIMIT 300""",
+            (RADAR_MIN_DURATION_SEC, RADAR_MAX_DURATION_SEC),
         ).fetchall()
 
     out = []
@@ -106,8 +125,10 @@ def radar_candidates():
                       hours_since_publish,views_per_hour,viral_score_v2,ai_checked,ai_match,reason,search_term
                FROM radar_posts
                WHERE datetime(published_at)>=datetime('now','-7 days')
-               ORDER BY viral_score_v2 DESC, views_per_hour DESC, views DESC
-               LIMIT 50"""
+                 AND duration_sec>=? AND duration_sec<=?
+               ORDER BY ai_match DESC, viral_score_v2 DESC, views_per_hour DESC, views DESC
+               LIMIT 300""",
+            (RADAR_MIN_DURATION_SEC, RADAR_MAX_DURATION_SEC),
         ).fetchall()
     return jsonify([dict(x) for x in rows])
 
@@ -128,7 +149,6 @@ def radar_meta():
 
 @app.post("/api/radar/sync")
 def radar_sync():
-    # Creates/resumes only the durable KVS state. No long-running pipeline here.
     try:
         payload, status_code = create_or_resume_job()
         return jsonify(payload), status_code
@@ -147,6 +167,7 @@ def radar_sync():
                 str(exc)[:300],
                 details={
                     "runtime": RADAR_RUNTIME,
+                    "radar_profile": "mass_10s_ai_v6",
                     "render_commit": str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
                 },
             )
@@ -157,9 +178,6 @@ def radar_sync():
 
 @app.post("/api/radar/tick")
 def radar_tick():
-    # One request = one durable step: start one Actor, poll Actors, prepare
-    # candidates, classify one Reel, or finalize. If Render swaps the instance,
-    # the next request reloads the same phase from Apify KVS and continues.
     payload, status_code = tick_job()
     return jsonify(payload), status_code
 
@@ -195,7 +213,7 @@ def radar_analyze(item_id):
 
         row = dict(row)
         if not bool(row.get("ai_match")) or not top_eligible(row):
-            return jsonify(error="Этот ролик не прошёл финальный фильтр качества TOP."), 400
+            return jsonify(error="Этот ролик не прошёл финальный AI/10-секундный фильтр TOP."), 400
 
         tmp = None
         add_radar_log(
@@ -207,8 +225,11 @@ def radar_analyze(item_id):
             add_radar_log("Скачиваю исходный MP4 для production-анализа.", stage="prompts")
             tmp, refreshed_duration = download_reel_for_analysis(row)
             source_duration = round(float(refreshed_duration or row.get("duration_sec") or 0), 2)
-            if source_duration <= 0 or source_duration > 10.05:
-                raise RuntimeError("Нет корректной длительности выбранного Reel до 10 секунд")
+            if source_duration < RADAR_MIN_DURATION_SEC or source_duration > RADAR_MAX_DURATION_SEC:
+                raise RuntimeError(
+                    f"Фактическая длительность Reel {source_duration:.2f} сек; нужен диапазон "
+                    f"{RADAR_MIN_DURATION_SEC:.1f}–{RADAR_MAX_DURATION_SEC:.2f} сек"
+                )
             add_radar_log(
                 f"MP4 готов. Фактическая длительность {source_duration:.2f} сек. Загружаю Gemini runtime.",
                 stage="prompts",
@@ -257,24 +278,27 @@ def radar_analyze(item_id):
 
 @app.get("/health")
 def health():
-    # Render health check must be pure and instantaneous: no KVS, no SQLite, no APIs.
     return jsonify(
         ok=True,
         analysis_model=ANALYSIS_MODEL,
         radar_model=RADAR_MODEL,
         radar_runtime=RADAR_RUNTIME,
+        radar_profile="mass_10s_ai_v6",
         server_pid=os.getpid(),
         render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
     )
 
 
 add_radar_log(
-    f"Сервис запущен. Radar runtime: {RADAR_RUNTIME}. Startup без внешних API-вызовов.",
+    f"Сервис запущен. Radar runtime: {RADAR_RUNTIME}. Profile: mass_10s_ai_v6. Startup без внешних API-вызовов.",
     stage="startup",
     details={
         "python": sys.version.split()[0],
         "analysis_model": ANALYSIS_MODEL,
         "radar_model": RADAR_MODEL,
+        "radar_keep_limit": RADAR_KEEP_LIMIT,
+        "radar_duration_min": RADAR_MIN_DURATION_SEC,
+        "radar_duration_max": RADAR_MAX_DURATION_SEC,
         "render_cpu_count": os.environ.get("RENDER_CPU_COUNT", ""),
     },
 )
