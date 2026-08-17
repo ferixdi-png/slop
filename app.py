@@ -49,7 +49,7 @@ def status():
         render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
         render_instance=os.environ.get("RENDER_INSTANCE_ID", ""),
         render_cpu_count=os.environ.get("RENDER_CPU_COUNT", ""),
-        radar_runtime="persistent_apify_job_v3",
+        radar_runtime="persistent_apify_job_v4",
     )
 
 
@@ -60,37 +60,31 @@ def diagnostics():
 
 @app.get("/api/radar/status")
 def radar_status():
-    payload = get_radar_status()
+    # The durable Apify KVS job is authoritative. Never rely on local SQLite to
+    # decide whether a restart interrupted an active search. If this process has
+    # no worker, probe KVS and resume any active job regardless of local stage.
     active = runtime_state()
-
-    # A Render deploy/restart may kill only the local worker process. The durable
-    # job in Apify KVS remains authoritative, so the next normal UI poll resumes it.
-    if payload.get("stage") == "running" and not (
-        active.get("worker_active") or active.get("worker_pending")
-    ):
+    job = None
+    if not (active.get("worker_active") or active.get("worker_pending")):
         try:
             job = resume_if_needed()
-            active = runtime_state()
-            if not job and not (
-                active.get("worker_active") or active.get("worker_pending")
-            ):
-                payload.update(
-                    stage="error",
-                    label="Поиск остановлен",
-                    eta_seconds=None,
-                    message="Активного persistent job нет. Запусти поиск заново.",
-                )
         except Exception as exc:
             add_radar_log(
-                f"Status poll не смог восстановить persistent job: {exc}",
+                f"Status poll не смог проверить/восстановить persistent job: {exc}",
                 level="WARN",
                 stage="status",
             )
+
+    payload = get_radar_status()
+    active = runtime_state()
 
     details = dict(payload.get("details") or {})
     details.update(active)
     details["render_commit"] = str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12]
     details["persistent_job"] = True
+    if isinstance(job, dict):
+        details["persistent_phase"] = job.get("phase")
+        details["persistent_run_id"] = job.get("run_id")
     payload["details"] = details
 
     if active.get("worker_active") or active.get("worker_pending"):
@@ -102,9 +96,16 @@ def radar_status():
                 eta_seconds=payload.get("eta_seconds") or 360,
                 message=(
                     f"Persistent worker выполняет радар. Run ID: {active.get('run_id')}. "
-                    "При рестарте Render поиск продолжится по сохранённым Apify runId."
+                    "При рестарте Render поиск автоматически продолжится по сохранённым Apify runId."
                 ),
             )
+    elif payload.get("stage") == "running" and not (job and job.get("phase") in {"queued", "starting_sources", "discovering", "processing"}):
+        payload.update(
+            stage="error",
+            label="Поиск остановлен",
+            eta_seconds=None,
+            message="Локальный статус был running, но активного persistent job в Apify KVS нет. Можно запустить поиск заново.",
+        )
     return jsonify(payload)
 
 
@@ -164,9 +165,9 @@ def radar_meta():
 
 @app.post("/api/radar/sync")
 def radar_sync():
-    # IMPORTANT: this HTTP request never runs the 8-12 minute pipeline anymore.
-    # It persists/resumes a durable job and returns 202 immediately. The worker is
-    # independent from the browser request and reconstructs itself after Render restarts.
+    # This request only creates/resumes a durable KVS job and returns 202 quickly.
+    # The long-running work is independent from the browser request and is rebuilt
+    # automatically after a Render process replacement.
     try:
         payload, status_code = start_or_resume_radar()
         return jsonify(payload), status_code
@@ -243,7 +244,6 @@ def radar_analyze(item_id):
                 stage="prompts",
             )
 
-            # Heavy Gemini/Pydantic modules are imported only for a real prompt job.
             from gemini_pipeline_logged import analyze_video_logged
 
             package = lock_generation_target(analyze_video_logged(tmp, owned, source_duration))
@@ -291,14 +291,14 @@ def health():
         ok=True,
         analysis_model=ANALYSIS_MODEL,
         radar_model=RADAR_MODEL,
-        radar_runtime="persistent_apify_job_v3",
+        radar_runtime="persistent_apify_job_v4",
         radar_worker=runtime_state(),
         render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
     )
 
 
 add_radar_log(
-    "Сервис запущен. Radar runtime: persistent_apify_job_v3.",
+    "Сервис запущен. Radar runtime: persistent_apify_job_v4.",
     stage="startup",
     details={
         "python": sys.version.split()[0],
@@ -308,8 +308,8 @@ add_radar_log(
     },
 )
 
-# If a deploy/restart interrupted a search, resume it automatically as soon as
-# this new Gunicorn worker boots. No second button click is required.
+# Always probe the durable KVS job at process boot. This is intentionally
+# independent from local SQLite status: instance replacement can lose local state.
 try:
     resume_if_needed()
 except Exception as exc:
