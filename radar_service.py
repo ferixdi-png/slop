@@ -323,6 +323,37 @@ def save_post(conn, item, a):
         )
 
 
+def refresh_recent_scores(conn):
+    stats = load_creator_stats(conn)
+    rows = conn.execute(
+        """SELECT id,creator,views,likes,comments,hours_since_publish,views_per_hour,followers_count
+           FROM radar_posts WHERE datetime(published_at)>=datetime('now','-7 days')"""
+    ).fetchall()
+    for row in rows:
+        creator_stat = stats.get(row["creator"], {})
+        followers = int(row["followers_count"] or 0) or int(creator_stat.get("followers_count", 0))
+        usual_views = float(creator_stat.get("usual_views", 0))
+        score = calculate_viral_score(
+            int(row["views"] or 0),
+            int(row["likes"] or 0),
+            int(row["comments"] or 0),
+            float(row["hours_since_publish"] or 0),
+            float(row["views_per_hour"] or 0),
+            followers,
+            usual_views,
+        )
+        conn.execute(
+            """UPDATE radar_posts SET followers_count=?,creator_usual_views=?,
+               anomaly_multiplier=?,follower_reach=?,like_rate=?,comment_rate=?,viral_score_v2=?
+               WHERE id=?""",
+            (
+                followers, usual_views, score["anomaly_multiplier"], score["follower_reach"],
+                score["like_rate"], score["comment_rate"], score["viral_score_v2"], row["id"],
+            ),
+        )
+    conn.commit()
+
+
 def save_meta_report(conn, rows):
     if not rows:
         return None
@@ -451,7 +482,38 @@ def sync_radar():
                         os.unlink(tmp)
                     except OSError:
                         pass
+        conn.commit()
 
+    # Новые авторы получают базовую медиану уже в первом запуске, а не только при следующем мониторинге.
+    with db_conn() as conn:
+        need_baseline = [
+            r[0] for r in conn.execute(
+                """SELECT username FROM tracked_creators
+                   WHERE sample_size=0
+                   ORDER BY best_views_per_hour DESC LIMIT 50"""
+            ).fetchall()
+        ]
+    if need_baseline:
+        try:
+            baseline_rows = run_actor_items(
+                client,
+                APIFY_CREATOR_ACTOR,
+                {
+                    "username": need_baseline,
+                    "resultsLimit": 10,
+                    "onlyPostsNewerThan": "30 days",
+                    "skipPinnedPosts": True,
+                    "includeTranscript": False,
+                    "includeDownloadedVideo": False,
+                },
+            )
+            with db_conn() as conn:
+                update_creator_baselines(conn, baseline_rows)
+                refresh_recent_scores(conn)
+        except Exception:
+            source_errors += 1
+
+    with db_conn() as conn:
         top_rows = conn.execute(
             """SELECT * FROM radar_posts
                WHERE datetime(published_at)>=datetime('now','-7 days') AND ai_match=1
