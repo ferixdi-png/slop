@@ -1,0 +1,76 @@
+name: Global Radar v7 Smoke
+
+on:
+  push:
+    branches: [fix/international-adaptable-radar-v7]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile Python
+        run: python -m compileall -q .
+      - name: Verify global discovery and Russian adaptation
+        env:
+          SECRET_KEY: smoke-test
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          import app
+          import gemini_service
+          import radar_request_job as radar_job
+          import radar_service
+          from models import RadarAssessment
+          from radar_normalize import normalize_reel
+          from radar_growth_v6 import HASHTAGS_V7, KEYWORD_TERMS, PROFILE_VERSION
+
+          assert app.app is not None
+          assert PROFILE_VERSION == 'mass_global_ai_v7'
+          assert radar_job.RADAR_AI_ANALYZE_LIMIT == 420
+          assert len(HASHTAGS_V7) >= 55
+          assert len(KEYWORD_TERMS) >= 25
+
+          non_russian = RadarAssessment(
+              is_russian=False, is_ai_video=True, is_comedy_scene=True,
+              is_tutorial_or_review=False, is_talking_head=False,
+              simple_situation=True, strong_first_frame=True,
+              one_clear_joke_or_twist=True, characters_count=2,
+              scene_description='AI comedy scene', characters=['woman','man'],
+              joke='clear gag', hook='visual hook', ending='reaction',
+              reproducible_format=True, reason='foreign AI gag'
+          )
+          assert radar_service.matches(non_russian) is True
+
+          now = datetime.now(timezone.utc).isoformat()
+          unknown = {
+              'url': 'https://www.instagram.com/reel/unknown-duration/',
+              'ownerUsername': 'global_ai_test', 'timestamp': now,
+              'videoPlayCount': 1500, 'likesCount': 20, 'commentsCount': 2,
+              'caption': 'AI comedy funny generated video'
+          }
+          item = normalize_reel(unknown, 'AI comedy')
+          assert item is not None
+          assert item['duration_sec'] == 0
+          assert item['duration_unknown'] is True
+
+          sources = radar_job._build_sources()
+          assert {'popular_ai','ai_hashtags','ai_keywords'} <= set(sources)
+          assert sources['popular_ai']['input']['searchLimit'] == 64
+          assert len(sources['ai_hashtags']['input']['hashtags']) >= 55
+
+          fp = gemini_service.forensic_system_prompt(False, 8.0)
+          pp = gemini_service.production_system_prompt(False, 8.0)
+          ap = gemini_service.audit_system_prompt(8.0)
+          assert 'LANGUAGE ADAPTATION OVERRIDE' in fp
+          assert 'RUSSIAN LOCALIZATION OVERRIDE' in pp
+          assert 'non-Russian source is NOT an audit failure' in ap
+          assert 'natural spoken Russian' in pp
+          print('GLOBAL RADAR V7 SMOKE OK')
+          PY
