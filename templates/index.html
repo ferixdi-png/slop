@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ФАБРИКА СЛОПА — личная панель AI-креатора</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">ФС</div>
+        <div><strong>ФАБРИКА СЛОПА</strong><small>личная панель охватов</small></div>
+      </div>
+      <nav>
+        <button class="nav active" data-target="analyzer">⚡ Копировать ролик</button>
+        <button class="nav" data-target="radar">🔥 Радар недели</button>
+        <button class="nav" data-target="library">▦ Мои разборы</button>
+        <button class="nav" data-target="about">◎ Как работает</button>
+      </nav>
+      <div class="side-note">Исходное видео задаёт постановку и речь. Визуальная подача всегда переводится в максимально реалистичную съёмку на смартфон.</div>
+    </aside>
+
+    <main>
+      <header>
+        <div>
+          <div class="eyebrow">ЛИЧНАЯ ПАНЕЛЬ AI-КРЕАТОРА</div>
+          <h1>Нашёл залетевший ролик.<br><span>Разложил. Повторил.</span></h1>
+        </div>
+        <div class="status" id="serviceStatus"><i></i> проверяю API…</div>
+      </header>
+
+      <section id="analyzer" class="screen active">
+        <div class="grid two">
+          <div class="card upload-card">
+            <div class="card-head">
+              <div><span class="step">01</span><h2>Загрузи исходный ролик</h2></div>
+              <span class="pill">до 10 секунд</span>
+            </div>
+
+            <form id="analyzeForm">
+              <label class="dropzone" id="dropzone">
+                <input id="video" name="video" type="file" accept="video/*" required hidden />
+                <div class="drop-icon">↑</div>
+                <strong id="dropTitle">Перетащи видео сюда</strong>
+                <span id="dropSub">или нажми чтобы выбрать файл</span>
+              </label>
+
+              <div class="form-grid">
+                <label>Название<input name="title" placeholder="Например Бабушка и курьер" /></label>
+                <label>Ссылка на исходник<input name="source_url" placeholder="https://..." /></label>
+                <label>Просмотры<input name="views" type="number" min="0" placeholder="1500000" /></label>
+                <label>Режим<input value="Максимальный реализм" disabled /></label>
+              </div>
+
+              <label class="check"><input id="rights" type="checkbox" /> <span>У меня есть право на точное использование исходной речи и узнаваемых элементов</span></label>
+
+              <button class="primary" id="analyzeBtn" type="submit">РАЗОБРАТЬ И СОБРАТЬ ПАКЕТ <span>→</span></button>
+            </form>
+          </div>
+
+          <div class="card explainer">
+            <div class="card-head"><div><span class="step">02</span><h2>На выходе 6 блоков</h2></div></div>
+            <div class="metric-list">
+              <div><b>0. Режиссёрское решение</b><span>механика шутки и постановка</span></div>
+              <div><b>1. Первый кадр</b><span>фотореалистичный смартфонный кадр</span></div>
+              <div><b>2. Карта проверки</b><span>поза руки предметы первая фонема</span></div>
+              <div><b>3. Видео</b><span>связный сценарий First Then Finally</span></div>
+              <div><b>4. Аудио</b><span>речь ударения интонации</span></div>
+              <div><b>5. Публикация</b><span>заголовок удержание хэштеги</span></div>
+            </div>
+            <div class="realism-banner"><b>РЕАЛИЗМ ЗАФИКСИРОВАН</b><span>Любой исходник превращается в естественное реальное видео с телефона без пластиковой кожи fake HDR и киношной обработки.</span></div>
+          </div>
+        </div>
+
+        <div id="progress" class="card progress hidden">
+          <div class="spinner"></div>
+          <div><strong>Смотрю ролик целиком и собираю пакет 0–5…</strong><span>Фиксирую речь действия персонажей камеру и реализм. Не закрывай вкладку.</span></div>
+        </div>
+
+        <div id="result" class="result hidden"></div>
+      </section>
+
+      <section id="radar" class="screen">
+        <div class="section-title"><div><span class="step">7 ДНЕЙ</span><h2>Радар залетевших AI-сценок</h2></div><span class="muted">{{ creator_count }} авторов уже в наблюдении</span></div>
+        <div class="card radar-intro">
+          <div><b>Что попадает сюда</b><span>Русские AI-комедийные Reels до 10 секунд · только последние 7 дней · сортировка по просмотрам в час · затем видеофильтр отсекает обучалки обзоры talking head и обычные мемы.</span></div>
+          <div class="radar-controls">
+            <input id="radarKey" type="password" autocomplete="off" placeholder="RADAR_SYNC_KEY" />
+            <button id="syncRadar" class="secondary">ЗАПУСТИТЬ ПОИСК</button>
+            <button id="refreshRadar" class="secondary ghost">ОБНОВИТЬ СПИСОК</button>
+          </div>
+        </div>
+        <div id="radarSyncResult" class="muted sync-result"></div>
+        <div class="card">
+          <div id="radarRows" class="radar-table"><div class="empty">Радар пока пуст. После подключения ключа Apify и запуска синхронизации здесь появится TOP 20–30.</div></div>
+        </div>
+      </section>
+
+      <section id="library" class="screen">
+        <div class="section-title"><div><span class="step">БАЗА</span><h2>Мои готовые пакеты</h2></div><span class="muted">{{ items|length }} сохранено</span></div>
+        <div class="library-grid">
+          {% for item in items %}
+          <button class="library-card" data-id="{{ item.id }}">
+            <div class="library-top"><span>#{{ item.id }}</span><b>{{ item.confidence }}%</b></div>
+            <h3>{{ item.title }}</h3>
+            <p>{{ item.source_url or 'Локальный файл' }}</p>
+            <div class="tags"><span>{{ item.duration_sec }} сек</span><span>{{ item.views }} просмотров</span></div>
+          </button>
+          {% else %}
+          <div class="empty">Пока пусто. Первый готовый пакет появится здесь автоматически.</div>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section id="about" class="screen">
+        <div class="card prose">
+          <span class="step">ЛОГИКА</span>
+          <h2>Один сервис на весь курс</h2>
+          <p>Радар находит короткие российские AI-комедийные Reels за последние 7 дней. Сначала остаются ролики до 10 секунд, затем они сортируются по скорости набора просмотров и проходят дополнительную проверку по самому видео.</p>
+          <p>Из радара можно сразу открыть подходящий ролик на разбор. Сервис собирает производственный пакет по фиксированной системе: постановка, первый кадр, проверка, видеопромпт, аудио и публикация.</p>
+          <p>Исходник определяет происходящее в сцене, но визуальный слой всегда принудительно делается максимально реалистичным — как настоящее случайное видео из галереи смартфона.</p>
+          <div class="economy"><b>Генерация отдельно от панели</b><span>Сервис не запускает видеогенерацию и не расходует видеокредиты. Он только анализирует исходник и собирает готовый производственный пакет, который пользователь переносит в свой генератор.</span><b>Важно для Render Free</b><span>Локальная SQLite база подходит для теста, но бесплатный веб сервис имеет временную файловую систему. Для постоянной библиотеки следующим этапом подключаем PostgreSQL или платный persistent disk.</span></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
