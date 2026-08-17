@@ -1,18 +1,31 @@
 import sqlite3
 from config import DB_PATH
 
+SQLITE_TIMEOUT_SECONDS = 45
+
+
 def db_conn():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=SQLITE_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=45000")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
 
 def ensure_column(conn, table, name, definition):
     columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if name not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
+
 def init_db():
     with db_conn() as conn:
+        # WAL lets the background radar write while the browser keeps polling read endpoints.
+        # It is persistent for the SQLite file and removes the reader-vs-writer bottleneck.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA wal_autocheckpoint=1000")
+
         conn.execute("""CREATE TABLE IF NOT EXISTS analyses (
             id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, title TEXT NOT NULL,
             source_url TEXT, views INTEGER DEFAULT 0, viral_score REAL DEFAULT 0,
