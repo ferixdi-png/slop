@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 
+
 class DirectorBlock(BaseModel):
     joke_mechanics: str
     exact_copy_strategy: str
@@ -9,6 +10,7 @@ class DirectorBlock(BaseModel):
     laughter_budget: str
     realism_decision: str
 
+
 class ComplianceCard(BaseModel):
     characters: list[str]
     poses_and_positions: list[str]
@@ -17,6 +19,7 @@ class ComplianceCard(BaseModel):
     first_phoneme_readiness: str
     realism_check: list[str]
 
+
 class DialogueLine(BaseModel):
     line_number: int
     visual_speaker_binding: str
@@ -24,32 +27,50 @@ class DialogueLine(BaseModel):
     voice_description: str
     dialogue_instruction: str = ""
 
+
 class VideoPromptBlock(BaseModel):
     model: str
     aspect_ratio: str
     duration: str
+    exact_duration_sec: float
+    duration_lock: str
     camera: str
     scene_description: str
+    visual_style: str
+    camera_realism: str
+    character_continuity_lock: list[str]
+    object_lock: list[str]
+    speaker_lock: list[str]
+    lip_sync_lock: list[str]
+    body_behavior: list[str]
+    hand_behavior: list[str]
+    environment_behavior: list[str]
+    motion_consistency: list[str]
+    forbidden_visual_traits: list[str]
     dialogue: list[DialogueLine]
     narrative_timeline: list[str]
     realism_lock: str
     hard_rules: list[str]
+
 
 class AudioLine(BaseModel):
     line_number: int
     visual_speaker_binding: str
     text: str
 
+
 class AudioBlock(BaseModel):
     dialogue: list[AudioLine]
     pronunciation_hints: list[str]
     intonation_and_laughter_map: list[str]
+
 
 class PublicationBlock(BaseModel):
     short_post: str
     shorts_title: str
     retention_phrase: str
     hashtags: list[str]
+
 
 class ProductionPackage(BaseModel):
     source_title: str
@@ -62,6 +83,7 @@ class ProductionPackage(BaseModel):
     block_3_video: VideoPromptBlock
     block_4_audio: AudioBlock
     block_5_publication: PublicationBlock
+
 
 class RadarAssessment(BaseModel):
     is_russian: bool
@@ -81,11 +103,13 @@ class RadarAssessment(BaseModel):
     reproducible_format: bool
     reason: str
 
+
 class TrendCluster(BaseModel):
     label: str
     reels_count: int = Field(ge=1)
     description: str
     examples: list[str]
+
 
 class RadarMetaReport(BaseModel):
     summary: str
