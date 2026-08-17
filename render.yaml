@@ -18,7 +18,7 @@ services:
       - key: RADAR_MODEL
         value: gemini-3.1-flash-lite
       - key: RADAR_SYNC_KEY
-        generateValue: true
+        sync: false
       - key: SECRET_KEY
         generateValue: true
       - key: MAX_UPLOAD_MB
