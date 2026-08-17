@@ -12,6 +12,12 @@ from progress import get_radar_status, set_radar_status
 from prompt_target import lock_generation_target
 from radar_logs import add_radar_log, reset_radar_run_id, set_radar_run_id
 from radar_quality import recommendation_status_for_row, top_eligible
+from radar_source_compat import apply_source_alias_compat
+
+# The mass profile uses renamed Apify source keys. Apply the deterministic alias
+# bridge before importing request-state-machine entry points.
+apply_source_alias_compat()
+
 from radar_request_job import (
     RUNTIME as RADAR_RUNTIME,
     create_or_resume_job,
