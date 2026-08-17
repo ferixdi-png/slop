@@ -18,6 +18,48 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 init_db()
 
 
+def recommendation_status(row):
+    score = float(row.get("viral_score_v2") or 0)
+    anomaly = float(row.get("anomaly_multiplier") or 0)
+    hours = float(row.get("hours_since_publish") or 999)
+    views = int(row.get("views") or 0)
+    vph = float(row.get("views_per_hour") or 0)
+    usual = float(row.get("creator_usual_views") or 0)
+
+    if score >= 85 or (score >= 78 and anomaly >= 5 and hours <= 72):
+        level, label = "S", "🔥 СРОЧНО БРАТЬ В РАБОТУ"
+    elif score >= 72 or (score >= 65 and anomaly >= 3) or (score >= 65 and vph >= 20000):
+        level, label = "A", "🟢 СИЛЬНЫЙ КАНДИДАТ"
+    elif score >= 56:
+        level, label = "B", "🟡 МОЖНО ТЕСТИРОВАТЬ"
+    else:
+        level, label = "C", "⚪ НИЗКИЙ ПРИОРИТЕТ"
+
+    reasons = []
+    if score >= 80:
+        reasons.append(f"Viral Score {score:.0f}/100")
+    if anomaly >= 2 and usual > 0:
+        reasons.append(f"аномалия автора ×{anomaly:.1f}")
+    elif usual <= 0:
+        reasons.append("база автора ещё собирается")
+    if vph >= 50000:
+        reasons.append(f"очень высокая скорость {round(vph):,}/ч".replace(",", " "))
+    elif vph >= 10000:
+        reasons.append(f"сильная скорость {round(vph):,}/ч".replace(",", " "))
+    if hours <= 24:
+        reasons.append("опубликован меньше суток назад")
+    elif hours <= 72:
+        reasons.append("свежий ролик до 72 часов")
+    if views >= 100000:
+        reasons.append("уже перешёл 100K просмотров")
+
+    return {
+        "priority_level": level,
+        "priority_label": label,
+        "priority_reason": " · ".join(reasons[:4]) or "средний числовой сигнал без сильной аномалии",
+    }
+
+
 @app.get("/")
 def index():
     with db_conn() as conn:
@@ -98,12 +140,21 @@ def api_analyze():
     except ValueError:
         return jsonify(error="Просмотры должны быть числом"), 400
 
+    try:
+        source_duration = round(float(request.form.get("source_duration_sec") or 0), 2)
+    except ValueError:
+        return jsonify(error="Не удалось определить длительность видео"), 400
+    if source_duration <= 0:
+        return jsonify(error="Браузер не смог определить длительность. Выберите видео заново."), 400
+    if source_duration > 10.05:
+        return jsonify(error=f"Нужны ролики до 10 секунд. Этот файл длится {source_duration:.2f} сек."), 400
+
     tmp = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
             video.save(f)
             tmp = f.name
-        package = analyze_video(tmp, owned)
+        package = analyze_video(tmp, owned, source_duration)
         result = package.model_dump()
         item_id = save_analysis(title, source_url, views, 0, result)
         return jsonify(id=item_id, result=result)
@@ -135,6 +186,7 @@ def radar():
             x["characters"] = json.loads(x.pop("characters_json") or "[]")
         except Exception:
             x["characters"] = []
+        x.update(recommendation_status(x))
         out.append(x)
     return jsonify(out)
 
@@ -208,10 +260,14 @@ def radar_analyze(item_id):
     if not row.get("video_url"):
         return jsonify(error="У результата нет прямого видеофайла. Скачайте Reel и загрузите вручную."), 400
 
+    source_duration = round(float(row.get("duration_sec") or 0), 2)
+    if source_duration <= 0 or source_duration > 10.05:
+        return jsonify(error="У радара нет корректной длительности этого ролика до 10 секунд."), 400
+
     tmp = None
     try:
         tmp = download_temp_video(row["video_url"])
-        package = analyze_video(tmp, owned)
+        package = analyze_video(tmp, owned, source_duration)
         result = package.model_dump()
         item_id = save_analysis(
             (f"@{row['creator']} — {row['hook'] or 'ролик из радара'}")[:160],
