@@ -1,0 +1,73 @@
+name: Up To 10s Radar Smoke
+
+on:
+  push:
+    branches: [fix/upto10-more-results-v7]
+  workflow_dispatch:
+
+jobs:
+  upto10-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile Python
+        run: python -m compileall -q .
+      - name: Verify duration contract and high-recall normalization
+        env:
+          RADAR_MIN_DURATION_SEC: '9.0'
+          RADAR_MAX_DURATION_SEC: '9.5'
+          RADAR_AI_ANALYZE_LIMIT: '360'
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          import config
+          from radar_normalize import normalize_reel
+
+          assert config.ANALYSIS_MODEL == 'gemini-3.1-flash-lite'
+          assert config.RADAR_MODEL == 'gemini-3.1-flash-lite'
+          # Stale Render env must NOT restore the old 9–10 sec experiment.
+          assert config.RADAR_MIN_DURATION_SEC == 1.0
+          assert config.RADAR_MAX_DURATION_SEC == 10.05
+          assert config.RADAR_AI_ANALYZE_LIMIT >= 300
+
+          def reel(duration, views=5000, likes=40, comments=3):
+              return {
+                  'url': f'https://www.instagram.com/reel/test-{duration}/',
+                  'ownerUsername': 'ai_test_creator',
+                  'timestamp': datetime.now(timezone.utc).isoformat(),
+                  'videoDuration': duration,
+                  'videoPlayCount': views,
+                  'likesCount': likes,
+                  'commentsCount': comments,
+                  'caption': 'AI юмор нейросеть короткий скетч',
+              }
+
+          assert normalize_reel(reel(2.0), 'AI search') is not None
+          assert normalize_reel(reel(5.5), 'AI search') is not None
+          assert normalize_reel(reel(8.7), 'AI search') is not None
+          assert normalize_reel(reel(10.01), 'AI search') is not None
+          assert normalize_reel(reel(10.2), 'AI search') is None
+          assert normalize_reel(reel(0.5), 'AI search') is None
+
+          # Fresh moderate-signal Reel should reach Gemini instead of being killed
+          # by the old likes/views gate.
+          assert normalize_reel(reel(4.2, views=180, likes=1, comments=0), 'AI search') is not None
+          print('up-to-10s recall OK')
+          PY
+      - name: Verify full app import
+        env:
+          SECRET_KEY: smoke-test
+        run: |
+          python - <<'PY'
+          import app
+          import config
+          assert app.app is not None
+          assert config.RADAR_MIN_DURATION_SEC == 1.0
+          assert config.RADAR_MAX_DURATION_SEC == 10.05
+          print('app import OK')
+          PY
