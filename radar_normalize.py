@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from radar_quality import apply_quality_score
 from radar_service import calculate_viral_score
 
 
@@ -192,7 +193,7 @@ def normalize_reel(raw, source, creator_stats=None):
         usual_views,
     )
 
-    return {
+    item = {
         "platform": "Instagram Reels",
         "creator": creator,
         "post_url": url,
@@ -211,3 +212,4 @@ def normalize_reel(raw, source, creator_stats=None):
         "caption": str(caption)[:4000],
         **score,
     }
+    return apply_quality_score(item)
