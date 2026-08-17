@@ -23,9 +23,13 @@ jobs:
         run: |
           python - <<'PY'
           import copy
+          from datetime import datetime, timezone
 
           import app as app_module
+          import gemini_service
           import radar_request_job as radar_job
+          from db import db_conn
+          from models import RadarAssessment
           from progress import set_radar_status
 
           c = app_module.app.test_client()
@@ -139,13 +143,95 @@ jobs:
           assert state['job']['run_id'] == run_id
           assert state['job']['result']['kept'] == 0
 
-          # A second click after completion creates a new job; while active it resumes.
+          # While an active durable job exists, another click resumes the same run.
           state['job']['phase'] = 'discovering'
           old_id = state['job']['run_id']
           payload, code = radar_job.create_or_resume_job()
           assert code == 202
           assert payload['resumed'] is True
           assert payload['run_id'] == old_id
+
+          # One candidate must survive the full durable AI transition and persist
+          # its Gemini verdict to SQLite before the job advances to finalizing.
+          candidate_url = 'https://www.instagram.com/reel/SMOKEAI/'
+          candidate = {
+              'platform': 'Instagram Reels',
+              'creator': 'smoke_creator',
+              'post_url': candidate_url,
+              'video_url': 'https://example.com/fake.mp4',
+              'preview_url': '',
+              'published_at': datetime.now(timezone.utc).isoformat(),
+              'duration_sec': 8.0,
+              'views': 150000,
+              'likes': 2500,
+              'comments': 120,
+              'hours_since_publish': 2.0,
+              'views_per_hour': 75000.0,
+              'followers_count': 12000,
+              'creator_usual_views': 15000.0,
+              'anomaly_multiplier': 10.0,
+              'follower_reach': 12.5,
+              'like_rate': 0.0166,
+              'comment_rate': 0.0008,
+              'viral_score_v2': 92.0,
+              'search_term': 'smoke',
+              'caption': 'русский ии юмор',
+              'ai_done': False,
+              'ai_match': False,
+              'ai_attempts': 0,
+              'ai_error': '',
+          }
+          state['job'] = {
+              'version': 5,
+              'runtime': 'request_state_machine_v5',
+              'run_id': 'smoke-ai-run',
+              'phase': 'ai',
+              'created_at': datetime.now(timezone.utc).isoformat(),
+              'sources': {},
+              'candidates': [candidate],
+              'warnings': [],
+              'source_failures': {},
+              'stats': {'raw': 1, 'numeric_candidates': 1, 'ai_total': 1},
+              'result': {},
+              'error': '',
+          }
+
+          radar_job.download_reel_for_analysis = lambda item: ('/tmp/nonexistent-smoke.mp4', 8.0)
+          gemini_service.classify_radar_video = lambda path, caption: RadarAssessment(
+              is_russian=True,
+              is_ai_video=True,
+              is_comedy_scene=True,
+              is_tutorial_or_review=False,
+              is_talking_head=False,
+              simple_situation=True,
+              strong_first_frame=True,
+              one_clear_joke_or_twist=True,
+              characters_count=2,
+              scene_description='Два персонажа в короткой комедийной сцене',
+              characters=['персонаж один', 'персонаж два'],
+              joke='короткий бытовой твист',
+              hook='сильный первый кадр',
+              ending='быстрая реакция',
+              reproducible_format=True,
+              reason='smoke pass',
+          )
+
+          payload, code = radar_job.tick_job()
+          print('ai tick', payload['phase'], payload['ai_done'], payload['ai_total'])
+          assert code == 200
+          assert payload['phase'] == 'finalizing'
+          assert state['job']['candidates'][0]['ai_done'] is True
+          assert state['job']['candidates'][0]['ai_match'] is True
+
+          with db_conn() as conn:
+              row = conn.execute(
+                  'SELECT ai_checked,ai_match,reason FROM radar_posts WHERE post_url=?',
+                  (candidate_url,),
+              ).fetchone()
+          assert row is not None
+          assert int(row['ai_checked']) == 1
+          assert int(row['ai_match']) == 1
+          assert row['reason'] == 'smoke pass'
           PY
       - uses: actions/setup-node@v4
         with:
