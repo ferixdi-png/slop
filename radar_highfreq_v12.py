@@ -8,11 +8,12 @@ import radar_budget_v10 as budget
 import radar_growth_v6 as growth
 from radar_logs import add_radar_log
 
-PROFILE_VERSION = "mass_global_ai_v12_core5"
+PROFILE_VERSION = "mass_global_ai_v13_core5"
 HASHTAG_LIMIT = 32
 
 # Broad, high-frequency AI/video tags only.
-# Explicitly excluded: sora, gemini, geminiomni, googleflowai and other long tails.
+# Explicitly excluded: sora, gemini, geminiomni, googleflowai, chatgpt, openai
+# and other low-signal / non-video-heavy tails.
 HASHTAGS = [
     "ai",
     "ии",
@@ -26,8 +27,7 @@ HASHTAGS = [
     "veo3",
     "omni",
     "omniai",
-    "chatgpt",
-    "openai",
+    "kling",
     "klingai",
     "seedance",
 ]
@@ -49,10 +49,9 @@ SEARCH_TERMS = [
     "Veo 3",
     "Omni",
     "Omni AI",
+    "Kling",
     "Kling AI",
     "Seedance",
-    "ChatGPT video",
-    "OpenAI video",
 ]
 
 KEYWORD_TERMS = [
@@ -61,9 +60,9 @@ KEYWORD_TERMS = [
     "Grok",
     "Veo",
     "Omni",
+    "Kling",
     "Kling AI",
     "Seedance",
-    "OpenAI",
 ]
 
 
@@ -86,7 +85,7 @@ def apply_highfreq_overrides():
 
     info = budget._assert_budget()
     add_radar_log(
-        "HIGH-FREQ AI v12: только крупные AI/video источники; Gemini/Sora и длинный хвост удалены; hard budget <$5 сохранён.",
+        "HIGH-FREQ AI v13: только крупные AI/video источники; ChatGPT/OpenAI/Gemini/Sora и длинный хвост удалены; Kling добавлен; hard budget <$5 сохранён.",
         stage="startup",
         details={
             "profile": PROFILE_VERSION,
