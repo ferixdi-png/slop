@@ -275,6 +275,49 @@ def refresh_momentum_scores(conn):
     conn.commit()
 
 
+def _install_app_response_guard(app_module):
+    app = getattr(app_module, "app", None)
+    if app is None or getattr(app, "_omni_veo_v21_response_guard", False):
+        return
+
+    from flask import request
+
+    @app.after_request
+    def omni_veo_v21_response_guard(response):
+        if not response.is_json:
+            return response
+        data = response.get_json(silent=True)
+        changed = False
+
+        if request.path == "/api/radar/candidates" and isinstance(data, list):
+            def is_target(item):
+                term = str((item or {}).get("search_term") or "").strip().lower()
+                return term in {"omni", "veo", "hashtag: omni", "hashtag: veo"}
+            data = [item for item in data if is_target(item)]
+            changed = True
+        elif request.path in {"/api/status", "/api/radar/status", "/health"} and isinstance(data, dict):
+            scope = {
+                "radar_hashtags": list(HASHTAGS),
+                "radar_hashtag_limit_each": HASHTAG_LIMIT,
+                "radar_max_raw_requested": HASHTAG_LIMIT * len(HASHTAGS),
+                "radar_ranking_mode": "momentum_views_per_hour",
+            }
+            if request.path == "/api/radar/status":
+                details = dict(data.get("details") or {})
+                details.update(scope)
+                data["details"] = details
+            else:
+                data.update(scope)
+            changed = True
+
+        if changed:
+            response.set_data(app.json.dumps(data))
+            response.mimetype = "application/json"
+        return response
+
+    app._omni_veo_v21_response_guard = True
+
+
 def _invalidate_noncurrent_passes():
     with db_conn() as conn:
         cur = conn.execute(
@@ -367,6 +410,7 @@ def apply_omni_veo_v21():
         app_module.PROFILE_VERSION = PROFILE_VERSION
         app_module.KEEP_LIMIT = KEEP_LIMIT
         app_module.BUDGET_INFO = info
+        _install_app_response_guard(app_module)
 
     add_radar_log(
         "OMNI/VEO V21 READY: только #omni + #veo, до 10 сек, глубокий сбор, momentum-first ranking.",
