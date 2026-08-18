@@ -38,6 +38,7 @@ jobs:
           import radar_hardening_v19 as v19
           import radar_request_job as radar_job
           import radar_resilient_v17 as v17
+          import radar_runtime_v27 as runtime
           from cloud_state import load_radar_cancel_request, load_radar_job, save_radar_job
           from db import ResilientConnection, db_conn
           from static_video_gate import ffmpeg_executable, inspect_visual_motion
@@ -47,10 +48,15 @@ jobs:
               r = c.get(path)
               assert r.status_code == 200, (path, r.status_code, r.get_data(as_text=True))
 
-          # Core truth + hard budget.
+          # Public identity is one final V27 runtime. V19/V20 stay internal and
+          # are still tested below as the hardening/cache/edge implementation.
           status = c.get('/api/status').get_json()
-          assert status['radar_profile'] == v19.PROFILE_VERSION, status
-          assert status['edge_profile'] == edge.EDGE_PROFILE, status
+          assert status['radar_runtime'] == runtime.RUNTIME_VERSION, status
+          assert status['radar_profile'] == runtime.RUNTIME_VERSION, status
+          assert status['edge_profile'] == runtime.RUNTIME_VERSION, status
+          assert app_module.PROFILE_VERSION == v19.PROFILE_VERSION
+          assert app_module.RUNTIME_INFO['internal_screening_profile'] == v19.PROFILE_VERSION
+          assert app_module.RUNTIME_INFO['internal_edge'] == edge.EDGE_PROFILE
           assert v19.PROFILE_VERSION == 'dialogue_trends_v19_hardened_budget5'
           assert status['radar_keep_limit'] == 180
           assert radar_job.RADAR_AI_ANALYZE_LIMIT == 420
@@ -319,7 +325,7 @@ jobs:
           assert 'explicit_duration_instruction_ok' in audit
           assert 'publication_russian_ok' in audit
 
-          print('V19 TOP-10 + EDGE HARDENING OK', status['radar_profile'], status['edge_profile'], b)
+          print('V27 PUBLIC + V19/V20 INTERNAL HARDENING OK', status['radar_profile'], app_module.PROFILE_VERSION, edge.EDGE_PROFILE, b)
           PY
 
       - uses: actions/setup-node@v4
