@@ -1,8 +1,9 @@
 """Cost guard for the mass AI radar.
 
-High recall is preserved, but every Apify Actor gets a real platform-side dollar
-cap plus max-items cap. Gemini classification is also bounded to short 10-second
-inputs and a small structured output.
+High recall is preserved, but discovery spends money on a compact set of
+high-frequency AI/video terms instead of many long-tail hashtags. Every Apify
+Actor has a platform-side dollar cap plus max-items cap. Gemini classification
+is also bounded to short <=10-second inputs and a small structured output.
 """
 
 from decimal import Decimal
@@ -19,7 +20,7 @@ from models import RadarAssessment
 from progress import set_radar_status
 from radar_logs import add_radar_log
 
-PROFILE_VERSION = "mass_global_ai_v10_budget5"
+PROFILE_VERSION = "mass_global_ai_v11_highfreq5"
 MAX_RUN_BUDGET_USD = 5.00
 BUDGET_GUARD_USD = 4.00
 BUDGET_HEADROOM_MULTIPLIER = 1.25
@@ -32,15 +33,18 @@ SEARCH_USD_PER_1000 = 2.70
 HASHTAG_USD_PER_1000 = 2.70
 REEL_USD_PER_1000 = 1.00
 
-SEARCH_LIMIT = 16
-HASHTAG_LIMIT = 14
+# Fewer, much stronger terms; spend depth on high-frequency feeds instead of
+# spreading the same budget across weak long-tail tags.
+SEARCH_LIMIT = 20
+HASHTAG_LIMIT = 28
 KEYWORD_RESULTS_LIMIT = 12
 MAX_TRACKED_CREATORS = 15
 CREATOR_RESULTS_LIMIT = 12
-AI_ANALYZE_LIMIT = 320
+AI_ANALYZE_LIMIT = 360
 KEEP_LIMIT = 60
 
-# Maximum Apify charge for one discovery = $3.35.
+# Maximum Apify charge for one discovery = $3.35. This remains unchanged even
+# when source lists are edited later, so discovery cannot silently exceed it.
 ACTOR_CAPS_USD = {
     "popular_ai": 1.35,
     "ai_hashtags": 1.35,
@@ -48,89 +52,65 @@ ACTOR_CAPS_USD = {
     "known_ai_creators": 0.30,
 }
 
+# High-frequency search layer. Intentionally broad: Gemini performs the semantic
+# AI/comedy/reproducibility filter later. Long-tail query variants are removed.
 SEARCH_TERMS = [
-    "AI comedy",
-    "AI funny video",
-    "AI generated comedy",
-    "AI generated funny",
-    "AI slop",
-    "AI meme video",
-    "AI skit",
-    "AI absurd video",
-    "AI grandma",
-    "AI grandpa",
-    "AI family comedy",
-    "AI couple comedy",
-    "AI animals funny",
-    "AI village comedy",
-    "AI interview funny",
-    "AI POV funny",
-    "нейроюмор",
-    "ии юмор",
-    "AI юмор",
-    "AI бабушка",
-    "AI дед",
-    "AI деревня",
-    "Grok AI video",
-    "Grok video",
-    "Gemini Omni",
-    "Google Flow Omni",
-    "Omni AI video",
-    "Veo 3 funny",
-    "Veo 3 comedy",
-    "Kling AI funny",
-    "Seedance funny",
-    "Sora funny",
-]
-
-# Curated VIDEO/comedy tags. Generic #ai/#ии/#chatgpt/#openai/#gpt and
-# image-centric Midjourney/Recraft/Ideogram tags are intentionally excluded.
-HASHTAGS = [
-    "нейроюмор",
-    "ииюмор",
-    "аиюмор",
-    "нейровидео",
-    "иивидео",
-    "аивидео",
-    "нейросетьюмор",
-    "нейросетьприкол",
-    "нейрослоп",
-    "aicomedy",
-    "aihumor",
-    "aifunny",
-    "funnyai",
-    "aivideo",
-    "aigeneratedvideo",
-    "aislop",
-    "aimeme",
-    "aiskit",
-    "aiabsurd",
-    "aigrandma",
-    "aigrandpa",
-    "aifamily",
-    "aicouple",
-    "aianimals",
-    "aivillage",
-    "grokvideo",
-    "geminiomni",
-    "omniai",
-    "googleflowai",
-    "veo3video",
-    "klingvideo",
-    "seedancevideo",
-    "soravideo",
-    "minimaxvideo",
-]
-
-KEYWORD_TERMS = [
+    "AI video",
     "AI funny",
+    "AI comedy",
+    "AI generated video",
+    "AI reels",
     "AI slop",
-    "AI grandma",
-    "AI animals",
-    "Grok video",
-    "Gemini Omni",
-    "Veo 3 funny",
-    "Kling AI funny",
+    "ИИ видео",
+    "ИИ",
+    "нейросеть",
+    "Grok",
+    "Grok AI",
+    "Veo",
+    "Veo 3",
+    "Omni",
+    "Omni AI",
+    "Gemini",
+    "Kling AI",
+    "Seedance",
+    "Sora AI",
+    "OpenAI video",
+]
+
+# Only broad/high-frequency AI hashtags and major current video-model brands.
+# Explicitly removed long-tail combinations such as #geminiomni, #googleflowai,
+# #нейросетьприкол, #seedancevideo, #soravideo, #minimaxvideo, etc.
+HASHTAGS = [
+    "ai",
+    "ии",
+    "нейросеть",
+    "нейросети",
+    "aivideo",
+    "aivideos",
+    "grok",
+    "grokai",
+    "veo",
+    "veo3",
+    "omni",
+    "omniai",
+    "gemini",
+    "chatgpt",
+    "openai",
+    "klingai",
+    "seedance",
+    "sora",
+]
+
+# Small secondary keyword layer: only the broadest AI/video brands.
+KEYWORD_TERMS = [
+    "AI",
+    "ИИ",
+    "Grok",
+    "Veo",
+    "Omni",
+    "Gemini",
+    "Kling AI",
+    "Seedance",
 ]
 
 _ORIGINAL_TRACKED_CREATORS = radar_job._tracked_creators
@@ -387,7 +367,7 @@ def apply_budget_overrides():
     gemini_service.classify_radar_video = classify_budget_video
 
     add_radar_log(
-        "BUDGET AI v10 включён: curated video-tags; Apify hard caps; Gemini 10s structured classifier with bounded output; общий план <$5.",
+        "BUDGET AI v11: high-frequency #ai/#ии + major AI video brands; long-tail tags removed; Apify hard caps; Gemini bounded; общий план <$5.",
         stage="startup",
         details={"profile": PROFILE_VERSION, "actor_caps": ACTOR_CAPS_USD, **info},
     )
