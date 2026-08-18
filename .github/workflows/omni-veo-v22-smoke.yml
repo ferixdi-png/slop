@@ -1,4 +1,4 @@
-name: Omni Veo Veo3 V24 Smoke
+name: Omni Veo Veo3 V25 Smoke
 
 on:
   pull_request:
@@ -7,6 +7,7 @@ on:
       - 'radar_omni_veo_v22.py'
       - 'radar_fresh_run_v23.py'
       - 'radar_omni_veo_veo3_v24.py'
+      - 'radar_momentum_cloud_v25.py'
       - 'radar_edge_v19.py'
       - 'templates/index.html'
       - 'static/fresh_run_v23.js'
@@ -20,6 +21,7 @@ on:
       - 'radar_omni_veo_v22.py'
       - 'radar_fresh_run_v23.py'
       - 'radar_omni_veo_veo3_v24.py'
+      - 'radar_momentum_cloud_v25.py'
       - 'radar_edge_v19.py'
       - 'templates/index.html'
       - 'static/fresh_run_v23.js'
@@ -54,8 +56,10 @@ jobs:
           from datetime import datetime, timedelta, timezone
 
           import app as app_module
+          import cloud_state
           import radar_budget_v10 as budget
           import radar_fresh_run_v23 as fresh
+          import radar_momentum_cloud_v25 as v25
           import radar_omni_veo_v21 as v21
           import radar_omni_veo_v22 as v22
           import radar_omni_veo_veo3_v24 as v24
@@ -85,7 +89,6 @@ jobs:
               }, source
           assert not any('popular' in name or 'keyword' in name or 'creator' in name for name in sources)
 
-          # First observation: faster lifetime growth outranks slower historical popularity.
           fast = v24._v24_score({
               'views': 30_000, 'hours_since_publish': 2.0, 'viral_score_v2': 50.0,
           }, 15_000, 0.0, False)
@@ -94,7 +97,6 @@ jobs:
           }, 1_500, 0.0, False)
           assert fast > slow, (fast, slow)
 
-          # Later observations: actual cross-run view delta is calculated.
           now = datetime.now(timezone.utc)
           previous = {
               'observed_at': (now - timedelta(hours=1)).isoformat(),
@@ -107,7 +109,6 @@ jobs:
           assert 54_900 <= measured <= 55_100, measured
           assert acceleration >= 10.9, acceleration
 
-          # Technical screening still means real <=10s moving MP4, no comedy/dialogue gate.
           real_duration = v22.measure_video_duration
           real_motion = v22.inspect_visual_motion
           class Moving:
@@ -137,7 +138,7 @@ jobs:
               v22.measure_video_duration = real_duration
               v22.inspect_visual_motion = real_motion
 
-          # Fresh run reset deletes visible output/meta but preserves momentum history.
+          # Fresh visible results reset; hidden momentum baseline survives.
           with db_conn() as conn:
               conn.execute(
                   "INSERT OR REPLACE INTO radar_posts(creator,post_url,published_at,duration_sec,search_term) VALUES(?,?,?,?,?)",
@@ -152,6 +153,10 @@ jobs:
                   ('https://example.com/old', now.isoformat(), 1000, 500, 'omni'),
               )
               conn.commit()
+              assert v25.save_momentum_checkpoint(conn) is True
+
+          checkpoint = cloud_state.load_cloud_record(v25.MOMENTUM_RECORD_KEY)
+          assert checkpoint and checkpoint['rows'], checkpoint
 
           reset_info = fresh._reset_result_tables('smoke-fresh-run')
           assert reset_info['cleared_radar_posts'] >= 1
@@ -161,7 +166,15 @@ jobs:
               assert conn.execute('SELECT COUNT(*) FROM radar_meta').fetchone()[0] == 0
               assert conn.execute('SELECT COUNT(*) FROM radar_momentum_history').fetchone()[0] >= 1
 
-          # Resume safety: a live job already marked reset-done must not be cleared again.
+          # Simulate local loss: V25 must restore the hidden baseline from cloud/local KVS fallback.
+          with db_conn() as conn:
+              conn.execute('DELETE FROM radar_momentum_history')
+              conn.commit()
+          restored = v25.restore_momentum_checkpoint()
+          assert restored >= 1, restored
+          with db_conn() as conn:
+              assert conn.execute('SELECT COUNT(*) FROM radar_momentum_history').fetchone()[0] >= 1
+
           active = {
               'version': 5,
               'runtime': radar_job.RUNTIME,
@@ -189,5 +202,5 @@ jobs:
           assert b['designed_total_budget_usd'] <= 5.0, b
           assert b['hard_budget_usd'] == 5.0, b
 
-          print('OMNI/VEO/VEO3 V24 OK', status, b)
+          print('OMNI/VEO/VEO3 V25 OK', status, b)
           PY
