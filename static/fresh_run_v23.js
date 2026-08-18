@@ -1,6 +1,6 @@
 (() => {
-  const EMPTY_TOP = '<div class="empty">Новый поиск запущен. Старый TOP очищен — собираю свежие #omni, #veo и #veo3.</div>';
-  const EMPTY_CANDIDATES = '<div class="empty">Новый поиск запущен. Старый пул очищен — жду свежие Reels из #omni, #veo и #veo3.</div>';
+  const EMPTY_TOP = '<div class="empty">Новый поиск запущен. Старый TOP очищен — собираю свежие посты только с подтверждённым #omni, #veo или #veo3.</div>';
+  const EMPTY_CANDIDATES = '<div class="empty">Новый поиск запущен. Старый пул очищен — жду strict-кандидатов #omni / #veo / #veo3.</div>';
   const EMPTY_META = '<div class="card"><div class="empty">Старая мета очищена. Новая появится после завершения текущего поиска.</div></div>';
 
   let initialized = false;
@@ -32,17 +32,18 @@
       if (runId && runId !== lastRunId) clearOldRadarDom();
       lastRunId = runId;
     } catch (_) {
-      // Existing runtime handles reconnects; this helper never owns transport UI.
+      // Existing runtime owns reconnect UX.
     }
   }
 
-  // Same-tab UX: clear immediately when the user intentionally starts a new
-  // search after the previous one has finished. Server-side V23 is still the
-  // source of truth and protects active-run resume from data loss.
+  // Same-tab UX: clear immediately when the user intentionally starts a truly
+  // new search. Server V23/V27 remain source of truth, so active-run resume is safe.
   const startButton = document.getElementById('syncRadar');
   if (startButton) {
     startButton.addEventListener('click', () => {
-      if (!startButton.disabled && startButton.textContent.includes('ЗАПУСТИТЬ')) clearOldRadarDom();
+      if (!startButton.disabled && startButton.textContent.includes('ЗАПУСТИТЬ')) {
+        clearOldRadarDom();
+      }
     }, {capture: true});
   }
 
