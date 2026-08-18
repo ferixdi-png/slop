@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 import uuid
 from datetime import datetime, timezone
 
@@ -15,6 +14,9 @@ from radar_logs import add_radar_log, reset_radar_run_id, set_radar_run_id
 from radar_quality import recommendation_status_for_row, top_eligible
 from radar_source_compat import apply_source_alias_compat
 
+# Low-level import compatibility must exist before the durable request state
+# machine is imported. Product behavior itself is activated only once below by
+# the final V27 runtime bootstrap.
 apply_source_alias_compat()
 
 from radar_request_job import (
@@ -30,56 +32,11 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
 init_db()
 
-from radar_growth_v6 import apply_growth_overrides, top_eligible_v6
-apply_growth_overrides()
-top_eligible = top_eligible_v6
-
-from radar_budget_v10 import (
-    KEEP_LIMIT,
-    apply_budget_overrides,
-    budget_breakdown,
-    wrap_tick_job,
-)
-BUDGET_INFO = apply_budget_overrides()
-
-from radar_highfreq_v12 import apply_highfreq_overrides
-BUDGET_INFO = apply_highfreq_overrides()
-
-# Dialogue-first target: ordinary real Reels and generated Reels are treated the
-# same. The useful thing is the short funny spoken mechanic, not its origin.
-from radar_dialogue_v14 import (
-    PROFILE_VERSION,
-    apply_dialogue_first_overrides,
-    top_eligible_dialogue,
-)
-BUDGET_INFO = apply_dialogue_first_overrides()
-top_eligible = top_eligible_dialogue
-
-# Production target: generate only the underlying camera footage. Editorial
-# photos/screenshots/PIP layers are reconstructed separately as a CapCut plan.
-from overlay_cleanplate_v15 import (
-    PRODUCTION_PROFILE_VERSION,
-    apply_overlay_cleanplate_overrides,
-)
-PRODUCTION_INFO = apply_overlay_cleanplate_overrides()
-
-# Compact semantic screening + static gate + broad dialogue discovery.
-from radar_resilient_v17 import apply_resilient_v17_overrides
-BUDGET_INFO = apply_resilient_v17_overrides()
-
-# Explicit user stop. V19 upgrades this to a durable out-of-band marker so the
-# endpoint never waits minutes behind an in-flight Gemini/Apify request.
-from radar_cancel_v18 import cancel_active_job
-
-# Preserve the monthly-quota budget wrapper first, then put the v19 safety layer
-# around the stable request-driven state machine.
-tick_job = wrap_tick_job(tick_job)
-from radar_hardening_v19 import apply_hardening_v19
-BUDGET_INFO = apply_hardening_v19()
-
-# Final race/cache guards. These do not change search semantics or spend.
-from radar_edge_v19 import EDGE_PROFILE, apply_edge_guards
-EDGE_INFO = apply_edge_guards()
+# ONE PRODUCT RUNTIME ENTRYPOINT.
+# Older versioned modules are now internal compatibility components composed by
+# this bootstrap; app.py never activates them individually.
+from radar_runtime_v27 import activate_v27_runtime
+RUNTIME_INFO = activate_v27_runtime()
 
 
 @app.get("/")
@@ -111,13 +68,14 @@ def status():
         render_instance=os.environ.get("RENDER_INSTANCE_ID", ""),
         render_cpu_count=os.environ.get("RENDER_CPU_COUNT", ""),
         radar_runtime=RADAR_RUNTIME,
-        radar_profile=PROFILE_VERSION,
+        radar_profile=RUNTIME_INFO["profile"],
         edge_profile=EDGE_PROFILE,
         production_profile=PRODUCTION_PROFILE_VERSION,
         radar_keep_limit=KEEP_LIMIT,
         radar_duration_min=RADAR_MIN_DURATION_SEC,
         radar_duration_max=RADAR_MAX_DURATION_SEC,
         radar_budget=BUDGET_INFO,
+        runtime_info=RUNTIME_INFO,
         cloud_state=cloud_state_diagnostics(),
     )
 
@@ -127,7 +85,8 @@ def diagnostics():
     payload = check_all_services()
     if isinstance(payload, dict):
         payload["cloud_state"] = cloud_state_diagnostics()
-        payload["radar_profile"] = PROFILE_VERSION
+        payload["radar_runtime"] = RADAR_RUNTIME
+        payload["radar_profile"] = RUNTIME_INFO["profile"]
         payload["edge_profile"] = EDGE_PROFILE
     return jsonify(payload)
 
@@ -138,13 +97,14 @@ def radar_status():
     details = dict(payload.get("details") or {})
     details.update(
         runtime=RADAR_RUNTIME,
-        radar_profile=PROFILE_VERSION,
+        radar_profile=RUNTIME_INFO["profile"],
         edge_profile=EDGE_PROFILE,
         production_profile=PRODUCTION_PROFILE_VERSION,
         radar_keep_limit=KEEP_LIMIT,
         radar_duration_min=RADAR_MIN_DURATION_SEC,
         radar_duration_max=RADAR_MAX_DURATION_SEC,
         radar_budget=budget_breakdown(),
+        runtime_info=RUNTIME_INFO,
         cloud_state=cloud_state_diagnostics(),
         render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
         render_instance=os.environ.get("RENDER_INSTANCE_ID", ""),
@@ -249,7 +209,7 @@ def radar_sync():
                 str(exc)[:300],
                 details={
                     "runtime": RADAR_RUNTIME,
-                    "radar_profile": PROFILE_VERSION,
+                    "radar_profile": RUNTIME_INFO["profile"],
                     "production_profile": PRODUCTION_PROFILE_VERSION,
                     "radar_budget": budget_breakdown(),
                     "render_commit": str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
@@ -391,35 +351,16 @@ def health():
         analysis_model=ANALYSIS_MODEL,
         radar_model=RADAR_MODEL,
         radar_runtime=RADAR_RUNTIME,
-        radar_profile=PROFILE_VERSION,
+        radar_profile=RUNTIME_INFO["profile"],
         edge_profile=EDGE_PROFILE,
         production_profile=PRODUCTION_PROFILE_VERSION,
         radar_keep_limit=KEEP_LIMIT,
         radar_budget=BUDGET_INFO,
+        runtime_info=RUNTIME_INFO,
         cloud_state=cloud_state_diagnostics(),
         server_pid=os.getpid(),
         render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
     )
-
-
-add_radar_log(
-    f"Сервис запущен. Radar runtime: {RADAR_RUNTIME}. Profile: {PROFILE_VERSION}. Edge: {EDGE_PROFILE}. Production: {PRODUCTION_PROFILE_VERSION}. Startup без внешних API-вызовов.",
-    stage="startup",
-    details={
-        "python": sys.version.split()[0],
-        "analysis_model": ANALYSIS_MODEL,
-        "radar_model": RADAR_MODEL,
-        "radar_profile": PROFILE_VERSION,
-        "edge_profile": EDGE_PROFILE,
-        "production_profile": PRODUCTION_PROFILE_VERSION,
-        "radar_keep_limit": KEEP_LIMIT,
-        "radar_duration_min": RADAR_MIN_DURATION_SEC,
-        "radar_duration_max": RADAR_MAX_DURATION_SEC,
-        "radar_budget": BUDGET_INFO,
-        "cloud_state": cloud_state_diagnostics(),
-        "render_cpu_count": os.environ.get("RENDER_CPU_COUNT", ""),
-    },
-)
 
 
 if __name__ == "__main__":
