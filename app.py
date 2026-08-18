@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from flask import Flask, jsonify, render_template, request
 
+from cloud_state import cloud_state_diagnostics
 from config import ANALYSIS_MODEL, RADAR_MODEL, RADAR_MIN_DURATION_SEC, RADAR_MAX_DURATION_SEC
 from db import db_conn, init_db
 from progress import get_radar_status, set_radar_status
@@ -19,6 +20,7 @@ apply_source_alias_compat()
 from radar_request_job import (
     RUNTIME as RADAR_RUNTIME,
     create_or_resume_job,
+    public_job,
     tick_job,
 )
 from reel_media import download_reel_for_analysis
@@ -61,17 +63,19 @@ from overlay_cleanplate_v15 import (
 )
 PRODUCTION_INFO = apply_overlay_cleanplate_overrides()
 
-# Final radar layer. This actually activates the tested static-image motion gate,
-# v16 dialogue/comedy source mix and 180-result scale, then replaces the fragile
-# oversized screening JSON with a compact resilient structured response.
+# Compact semantic screening + static gate + broad dialogue discovery.
 from radar_resilient_v17 import apply_resilient_v17_overrides
 BUDGET_INFO = apply_resilient_v17_overrides()
 
-# Explicit user hard-stop. This shares the request-state-machine tick lock, marks
-# the durable job terminal and best-effort aborts any still-running Apify runs.
+# Explicit user stop. V19 upgrades this to a durable out-of-band marker so the
+# endpoint never waits minutes behind an in-flight Gemini/Apify request.
 from radar_cancel_v18 import cancel_active_job
 
+# Preserve the monthly-quota budget wrapper first, then put the final v19 safety
+# layer around that already-stable request-driven state machine.
 tick_job = wrap_tick_job(tick_job)
+from radar_hardening_v19 import apply_hardening_v19
+BUDGET_INFO = apply_hardening_v19()
 
 
 @app.get("/")
@@ -107,12 +111,17 @@ def status():
         radar_duration_min=RADAR_MIN_DURATION_SEC,
         radar_duration_max=RADAR_MAX_DURATION_SEC,
         radar_budget=BUDGET_INFO,
+        cloud_state=cloud_state_diagnostics(),
     )
 
 
 @app.get("/api/diagnostics")
 def diagnostics():
-    return jsonify(check_all_services())
+    payload = check_all_services()
+    if isinstance(payload, dict):
+        payload["cloud_state"] = cloud_state_diagnostics()
+        payload["radar_profile"] = PROFILE_VERSION
+    return jsonify(payload)
 
 
 @app.get("/api/radar/status")
@@ -127,12 +136,19 @@ def radar_status():
         radar_duration_min=RADAR_MIN_DURATION_SEC,
         radar_duration_max=RADAR_MAX_DURATION_SEC,
         radar_budget=budget_breakdown(),
+        cloud_state=cloud_state_diagnostics(),
         render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
         render_instance=os.environ.get("RENDER_INSTANCE_ID", ""),
         server_pid=os.getpid(),
     )
     payload["details"] = details
     return jsonify(payload)
+
+
+@app.get("/api/radar/job")
+def radar_job_truth():
+    """Read-only durable job truth. Opening/reloading a page must not advance work."""
+    return jsonify(public_job())
 
 
 @app.get("/api/radar")
@@ -169,7 +185,8 @@ def radar_candidates():
     with db_conn() as conn:
         rows = conn.execute(
             """SELECT id,creator,post_url,preview_url,published_at,duration_sec,views,likes,comments,
-                      hours_since_publish,views_per_hour,viral_score_v2,ai_checked,ai_match,reason,search_term
+                      hours_since_publish,views_per_hour,viral_score_v2,ai_checked,ai_match,reason,search_term,
+                      screening_profile
                FROM radar_posts
                WHERE datetime(published_at)>=datetime('now','-7 days')
                  AND (duration_sec IS NULL OR duration_sec=0 OR (duration_sec>=? AND duration_sec<=?))
@@ -190,7 +207,16 @@ def radar_meta():
     if not row:
         return jsonify(None)
     data = dict(row)
-    data["report"] = json.loads(data.pop("report_json"))
+    raw_report = data.pop("report_json")
+    try:
+        data["report"] = json.loads(raw_report)
+        data["report_parse_error"] = False
+    except Exception as exc:
+        # A single corrupted old meta row must never break the entire dashboard.
+        data["report"] = {}
+        data["report_parse_error"] = True
+        data["warning"] = f"Старая meta-запись повреждена: {str(exc)[:180]}"
+        add_radar_log(data["warning"], level="WARN", stage="meta")
     return jsonify(data)
 
 
@@ -356,6 +382,7 @@ def health():
         production_profile=PRODUCTION_PROFILE_VERSION,
         radar_keep_limit=KEEP_LIMIT,
         radar_budget=BUDGET_INFO,
+        cloud_state=cloud_state_diagnostics(),
         server_pid=os.getpid(),
         render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
     )
@@ -374,6 +401,7 @@ add_radar_log(
         "radar_duration_min": RADAR_MIN_DURATION_SEC,
         "radar_duration_max": RADAR_MAX_DURATION_SEC,
         "radar_budget": BUDGET_INFO,
+        "cloud_state": cloud_state_diagnostics(),
         "render_cpu_count": os.environ.get("RENDER_CPU_COUNT", ""),
     },
 )
