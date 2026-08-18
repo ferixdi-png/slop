@@ -2,6 +2,12 @@
 # service was created manually and its Start Command is still just `gunicorn app:app ...`.
 # This keeps one authoritative live log stream in Render → Logs.
 
+import os
+
+# Make the Render contract explicit instead of relying on environment-side
+# Gunicorn args. Render requires 0.0.0.0 and exposes PORT (normally 10000).
+bind = f"0.0.0.0:{os.environ.get('PORT', '10000')}"
+
 accesslog = "-"
 errorlog = "-"
 loglevel = "info"
