@@ -17,6 +17,7 @@ from radar_logs import add_radar_log
 
 MOMENTUM_RECORD_KEY = "RADAR_MOMENTUM_V25"
 MAX_HISTORY_ROWS = 1500
+MAX_THREE_SOURCE_CAP_USD = 1.25
 
 _APPLIED = False
 _BASE_REFRESH = None
@@ -117,6 +118,10 @@ def apply_momentum_cloud_v25():
         return {"momentum_cloud_version": 25, "momentum_record_key": MOMENTUM_RECORD_KEY}
     _APPLIED = True
 
+    # Three hashtag actors must still fit the global <$5 contract even if an old
+    # Render env contains a larger two-source cap from a previous deployment.
+    v24.v21.SOURCE_CAP_USD = min(float(v24.v21.SOURCE_CAP_USD), MAX_THREE_SOURCE_CAP_USD)
+
     scope_info = v24.apply_omni_veo_veo3_v24()
     restored = restore_momentum_checkpoint()
 
@@ -132,6 +137,7 @@ def apply_momentum_cloud_v25():
         details={
             "momentum_record_key": MOMENTUM_RECORD_KEY,
             "momentum_rows_restored": restored,
+            "effective_source_cap_usd_each": v24.v21.SOURCE_CAP_USD,
             **scope_info,
         },
     )
@@ -139,5 +145,6 @@ def apply_momentum_cloud_v25():
         "momentum_cloud_version": 25,
         "momentum_record_key": MOMENTUM_RECORD_KEY,
         "momentum_rows_restored": restored,
+        "effective_source_cap_usd_each": v24.v21.SOURCE_CAP_USD,
         **scope_info,
     }
