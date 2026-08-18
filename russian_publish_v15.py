@@ -64,10 +64,16 @@ def apply_russian_publication_overrides():
     gemini_service.audit_system_prompt = audit_system_prompt_ru_v15
     gemini_service.audit_passes = audit_passes_ru_v15
 
+    # This is intentionally activated last in the radar override chain. It keeps
+    # all production v15 locks intact while replacing only discovery/classification
+    # policy with the static-image gate + scaled dialogue output profile.
+    from radar_scale_v16 import apply_scale_v16_overrides
+    scale_info = apply_scale_v16_overrides()
+
     _APPLIED = True
     add_radar_log(
-        "Production v15 RU: Block 5 всегда локализуется на естественный русский; иностранные подписи/заголовки не копируются.",
+        "Production v15 RU + Radar v16: русский Block 5 сохранён; static-image gate и выдача до 180 активированы.",
         stage="startup",
-        details={"production_profile": PRODUCTION_PROFILE_VERSION},
+        details={"production_profile": PRODUCTION_PROFILE_VERSION, **(scale_info or {})},
     )
     return {"production_profile": PRODUCTION_PROFILE_VERSION, "applied": True}

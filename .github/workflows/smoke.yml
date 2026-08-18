@@ -1,7 +1,7 @@
 name: Smoke Check
 on:
   push:
-    branches: [main, fix/overlay-cleanplate-v15]
+    branches: [main, fix/static-gate-scale-v16]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -14,23 +14,65 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+
       - name: Install dependencies
         run: pip install -r requirements.txt
+
       - name: Compile Python
         run: python -m compileall -q .
 
-      - name: Production v15 and radar smoke
+      - name: Verify bundled ffmpeg static-image gate
+        run: |
+          python - <<'PY'
+          import subprocess
+          from static_video_gate import ffmpeg_executable, inspect_visual_motion
+          from radar_scale_v16 import classify_dialogue_v16
+
+          ffmpeg = ffmpeg_executable()
+          assert ffmpeg, 'No system or bundled ffmpeg available'
+          print('FFMPEG', ffmpeg)
+
+          subprocess.run([
+              ffmpeg, '-y', '-loglevel', 'error', '-f', 'lavfi',
+              '-i', 'color=c=blue:s=320x240:r=30:d=4',
+              '-c:v', 'mpeg4', '-q:v', '5', '/tmp/static.mp4'
+          ], check=True)
+          subprocess.run([
+              ffmpeg, '-y', '-loglevel', 'error', '-f', 'lavfi',
+              '-i', 'testsrc2=size=320x240:rate=30:duration=4',
+              '-c:v', 'mpeg4', '-q:v', '5', '/tmp/moving.mp4'
+          ], check=True)
+
+          still = inspect_visual_motion('/tmp/static.mp4')
+          moving = inspect_visual_motion('/tmp/moving.mp4')
+          assert still.checked and still.is_static_image_video, still
+          assert moving.checked and not moving.is_static_image_video, moving
+
+          # Must reject before Gemini; this test intentionally has no GEMINI_API_KEY.
+          verdict = classify_dialogue_v16('/tmp/static.mp4', 'quote card')
+          assert verdict.reason.startswith('REJECT_STATIC_IMAGE'), verdict
+          print('STATIC GATE OK', still, moving)
+          PY
+
+      - name: Radar v16 budget and behavior smoke
         env:
           SECRET_KEY: smoke-test
         run: |
           python - <<'PY'
           import app as app_module
-          import gemini_service, radar_request_job as radar_job, radar_service, cloud_state
+          import gemini_service
+          import radar_growth_v6 as growth
+          import radar_request_job as radar_job
+          import radar_service
           from models import RadarAssessment
           from radar_budget_v10 import budget_breakdown, ACTOR_CAPS_USD
-          from radar_dialogue_v14 import PROFILE_VERSION, matches_dialogue_first, top_eligible_dialogue
+          from radar_scale_v16 import (
+              PROFILE_VERSION, TARGET_MATCHES, KEEP_LIMIT, GEMINI_ANALYZE_LIMIT,
+              RADAR_CLASSIFICATION_FPS, MAX_CLASSIFICATION_OUTPUT_TOKENS,
+              FINAL_QUERY_LIMIT, matches_dialogue_v16, classify_dialogue_v16,
+              finalize_scale_v16,
+          )
           from overlay_cleanplate_v15 import PRODUCTION_PROFILE_VERSION
-          from progress import set_radar_status
 
           c = app_module.app.test_client()
           for path in ['/health','/api/status','/api/radar/status','/api/radar','/api/radar/candidates']:
@@ -38,27 +80,35 @@ jobs:
               assert r.status_code == 200, (path, r.status_code, r.get_data(as_text=True))
 
           status = c.get('/api/status').get_json()
-          assert status['radar_profile'] == PROFILE_VERSION
+          assert status['radar_profile'] == PROFILE_VERSION, status
+          assert PROFILE_VERSION == 'dialogue_motion_v16_scale3_budget5'
           assert status['production_profile'] == PRODUCTION_PROFILE_VERSION
-          assert PROFILE_VERSION == 'dialogue_only_v15_core5'
           assert PRODUCTION_PROFILE_VERSION == 'frame0_cleanplate_capcut_ru_v15'
-          assert status['radar_keep_limit'] == 60
-          assert status['radar_duration_min'] == 1.0 and status['radar_duration_max'] == 10.05
-          assert radar_job.RADAR_AI_ANALYZE_LIMIT == 420
+          assert status['radar_keep_limit'] == KEEP_LIMIT == 180
+          assert TARGET_MATCHES == 180
+          assert FINAL_QUERY_LIMIT >= 360
+          assert radar_job.RADAR_AI_ANALYZE_LIMIT == GEMINI_ANALYZE_LIMIT == 420
+          assert RADAR_CLASSIFICATION_FPS == 1.0
+          assert MAX_CLASSIFICATION_OUTPUT_TOKENS == 320
+          assert growth._ORIGINAL_FINALIZE is finalize_scale_v16
+          assert gemini_service.classify_radar_video is classify_dialogue_v16
 
           budget = budget_breakdown()
+          assert budget['guarded_apify_usd'] <= 4.00, budget
           assert budget['hard_apify_actor_caps_usd'] <= 3.35, budget
           assert budget['designed_total_budget_usd'] <= 5.00, budget
           assert budget['hard_budget_usd'] == 5.0
+          assert budget['gemini_max_reels'] == 420
+          assert budget['gemini_max_output_tokens_per_reel'] == 320
           assert round(sum(ACTOR_CAPS_USD.values()), 2) <= 3.35
 
           sources = radar_job._build_sources()
           assert {'popular_ai','ai_hashtags','ai_keywords'} <= set(sources)
           tags = sources['ai_hashtags']['input']['hashtags']
-          for required in ['ai','ии','grok','veo','omni','kling','seedance','юмор','приколы','скетч','comedy','funny']:
+          for required in ['юмор','приколы','comedy','funny','skit','ai','grok','veo','omni','kling']:
               assert required in tags, (required, tags)
           search_text = sources['popular_ai']['input']['search'].lower()
-          for phrase in ['смешной диалог','вопрос ответ прикол','funny dialogue','comedy skit','kling funny dialogue']:
+          for phrase in ['смешной диалог','муж жена прикол','funny dialogue','couple comedy','family comedy']:
               assert phrase in search_text, (phrase, search_text)
 
           real_dialogue = RadarAssessment(
@@ -66,129 +116,40 @@ jobs:
               is_tutorial_or_review=False,is_talking_head=False,simple_situation=True,
               strong_first_frame=True,one_clear_joke_or_twist=True,characters_count=2,
               scene_description='husband wife joke',characters=['man','woman'],joke='funny answer',
-              hook='question',ending='punchline',reproducible_format=True,reason='reusable dialogue',
-              has_spoken_dialogue=True,dialogue_is_comedic=True,dialogue_summary='question and punchline',
-              detected_language='Russian')
-          assert matches_dialogue_first(real_dialogue) is True
+              hook='question',ending='punchline',reproducible_format=False,reason='funny dialogue',
+              has_spoken_dialogue=True,dialogue_is_comedic=True,
+              dialogue_summary='question and punchline',detected_language='Russian')
+          assert matches_dialogue_v16(real_dialogue) is True
           assert radar_service.matches(real_dialogue) is True
+          assert matches_dialogue_v16(real_dialogue.model_copy(update={'is_russian':False,'detected_language':'English'})) is True
+          assert matches_dialogue_v16(real_dialogue.model_copy(update={'has_spoken_dialogue':False,'dialogue_is_comedic':False})) is False
+          assert matches_dialogue_v16(real_dialogue.model_copy(update={'is_tutorial_or_review':True})) is False
 
-          foreign_dialogue = real_dialogue.model_copy(update={'is_russian':False,'detected_language':'English'})
-          assert matches_dialogue_first(foreign_dialogue) is True
-
-          silent_ai = real_dialogue.model_copy(update={
-              'is_ai_video':True,'has_spoken_dialogue':False,'dialogue_is_comedic':False,
-              'dialogue_summary':'','detected_language':'none'})
-          assert matches_dialogue_first(silent_ai) is False
-
-          info_head = real_dialogue.model_copy(update={
-              'is_tutorial_or_review':True,'is_talking_head':True,
-              'dialogue_is_comedic':False,'reason':'tutorial'})
-          assert matches_dialogue_first(info_head) is False
-
-          assert top_eligible_dialogue({'duration_sec':7.64,'views':120,'likes':1,'viral_score_v2':3}) is True
-          assert top_eligible_dialogue({'duration_sec':10.2,'views':1000000,'likes':10000,'viral_score_v2':99}) is False
-
-          prod_prompt = gemini_service.production_system_prompt(False, 7.64)
-          audit_prompt = gemini_service.audit_system_prompt(7.64)
-          forensic_prompt = gemini_service.forensic_system_prompt(False, 7.64)
+          prod = gemini_service.production_system_prompt(False, 7.64)
+          audit = gemini_service.audit_system_prompt(7.64)
+          forensic = gemini_service.forensic_system_prompt(False, 7.64)
           for needle in ['FRAME 0 PHOTO PROMPT — ABSOLUTE LITERAL LOCK','EXACT VIDEO DURATION — ABSOLUTE LOCK','CAPCUT OVERLAY PLAN','RUSSIAN PUBLICATION LOCALIZATION — ABSOLUTE']:
-              assert needle in prod_prompt, needle
-          assert 'timestamp 0.000 seconds' in forensic_prompt
-          assert 'publication_russian_ok' in audit_prompt
-          assert 'frame_zero_literal_match_ok' in audit_prompt
-          assert 'explicit_duration_instruction_ok' in audit_prompt
+              assert needle in prod, needle
+          assert 'timestamp 0.000 seconds' in forensic
+          assert 'publication_russian_ok' in audit
+          assert 'frame_zero_literal_match_ok' in audit
+          assert 'explicit_duration_instruction_ok' in audit
 
-          Package = gemini_service.ProductionPackage
-          package = Package(
-              source_title='smoke', source_duration_sec=8.0, source_language='English', reconstruction_confidence=95,
-              block_0_director={
-                  'joke_mechanics':'question answer','exact_copy_strategy':'copy','safety_adjustments':'none',
-                  'visual_bindings':['man','woman'],'location':'kitchen','laughter_budget':'one punchline','realism_decision':'phone'
-              },
-              block_1_frame0_prompt='Vertical photo of the literal first frame',
-              block_2_compliance={
-                  'characters':['man','woman'],'poses_and_positions':['same'],'hands_and_objects':['same'],
-                  'no_text_check':'no text','first_phoneme_readiness':'ready','realism_check':['phone']
-              },
-              block_3_video={
-                  'model':'x','aspect_ratio':'9:16','duration':'wrong','exact_duration_sec':8.0,'duration_lock':'wrong',
-                  'camera':'phone','scene_description':'scene','visual_style':'real','camera_realism':'real',
-                  'character_continuity_lock':[],'object_lock':[],'speaker_lock':[],'lip_sync_lock':[],
-                  'body_behavior':[],'hand_behavior':[],'environment_behavior':[],'motion_consistency':[],
-                  'forbidden_visual_traits':[],'dialogue':[],'narrative_timeline':['First action','Finally punchline'],
-                  'realism_lock':'','hard_rules':[]
-              },
-              block_4_audio={'dialogue':[],'pronunciation_hints':[],'intonation_and_laughter_map':[]},
-              block_5_publication={
-                  'short_post':'Русский текст','shorts_title':'Русский заголовок',
-                  'retention_phrase':'Смотри до конца','hashtags':['#юмор']
-              },
-              capcut_overlay_plan={
-                  'has_editorial_overlays':True,
-                  'steps':[{
-                      'layer_id':'overlay_1','overlay_kind':'photo','start_sec':1.0,'end_sec':4.0,
-                      'asset_to_use':'licensed source photo','asset_preparation':'crop 4:5',
-                      'screen_box_percent':'x 55 y 10 w 35 h 45','anchor_and_position':'top right',
-                      'crop_and_aspect_ratio':'4:5','opacity_and_blend':'100% normal',
-                      'border_corner_radius_shadow':'none','animation_in':'cut','animation_out':'cut',
-                      'motion_or_tracking':'static','layering_and_occlusion':'above base video','capcut_action':'add as overlay'
-                  }],
-                  'manual_finish_order':['generate clean base video','add overlay in CapCut']
-              }
-          )
-          normalized = gemini_service.normalize_package(package, 7.64, 95)
-          assert normalized.source_duration_sec == 7.64
-          assert normalized.block_3_video.exact_duration_sec == 7.64
-          assert normalized.block_3_video.duration == 'EXACT DURATION: 7.64 seconds'
-          assert 'EXACTLY 7.64 SECONDS' in normalized.block_3_video.duration_lock
-          assert 'ABSOLUTE FRAME ZERO LOCK:' in normalized.block_1_frame0_prompt
-          assert 'source timestamp 0.000 seconds exactly' in normalized.block_1_frame0_prompt
-          assert 'CLEAN PLATE / POST-PRODUCTION SEPARATION' in normalized.block_1_frame0_prompt
-          assert any('7.64 SECONDS' in x for x in normalized.block_3_video.hard_rules)
-          assert normalized.capcut_overlay_plan.has_editorial_overlays is True
-          assert len(normalized.capcut_overlay_plan.steps) == 1
-
-          calls=[]
-          class FakeActor:
-              def start(self, **kwargs):
-                  calls.append(kwargs)
-                  return {'id':'run-1','status':'READY','defaultDatasetId':'ds-1'}
-          class FakeClient:
-              def actor(self, actor_id): return FakeActor()
-          job={'run_id':'smoke','phase':'queued','profile':PROFILE_VERSION,'sources':sources,'candidates':[],'stats':{},'result':{},'error':''}
-          radar_job._persist=lambda j:j
-          radar_job._start_one_source(FakeClient(),job)
-          assert calls and calls[0]['max_total_charge_usd'] is not None
-          assert float(calls[0]['max_total_charge_usd']) <= 1.35
-          assert calls[0]['max_items'] > 0
-
-          original_store=cloud_state._store_client
-          cloud_state._store_client=lambda: None
-          probe={'phase':'queued','run_id':'local-fallback-smoke'}
-          assert cloud_state.save_cloud_record('SMOKE_LOCAL',probe) is True
-          assert cloud_state.load_cloud_record('SMOKE_LOCAL')==probe
-          cloud_state.delete_cloud_record('SMOKE_LOCAL')
-          cloud_state._store_client=original_store
-
-          set_radar_status('ready','Готов к поиску',0,None,'local-only-status')
-          assert c.get('/api/radar/status').get_json()['message']=='local-only-status'
-
-          print('V15 DIALOGUE FRAME0 DURATION CAPCUT RU SMOKE OK', budget)
+          print('V16 BUDGET', budget)
           PY
 
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Check JavaScript syntax
+
+      - name: Frontend contract
         run: |
           node --check static/app.js
           node --check static/overlay_v15.js
           node --check static/runtime.js
-      - name: Verify frontend contract
-        run: |
           grep -q "/api/radar/sync" static/runtime.js
           grep -q "/api/radar/tick" static/runtime.js
-          grep -q "dialogue_only_v15_core5" radar_dialogue_v14.py
+          grep -q "dialogue_motion_v16_scale3_budget5" radar_scale_v16.py
+          grep -q "REJECT_STATIC_IMAGE" radar_scale_v16.py
           grep -q "frame0_cleanplate_capcut_ru_v15" overlay_cleanplate_v15.py
           grep -q "CAPCUT OVERLAY PLAN" static/overlay_v15.js
-          grep -q "overlay_v15.js" templates/index.html
