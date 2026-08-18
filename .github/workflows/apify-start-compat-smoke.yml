@@ -1,0 +1,67 @@
+name: Apify Start Compat Smoke
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  apify-start-compat:
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: compat-smoke
+      APIFY_API_TOKEN: ""
+      GEMINI_API_KEY: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Verify restart_on_error is stripped but caps survive
+        run: |
+          python - <<'PY'
+          from decimal import Decimal
+          from apify_client import ApifyClient
+          from apify_start_compat import install_apify_start_compat
+
+          assert install_apify_start_compat() is True
+          actor = ApifyClient('compat-smoke').actor('apify/instagram-hashtag-scraper')
+          cls = type(actor)
+          assert getattr(cls, '_slop_restart_on_error_compat', False) is True
+
+          captured = {}
+          original = cls._slop_original_start
+          def fake_start(self, *args, **kwargs):
+              captured.update(kwargs)
+              return {'id': 'fake-run', 'status': 'READY'}
+          cls._slop_original_start = fake_start
+          try:
+              result = actor.start(
+                  run_input={'hashtags': ['omni'], 'resultsLimit': 250},
+                  max_items=250,
+                  max_total_charge_usd=Decimal('1.00'),
+                  restart_on_error=False,
+              )
+          finally:
+              cls._slop_original_start = original
+
+          assert result['id'] == 'fake-run'
+          assert 'restart_on_error' not in captured, captured
+          assert captured['max_items'] == 250, captured
+          assert captured['max_total_charge_usd'] == Decimal('1.00'), captured
+          assert captured['run_input']['hashtags'] == ['omni'], captured
+          print('Apify ActorClient.start compatibility OK')
+          PY
+      - name: Verify V27 bootstrap exposes compatibility guard
+        run: |
+          python - <<'PY'
+          import app
+          status = app.app.test_client().get('/api/status').get_json()
+          assert status.get('radar_runtime') == 'omni_veo_veo3_v27_strict_compress10', status
+          import radar_runtime_v27
+          contract = radar_runtime_v27.activate_v27_runtime()
+          assert contract.get('apify_start_compat') is True, contract
+          assert contract.get('hashtags') == ['omni', 'veo', 'veo3'], contract
+          print('V27 contract OK')
+          PY
