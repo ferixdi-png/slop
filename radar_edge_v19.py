@@ -23,7 +23,7 @@ from db import db_conn
 from progress import set_radar_status
 from radar_logs import add_radar_log
 from radar_source_aggregation_v20 import apply_source_aggregation_v20
-from radar_omni_veo_v21 import apply_omni_veo_v21
+from radar_omni_veo_v22 import apply_omni_veo_v22
 
 # Kept as an explicit compatibility marker because the long-lived smoke suite
 # verifies that the original edge-hardening contract is still present.
@@ -165,10 +165,10 @@ def apply_edge_guards():
     # wrapper while making aggregation independent of source IDs.
     source_aggregation_info = apply_source_aggregation_v20()
 
-    # Final product scope override. It runs after source aggregation exists but
-    # before the edge wrappers capture their bases, so all v19/v20 safety guards
-    # stay active while discovery becomes strictly #omni + #veo.
-    omni_veo_info = apply_omni_veo_v21()
+    # Final product scope override. V22 activates V21's exact #omni/#veo sources
+    # and then removes the old dialogue/comedy gate from the mass radar so the
+    # pool stays large while actual <=10s duration and motion are verified.
+    omni_veo_info = apply_omni_veo_v22()
 
     _BASE_CREATE = app_module.create_or_resume_job
     _BASE_POLL = radar_job._poll_sources
@@ -183,7 +183,7 @@ def apply_edge_guards():
     # Clean old-profile PASS rows immediately on deploy, not only at finalization.
     invalidated = invalidate_stale_recent_matches()
     add_radar_log(
-        "V20 EDGE GUARDS READY: source aggregation + OMNI/VEO V21 scope + STOP→START race, BUSY/error counter, stale TOP and missing run_id recovery.",
+        "V20 EDGE GUARDS READY: source aggregation + OMNI/VEO mass momentum scope + STOP→START race, BUSY/error counter, stale TOP and missing run_id recovery.",
         stage="startup",
         details={
             "edge_profile": EDGE_PROFILE,
