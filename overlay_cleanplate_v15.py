@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 import gemini_service
 from radar_logs import add_radar_log
 
-PRODUCTION_PROFILE_VERSION = "clean_plate_capcut_v15"
+PRODUCTION_PROFILE_VERSION = "clean_plate_capcut_ru_v15"
 
 
 class ForensicEditorialOverlay(BaseModel):
@@ -240,9 +240,14 @@ def apply_overlay_cleanplate_overrides():
     gemini_service.normalize_package = normalize_package_v15
     gemini_service.audit_passes = audit_passes_v15
 
+    # Russian publication localization must capture the already-patched clean-plate
+    # production/audit functions, so import and apply it only after the overlay layer.
+    from russian_publish_v15 import apply_russian_publication_overrides
+    apply_russian_publication_overrides()
+
     _APPLIED = True
     add_radar_log(
-        "Production v15: clean-plate генерация включена; монтажные фото/скрины/PIP исключаются из AI-промптов и выносятся в CAPCUT OVERLAY PLAN.",
+        "Production v15: clean-plate + CapCut overlay plan + Russian publication localization включены.",
         stage="startup",
         details={"production_profile": PRODUCTION_PROFILE_VERSION},
     )
