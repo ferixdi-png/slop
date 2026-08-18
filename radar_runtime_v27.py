@@ -14,12 +14,57 @@ from __future__ import annotations
 
 import sys
 
+from flask import request
+
 from radar_logs import add_radar_log, suppress_startup_logs
 
 RUNTIME_VERSION = "omni_veo_veo3_v27_strict_compress10"
 PUBLIC_EDGE_PROFILE = RUNTIME_VERSION
 _APPLIED = False
 _CONTRACT = None
+_LIVENESS_INSTALLED = False
+
+
+def _install_render_liveness(app):
+    """Keep Render's process/port probes completely outside SQLite and APIs.
+
+    The dashboard/browser loads several DB-backed endpoints in parallel while a
+    radar run can also be writing SQLite. Render probes must never wait behind
+    those locks. A delayed liveness probe can otherwise make a healthy worker
+    look dead and produce restart/502 loops.
+    """
+    global _LIVENESS_INSTALLED
+    if _LIVENESS_INSTALLED:
+        return
+
+    @app.before_request
+    def _render_fast_head_probe():
+        # Render currently probes HEAD /. Flask would normally execute the GET
+        # view for HEAD, and that view touches SQLite. Short-circuit it first.
+        if request.method == "HEAD" and request.path in {"/", "/health", "/healthz"}:
+            return "", 200, {
+                "Cache-Control": "no-store",
+                "X-Radar-Runtime": RUNTIME_VERSION,
+            }
+        return None
+
+    def _healthz():
+        # Pure process liveness: no DB, no cloud state, no Apify, no Gemini.
+        return {
+            "ok": True,
+            "runtime": RUNTIME_VERSION,
+            "pid": __import__("os").getpid(),
+        }, 200, {"Cache-Control": "no-store"}
+
+    if "render_healthz_v27" not in app.view_functions:
+        app.add_url_rule(
+            "/healthz",
+            endpoint="render_healthz_v27",
+            view_func=_healthz,
+            methods=["GET", "HEAD"],
+        )
+
+    _LIVENESS_INSTALLED = True
 
 
 def activate_v27_runtime():
@@ -36,6 +81,10 @@ def activate_v27_runtime():
     missing = [name for name in required if not hasattr(app_module, name)]
     if missing:
         raise RuntimeError(f"V27 bootstrap missing app prerequisites: {', '.join(missing)}")
+
+    # Install the liveness guard before composing any additional runtime layers.
+    # It is intentionally independent of the radar state machine.
+    _install_render_liveness(app_module.app)
 
     # The sequence below deliberately preserves the already-tested internal
     # composition order. The architectural cleanup is that only THIS module is
@@ -123,6 +172,7 @@ def activate_v27_runtime():
         "momentum_record_key": MOMENTUM_RECORD_KEY,
         "budget": final_budget,
         "legacy_startup_banners_suppressed": True,
+        "render_fast_liveness": True,
         "internal_edge": str((edge_info or {}).get("edge_profile") or ""),
     }
     _APPLIED = True

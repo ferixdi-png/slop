@@ -8,6 +8,7 @@ on:
       - 'radar_logs.py'
       - 'radar_strict_scope_v27.py'
       - 'radar_edge_v19.py'
+      - 'gunicorn.conf.py'
       - '.github/workflows/v27-single-runtime-smoke.yml'
   push:
     branches: [main]
@@ -17,6 +18,7 @@ on:
       - 'radar_logs.py'
       - 'radar_strict_scope_v27.py'
       - 'radar_edge_v19.py'
+      - 'gunicorn.conf.py'
       - '.github/workflows/v27-single-runtime-smoke.yml'
 
 jobs:
@@ -30,14 +32,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Compile runtime
-        run: python -m compileall -q app.py radar_runtime_v27.py radar_logs.py radar_strict_scope_v27.py
+        run: python -m compileall -q app.py radar_runtime_v27.py radar_logs.py radar_strict_scope_v27.py gunicorn.conf.py
       - name: Verify one authoritative V27 bootstrap
         env:
           SECRET_KEY: smoke-test
+          PORT: '10000'
         run: |
           python - <<'PY'
           import contextlib
           import io
+          import runpy
 
           stdout = io.StringIO()
           with contextlib.redirect_stdout(stdout):
@@ -72,13 +76,15 @@ jobs:
           import radar_strict_scope_v27 as v27
 
           assert runtime._APPLIED is True
+          assert runtime._LIVENESS_INSTALLED is True
           assert v27._APPLIED is True
           assert app_module.RADAR_RUNTIME == v27.MODE_VERSION
           assert app_module.EDGE_PROFILE == v27.MODE_VERSION
           assert app_module.RADAR_MAX_DURATION_SEC == 15.05
           assert app_module.KEEP_LIMIT == 180
 
-          status = app_module.app.test_client().get('/api/status').get_json()
+          c = app_module.app.test_client()
+          status = c.get('/api/status').get_json()
           assert status['radar_runtime'] == v27.MODE_VERSION, status
           assert status['radar_profile'] == v27.MODE_VERSION, status
           assert status['edge_profile'] == v27.MODE_VERSION, status
@@ -87,6 +93,28 @@ jobs:
           assert status['radar_source_max_duration_sec'] == 15.05, status
           assert status['radar_compressed_target_sec'] == 10.0, status
           assert status['runtime_info']['legacy_startup_banners_suppressed'] is True, status
+          assert status['runtime_info']['render_fast_liveness'] is True, status
+
+          # CRITICAL Render contract: liveness must survive a completely broken
+          # SQLite read path. HEAD / is what Render has been probing in prod.
+          original_db_conn = app_module.db_conn
+          def broken_db_conn():
+              raise RuntimeError('synthetic SQLite outage')
+          app_module.db_conn = broken_db_conn
+          try:
+              root_head = c.head('/')
+              assert root_head.status_code == 200, root_head.get_data(as_text=True)
+              healthz_head = c.head('/healthz')
+              assert healthz_head.status_code == 200, healthz_head.get_data(as_text=True)
+              healthz_get = c.get('/healthz')
+              assert healthz_get.status_code == 200, healthz_get.get_data(as_text=True)
+              assert healthz_get.get_json()['runtime'] == v27.MODE_VERSION
+          finally:
+              app_module.db_conn = original_db_conn
+
+          # Explicit Render bind contract.
+          gunicorn_conf = runpy.run_path('gunicorn.conf.py')
+          assert gunicorn_conf['bind'] == '0.0.0.0:10000', gunicorn_conf['bind']
 
           sources = radar_job._build_sources()
           assert set(sources) == {'hashtag_omni', 'hashtag_veo', 'hashtag_veo3'}, sources
@@ -95,5 +123,5 @@ jobs:
               for source in sources.values()
           ), sources
 
-          print('V27 SINGLE RUNTIME OK')
+          print('V27 SINGLE RUNTIME + RENDER LIVENESS OK')
           PY
