@@ -16,6 +16,7 @@ import sys
 
 from flask import request
 
+from apify_start_compat import install_apify_start_compat
 from radar_logs import add_radar_log, suppress_startup_logs
 
 RUNTIME_VERSION = "omni_veo_veo3_v27_strict_compress10"
@@ -82,9 +83,10 @@ def activate_v27_runtime():
     if missing:
         raise RuntimeError(f"V27 bootstrap missing app prerequisites: {', '.join(missing)}")
 
-    # Install the liveness guard before composing any additional runtime layers.
-    # It is intentionally independent of the radar state machine.
+    # Install process liveness and the Apify start shim before composing runtime
+    # layers. Both are infrastructure compatibility guards, not product logic.
     _install_render_liveness(app_module.app)
+    install_apify_start_compat()
 
     # The sequence below deliberately preserves the already-tested internal
     # composition order. The architectural cleanup is that only THIS module is
@@ -173,6 +175,7 @@ def activate_v27_runtime():
         "budget": final_budget,
         "legacy_startup_banners_suppressed": True,
         "render_fast_liveness": True,
+        "apify_start_compat": True,
         "internal_edge": str((edge_info or {}).get("edge_profile") or ""),
     }
     _APPLIED = True
