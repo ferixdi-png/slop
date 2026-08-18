@@ -43,8 +43,8 @@ BUDGET_INFO = apply_budget_overrides()
 from radar_highfreq_v12 import apply_highfreq_overrides
 BUDGET_INFO = apply_highfreq_overrides()
 
-# Final radar target: funny spoken scenes first. AI is optional; ordinary
-# real Reels with a reusable comedic dialogue are valid candidates.
+# Dialogue-first target: ordinary real Reels and generated Reels are treated the
+# same. The useful thing is the short funny spoken mechanic, not its origin.
 from radar_dialogue_v14 import (
     PROFILE_VERSION,
     apply_dialogue_first_overrides,
@@ -53,13 +53,19 @@ from radar_dialogue_v14 import (
 BUDGET_INFO = apply_dialogue_first_overrides()
 top_eligible = top_eligible_dialogue
 
-# Final production target: generate only the underlying camera footage. Any
-# editorial photo/screenshot/PIP layer is reconstructed as a separate CapCut plan.
+# Production target: generate only the underlying camera footage. Editorial
+# photos/screenshots/PIP layers are reconstructed separately as a CapCut plan.
 from overlay_cleanplate_v15 import (
     PRODUCTION_PROFILE_VERSION,
     apply_overlay_cleanplate_overrides,
 )
 PRODUCTION_INFO = apply_overlay_cleanplate_overrides()
+
+# Final radar layer. This actually activates the tested static-image motion gate,
+# v16 dialogue/comedy source mix and 180-result scale, then replaces the fragile
+# oversized screening JSON with a compact resilient structured response.
+from radar_resilient_v17 import apply_resilient_v17_overrides
+BUDGET_INFO = apply_resilient_v17_overrides()
 
 tick_job = wrap_tick_job(tick_job)
 
@@ -270,7 +276,7 @@ def radar_analyze(item_id):
                     f"{RADAR_MIN_DURATION_SEC:.1f}–{RADAR_MAX_DURATION_SEC:.2f} сек"
                 )
             add_radar_log(
-                f"MP4 готов. Фактическая длительность {source_duration:.2f} сек. Загружаю Gemini runtime.",
+                f"MP4 готов. Фактическая длительность {source_duration:.2f} сек. Загружаю production runtime.",
                 stage="prompts",
             )
 

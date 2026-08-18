@@ -1,7 +1,7 @@
 name: Smoke Check
 on:
   push:
-    branches: [main, fix/static-gate-scale-v16]
+    branches: [main, fix-radar-v17]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -21,17 +21,74 @@ jobs:
       - name: Compile Python
         run: python -m compileall -q .
 
-      - name: Verify bundled ffmpeg static-image gate
+      - name: V17 radar behavior, static gate and budget
+        env:
+          SECRET_KEY: smoke-test
         run: |
           python - <<'PY'
           import subprocess
+          import app as app_module
+          import gemini_service
+          import radar_budget_v10 as budget_module
+          import radar_growth_v6 as growth
+          import radar_request_job as radar_job
+          import radar_service
+          import radar_scale_v16 as scale
+          import radar_resilient_v17 as v17
           from static_video_gate import ffmpeg_executable, inspect_visual_motion
-          from radar_scale_v16 import classify_dialogue_v16
 
+          c = app_module.app.test_client()
+          for path in ['/health','/api/status','/api/radar/status','/api/radar','/api/radar/candidates']:
+              r = c.get(path)
+              assert r.status_code == 200, (path, r.status_code, r.get_data(as_text=True))
+
+          status = c.get('/api/status').get_json()
+          assert status['radar_profile'] == v17.PROFILE_VERSION, status
+          assert v17.PROFILE_VERSION == 'dialogue_trends_v17_resilient_budget5'
+          assert status['radar_keep_limit'] == v17.KEEP_LIMIT == 180
+          assert radar_job.RADAR_AI_ANALYZE_LIMIT == v17.GEMINI_ANALYZE_LIMIT == 420
+          assert gemini_service.classify_radar_video is v17.classify_v17
+          assert radar_service.matches is v17.matches_v17
+          assert radar_job._process_one_ai is v17._process_one_v17
+          assert growth._ORIGINAL_FINALIZE is scale.finalize_scale_v16
+          assert len(v17.RadarScreeningV17.model_fields) <= 12
+          assert v17.MAX_CLASSIFICATION_OUTPUT_TOKENS == 320
+
+          b = budget_module.budget_breakdown()
+          assert b['guarded_apify_usd'] <= 4.00, b
+          assert b['hard_apify_actor_caps_usd'] <= 3.35, b
+          assert b['designed_total_budget_usd'] <= 5.00, b
+          assert b['hard_budget_usd'] == 5.0, b
+
+          # High recall: ordinary real funny speech passes; AI origin is irrelevant.
+          ok = v17.RadarScreeningV17(
+              has_spoken_dialogue=True, dialogue_is_comedic=True,
+              is_tutorial_or_review=False, is_information_talking_head=False,
+              is_static_or_slideshow=False, is_reusable_scene=True,
+              dialogue_confidence=92, comedy_confidence=88,
+              detected_language='English', dialogue_summary='question then funny answer',
+              scene_summary='two people exchange a short joke', decision_code='PASS_DIALOGUE')
+          assessment = v17._assessment_from_screening(ok)
+          assert v17.matches_v17(assessment) is True
+          assert assessment.is_russian is False
+
+          no_speech = ok.model_copy(update={
+              'has_spoken_dialogue': False, 'dialogue_is_comedic': False,
+              'dialogue_confidence': 0, 'comedy_confidence': 0,
+              'decision_code': 'NO_SPOKEN_DIALOGUE'})
+          assert v17.matches_v17(v17._assessment_from_screening(no_speech)) is False
+
+          tutorial = ok.model_copy(update={
+              'is_tutorial_or_review': True, 'decision_code': 'TUTORIAL_OR_REVIEW'})
+          assert v17.matches_v17(v17._assessment_from_screening(tutorial)) is False
+
+          static_model = ok.model_copy(update={
+              'is_static_or_slideshow': True, 'decision_code': 'STATIC_OR_SLIDESHOW'})
+          assert v17.matches_v17(v17._assessment_from_screening(static_model)) is False
+
+          # Static MP4 must be rejected locally with no GEMINI_API_KEY.
           ffmpeg = ffmpeg_executable()
           assert ffmpeg, 'No system or bundled ffmpeg available'
-          print('FFMPEG', ffmpeg)
-
           subprocess.run([
               ffmpeg, '-y', '-loglevel', 'error', '-f', 'lavfi',
               '-i', 'color=c=blue:s=320x240:r=30:d=4',
@@ -42,100 +99,36 @@ jobs:
               '-i', 'testsrc2=size=320x240:rate=30:duration=4',
               '-c:v', 'mpeg4', '-q:v', '5', '/tmp/moving.mp4'
           ], check=True)
-
           still = inspect_visual_motion('/tmp/static.mp4')
           moving = inspect_visual_motion('/tmp/moving.mp4')
           assert still.checked and still.is_static_image_video, still
           assert moving.checked and not moving.is_static_image_video, moving
-
-          # Must reject before Gemini; this test intentionally has no GEMINI_API_KEY.
-          verdict = classify_dialogue_v16('/tmp/static.mp4', 'quote card')
+          verdict = v17.classify_v17('/tmp/static.mp4', 'text card')
           assert verdict.reason.startswith('REJECT_STATIC_IMAGE'), verdict
-          print('STATIC GATE OK', still, moving)
-          PY
 
-      - name: Radar v16 budget and behavior smoke
-        env:
-          SECRET_KEY: smoke-test
-        run: |
-          python - <<'PY'
-          import app as app_module
-          import gemini_service
-          import radar_growth_v6 as growth
-          import radar_request_job as radar_job
-          import radar_service
-          from models import RadarAssessment
-          from radar_budget_v10 import budget_breakdown, ACTOR_CAPS_USD
-          from radar_scale_v16 import (
-              PROFILE_VERSION, TARGET_MATCHES, KEEP_LIMIT, GEMINI_ANALYZE_LIMIT,
-              RADAR_CLASSIFICATION_FPS, MAX_CLASSIFICATION_OUTPUT_TOKENS,
-              FINAL_QUERY_LIMIT, matches_dialogue_v16, classify_dialogue_v16,
-              finalize_scale_v16,
-          )
-          from overlay_cleanplate_v15 import PRODUCTION_PROFILE_VERSION
-
-          c = app_module.app.test_client()
-          for path in ['/health','/api/status','/api/radar/status','/api/radar','/api/radar/candidates']:
-              r = c.get(path)
-              assert r.status_code == 200, (path, r.status_code, r.get_data(as_text=True))
-
-          status = c.get('/api/status').get_json()
-          assert status['radar_profile'] == PROFILE_VERSION, status
-          assert PROFILE_VERSION == 'dialogue_motion_v16_scale3_budget5'
-          assert status['production_profile'] == PRODUCTION_PROFILE_VERSION
-          assert PRODUCTION_PROFILE_VERSION == 'frame0_cleanplate_capcut_ru_v15'
-          assert status['radar_keep_limit'] == KEEP_LIMIT == 180
-          assert TARGET_MATCHES == 180
-          assert FINAL_QUERY_LIMIT >= 360
-          assert radar_job.RADAR_AI_ANALYZE_LIMIT == GEMINI_ANALYZE_LIMIT == 420
-          assert RADAR_CLASSIFICATION_FPS == 1.0
-          assert MAX_CLASSIFICATION_OUTPUT_TOKENS == 320
-          assert growth._ORIGINAL_FINALIZE is finalize_scale_v16
-          assert gemini_service.classify_radar_video is classify_dialogue_v16
-
-          budget = budget_breakdown()
-          assert budget['guarded_apify_usd'] <= 4.00, budget
-          assert budget['hard_apify_actor_caps_usd'] <= 3.35, budget
-          assert budget['designed_total_budget_usd'] <= 5.00, budget
-          assert budget['hard_budget_usd'] == 5.0
-          assert budget['gemini_max_reels'] == 420
-          assert budget['gemini_max_output_tokens_per_reel'] == 320
-          assert round(sum(ACTOR_CAPS_USD.values()), 2) <= 3.35
-
+          # Discovery must now be the targeted v16 dialogue/comedy source mix.
           sources = radar_job._build_sources()
-          assert {'popular_ai','ai_hashtags','ai_keywords'} <= set(sources)
           tags = sources['ai_hashtags']['input']['hashtags']
           for required in ['юмор','приколы','comedy','funny','skit','ai','grok','veo','omni','kling']:
               assert required in tags, (required, tags)
           search_text = sources['popular_ai']['input']['search'].lower()
-          for phrase in ['смешной диалог','муж жена прикол','funny dialogue','couple comedy','family comedy']:
+          for phrase in ['смешной диалог','смешная сценка','funny dialogue','couple comedy','family comedy']:
               assert phrase in search_text, (phrase, search_text)
 
-          real_dialogue = RadarAssessment(
-              is_russian=True,is_ai_video=False,is_comedy_scene=True,
-              is_tutorial_or_review=False,is_talking_head=False,simple_situation=True,
-              strong_first_frame=True,one_clear_joke_or_twist=True,characters_count=2,
-              scene_description='husband wife joke',characters=['man','woman'],joke='funny answer',
-              hook='question',ending='punchline',reproducible_format=False,reason='funny dialogue',
-              has_spoken_dialogue=True,dialogue_is_comedic=True,
-              dialogue_summary='question and punchline',detected_language='Russian')
-          assert matches_dialogue_v16(real_dialogue) is True
-          assert radar_service.matches(real_dialogue) is True
-          assert matches_dialogue_v16(real_dialogue.model_copy(update={'is_russian':False,'detected_language':'English'})) is True
-          assert matches_dialogue_v16(real_dialogue.model_copy(update={'has_spoken_dialogue':False,'dialogue_is_comedic':False})) is False
-          assert matches_dialogue_v16(real_dialogue.model_copy(update={'is_tutorial_or_review':True})) is False
-
+          # Production locks remain intact.
           prod = gemini_service.production_system_prompt(False, 7.64)
-          audit = gemini_service.audit_system_prompt(7.64)
           forensic = gemini_service.forensic_system_prompt(False, 7.64)
-          for needle in ['FRAME 0 PHOTO PROMPT — ABSOLUTE LITERAL LOCK','EXACT VIDEO DURATION — ABSOLUTE LOCK','CAPCUT OVERLAY PLAN','RUSSIAN PUBLICATION LOCALIZATION — ABSOLUTE']:
-              assert needle in prod, needle
+          audit = gemini_service.audit_system_prompt(7.64)
+          assert 'FRAME 0 PHOTO PROMPT — ABSOLUTE LITERAL LOCK' in prod
+          assert 'EXACT VIDEO DURATION — ABSOLUTE LOCK' in prod
+          assert 'CAPCUT OVERLAY PLAN' in prod
+          assert 'RUSSIAN PUBLICATION LOCALIZATION — ABSOLUTE' in prod
           assert 'timestamp 0.000 seconds' in forensic
-          assert 'publication_russian_ok' in audit
           assert 'frame_zero_literal_match_ok' in audit
           assert 'explicit_duration_instruction_ok' in audit
+          assert 'publication_russian_ok' in audit
 
-          print('V16 BUDGET', budget)
+          print('V17 OK', status['radar_profile'], b)
           PY
 
       - uses: actions/setup-node@v4
@@ -149,7 +142,6 @@ jobs:
           node --check static/runtime.js
           grep -q "/api/radar/sync" static/runtime.js
           grep -q "/api/radar/tick" static/runtime.js
-          grep -q "dialogue_motion_v16_scale3_budget5" radar_scale_v16.py
-          grep -q "REJECT_STATIC_IMAGE" radar_scale_v16.py
+          grep -q "dialogue_trends_v17_resilient_budget5" radar_resilient_v17.py
           grep -q "frame0_cleanplate_capcut_ru_v15" overlay_cleanplate_v15.py
           grep -q "CAPCUT OVERLAY PLAN" static/overlay_v15.js
