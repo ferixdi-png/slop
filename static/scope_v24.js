@@ -1,6 +1,5 @@
 (() => {
-  // Keep the existing UI code stable; this tiny layer only updates terminology
-  // for the final V24 scope and shows measured cross-run growth when available.
+  // Keep the stable UI renderer, but surface the final V24/V26 semantics.
   const originalRadarCard = window.radarCard;
   if (typeof originalRadarCard === 'function') {
     window.radarCard = function v24RadarCard(row, index) {
@@ -17,18 +16,31 @@
     };
   }
 
-  const replaceLabels = () => {
+  function replaceLabels() {
     const stats = document.getElementById('radarPipelineStats');
     if (stats) {
       stats.querySelectorAll('span').forEach(span => {
-        if (/AI проверка|смысловая проверка/i.test(span.textContent || '')) span.textContent = 'MP4 проверка';
-        if (/AI совпадений/i.test(span.textContent || '')) span.textContent = 'прошли проверку';
+        const text = span.textContent || '';
+        if (/AI проверка|смысловая проверка/i.test(text)) span.textContent = 'MP4 проверка';
+        if (/AI совпадений/i.test(text)) span.textContent = 'прошли проверку';
       });
     }
-  };
+
+    const candidates = document.getElementById('candidateRows');
+    if (candidates) {
+      candidates.querySelectorAll('.candidate-state').forEach(el => {
+        const text = (el.textContent || '').trim();
+        if (text === 'ПРОШЁЛ AI') el.textContent = 'ПРОШЁЛ MP4';
+        else if (text === 'НЕ ПРОШЁЛ AI') el.textContent = 'ОТКЛОНЁН';
+        else if (text === 'ЖДЁТ AI') el.textContent = 'ЖДЁТ MP4';
+      });
+    }
+  }
 
   replaceLabels();
   const observer = new MutationObserver(replaceLabels);
-  const stats = document.getElementById('radarPipelineStats');
-  if (stats) observer.observe(stats, {childList: true, subtree: true});
+  for (const id of ['radarPipelineStats', 'candidateRows']) {
+    const node = document.getElementById(id);
+    if (node) observer.observe(node, {childList: true, subtree: true});
+  }
 })();
