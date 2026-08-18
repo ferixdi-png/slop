@@ -44,13 +44,8 @@ def activate_v27_runtime():
         from radar_growth_v6 import apply_growth_overrides
         apply_growth_overrides()
 
-        from radar_budget_v10 import (
-            KEEP_LIMIT,
-            apply_budget_overrides,
-            budget_breakdown,
-            wrap_tick_job,
-        )
-        budget_info = apply_budget_overrides()
+        import radar_budget_v10 as budget
+        budget_info = budget.apply_budget_overrides()
 
         from radar_highfreq_v12 import apply_highfreq_overrides
         budget_info = apply_highfreq_overrides()
@@ -70,7 +65,7 @@ def activate_v27_runtime():
 
         # The monthly budget wrapper must remain inside the V19 hardening
         # wrapper exactly as before.
-        app_module.tick_job = wrap_tick_job(app_module.tick_job)
+        app_module.tick_job = budget.wrap_tick_job(app_module.tick_job)
 
         from radar_hardening_v19 import PROFILE_VERSION, apply_hardening_v19
         budget_info = apply_hardening_v19()
@@ -94,19 +89,22 @@ def activate_v27_runtime():
         if not V27_APPLIED:
             raise RuntimeError("V27 strict scope did not activate during final bootstrap")
 
+        # Read mutable final values only AFTER V24/V25/V27 finished composing.
+        # Do not copy early module constants before those layers can update them.
+        final_keep_limit = int(budget.KEEP_LIMIT)
+        final_budget = budget.budget_breakdown()
+
         # These are compatibility/data-profile values. Public status is V27.
         app_module.PROFILE_VERSION = PROFILE_VERSION
         app_module.PRODUCTION_PROFILE_VERSION = PRODUCTION_PROFILE_VERSION
-        app_module.KEEP_LIMIT = KEEP_LIMIT
-        app_module.BUDGET_INFO = budget_breakdown()
-        app_module.budget_breakdown = budget_breakdown
+        app_module.KEEP_LIMIT = final_keep_limit
+        app_module.BUDGET_INFO = final_budget
+        app_module.budget_breakdown = budget.budget_breakdown
         app_module.cancel_active_job = cancel_active_job
         app_module.RADAR_RUNTIME = RUNTIME_VERSION
         app_module.EDGE_PROFILE = PUBLIC_EDGE_PROFILE
         app_module.RADAR_MAX_DURATION_SEC = SOURCE_MAX_DURATION_SEC
 
-    # Re-read the final budget after V24/V25 adjusted the three-source caps.
-    final_budget = app_module.budget_breakdown()
     _CONTRACT = {
         "runtime": RUNTIME_VERSION,
         "profile": RUNTIME_VERSION,
