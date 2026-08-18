@@ -1,5 +1,6 @@
 (() => {
   const button = document.querySelector('#syncRadar');
+  const stopButton = document.querySelector('#stopRadar');
   const status = document.querySelector('#radarStatusMessage');
   if (!button) return;
 
@@ -11,8 +12,19 @@
   let tickBusy = false;
   let driveTimer = null;
   let driveEnabled = false;
+  let stopRequested = false;
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+  function setRunningUi(running) {
+    button.disabled = Boolean(running);
+    button.textContent = running ? 'ПОИСК ИДЁТ…' : 'ЗАПУСТИТЬ ПОИСК';
+    if (stopButton) {
+      stopButton.classList.toggle('hidden', !running);
+      stopButton.disabled = false;
+      stopButton.textContent = 'ОСТАНОВИТЬ ПОИСК';
+    }
+  }
 
   function paintStart(message = 'Связываюсь с Render…') {
     if (pct) pct.textContent = '0%';
@@ -82,11 +94,15 @@
 
   function scheduleDrive(delay = 3500) {
     clearTimeout(driveTimer);
-    if (!driveEnabled) return;
+    if (!driveEnabled || stopRequested) return;
     driveTimer = setTimeout(driveOnce, delay);
   }
 
   async function driveOnce() {
+    if (stopRequested) {
+      driveEnabled = false;
+      return;
+    }
     if (tickBusy) {
       scheduleDrive(1500);
       return;
@@ -94,21 +110,32 @@
     tickBusy = true;
     try {
       const data = await jsonPost('/api/radar/tick', 150000);
+      if (stopRequested) {
+        driveEnabled = false;
+        await refreshTruth();
+        return;
+      }
       driveEnabled = Boolean(data?.active);
       await refreshTruth();
       if (data?.transient_error && status) {
         status.textContent = `Шаг временно не прошёл: ${data.message || 'ошибка'}. Повторяю автоматически…`;
       }
-      if (driveEnabled) scheduleDrive(data?.busy ? 1800 : 3200);
-      else {
-        button.disabled = false;
-        button.textContent = 'ЗАПУСТИТЬ ПОИСК';
+      if (driveEnabled) {
+        setRunningUi(true);
+        scheduleDrive(data?.busy ? 1800 : 3200);
+      } else {
+        setRunningUi(false);
       }
     } catch (error) {
+      if (stopRequested) {
+        driveEnabled = false;
+        return;
+      }
       // During a Render deploy/swap the edge can return 502 before Flask sees the
       // request. The durable state is already in KVS, so simply retry the tick.
       if (status) status.textContent = `Render переключает instance: ${error.message}. Продолжаю автоматически…`;
       driveEnabled = true;
+      setRunningUi(true);
       scheduleDrive(3500);
     } finally {
       tickBusy = false;
@@ -137,8 +164,10 @@
   }
 
   async function startRadar() {
+    stopRequested = false;
     button.disabled = true;
     button.textContent = 'ПОДКЛЮЧАЮСЬ…';
+    if (stopButton) stopButton.classList.add('hidden');
     paintStart();
 
     try {
@@ -153,14 +182,65 @@
           ? `Найден job ${runId}. Продолжаю ровно с сохранённого этапа.`
           : `Job ${runId} сохранён. Теперь поиск идёт короткими restart-safe шагами.`;
       }
-      button.textContent = 'ПОИСК ИДЁТ…';
       driveEnabled = true;
+      setRunningUi(true);
       await refreshTruth();
       scheduleDrive(250);
     } catch (error) {
       if (status) status.textContent = `Не удалось подтвердить запуск: ${error.message}. Ничего не считаю запущенным.`;
-      button.disabled = false;
-      button.textContent = 'ЗАПУСТИТЬ ПОИСК';
+      driveEnabled = false;
+      setRunningUi(false);
+    }
+  }
+
+  async function stopRadar() {
+    stopRequested = true;
+    driveEnabled = false;
+    clearTimeout(driveTimer);
+
+    button.disabled = true;
+    button.textContent = 'ОСТАНАВЛИВАЮ…';
+    if (stopButton) {
+      stopButton.classList.remove('hidden');
+      stopButton.disabled = true;
+      stopButton.textContent = 'ОСТАНАВЛИВАЮ…';
+    }
+    if (stage) stage.textContent = 'Останавливаю поиск';
+    if (eta) eta.textContent = 'жду текущий шаг';
+    if (status) status.textContent = 'Принудительно останавливаю durable job и активные источники. Текущий атомарный шаг может завершиться перед остановкой.';
+
+    try {
+      const data = await jsonPost('/api/radar/stop', 205000);
+      await refreshTruth();
+
+      if (data?.stop_pending) {
+        if (status) status.textContent = data.message || 'Текущий шаг ещё завершается. Нажми остановку повторно через несколько секунд.';
+        if (stopButton) {
+          stopButton.disabled = false;
+          stopButton.textContent = 'ОСТАНОВИТЬ ПОВТОРНО';
+        }
+        button.disabled = true;
+        button.textContent = 'ОСТАНОВКА ЗАПРОШЕНА';
+        return;
+      }
+
+      driveEnabled = false;
+      if (pct) pct.textContent = '0%';
+      if (stage) stage.textContent = 'Поиск остановлен';
+      if (eta) eta.textContent = 'ОСТАНОВЛЕНО';
+      if (bar) bar.style.width = '0%';
+      if (status) status.textContent = data?.message || 'Поиск принудительно остановлен. Можно запускать новый run.';
+      setRunningUi(false);
+    } catch (error) {
+      await refreshTruth();
+      if (status) status.textContent = `Не удалось подтвердить остановку: ${error.message}. Нажми «ОСТАНОВИТЬ ПОИСК» ещё раз.`;
+      button.disabled = true;
+      button.textContent = 'ПОИСК ИДЁТ…';
+      if (stopButton) {
+        stopButton.classList.remove('hidden');
+        stopButton.disabled = false;
+        stopButton.textContent = 'ОСТАНОВИТЬ ПОИСК';
+      }
     }
   }
 
@@ -171,17 +251,27 @@
     startRadar();
   }, true);
 
+  if (stopButton) {
+    stopButton.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      stopRadar();
+    }, true);
+  }
+
   // One bootstrap tick is enough to recover a KVS job after a Render restart or
   // browser reload. If it is active, the loop keeps driving it; if not, it stops.
   setTimeout(async () => {
     try {
       const data = await jsonPost('/api/radar/tick', 30000);
+      if (stopRequested) return;
       driveEnabled = Boolean(data?.active);
       await refreshTruth();
       if (driveEnabled) {
-        button.disabled = true;
-        button.textContent = 'ПОИСК ИДЁТ…';
+        setRunningUi(true);
         scheduleDrive(1200);
+      } else {
+        setRunningUi(false);
       }
     } catch (_) {
       // Page remains usable; the next explicit start has its own 90s retry window.
