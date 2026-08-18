@@ -5,6 +5,7 @@ on:
     paths:
       - 'app.py'
       - 'radar_runtime_v27.py'
+      - 'radar_discovery_v27.py'
       - 'radar_logs.py'
       - 'radar_strict_scope_v27.py'
       - 'radar_edge_v19.py'
@@ -15,6 +16,7 @@ on:
     paths:
       - 'app.py'
       - 'radar_runtime_v27.py'
+      - 'radar_discovery_v27.py'
       - 'radar_logs.py'
       - 'radar_strict_scope_v27.py'
       - 'radar_edge_v19.py'
@@ -32,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Compile runtime
-        run: python -m compileall -q app.py radar_runtime_v27.py radar_logs.py radar_strict_scope_v27.py gunicorn.conf.py
+        run: python -m compileall -q app.py radar_runtime_v27.py radar_discovery_v27.py radar_logs.py radar_strict_scope_v27.py gunicorn.conf.py
       - name: Verify one authoritative V27 bootstrap
         env:
           SECRET_KEY: smoke-test
@@ -94,6 +96,8 @@ jobs:
           assert status['radar_compressed_target_sec'] == 10.0, status
           assert status['runtime_info']['legacy_startup_banners_suppressed'] is True, status
           assert status['runtime_info']['render_fast_liveness'] is True, status
+          assert status['runtime_info']['discovery_actor'] == 'apify/instagram-scraper', status
+          assert status['runtime_info']['discovery_results_per_tag'] == 250, status
 
           # CRITICAL Render contract: liveness must survive a completely broken
           # SQLite read path. HEAD / is what Render has been probing in prod.
@@ -118,10 +122,15 @@ jobs:
 
           sources = radar_job._build_sources()
           assert set(sources) == {'hashtag_omni', 'hashtag_veo', 'hashtag_veo3'}, sources
-          assert all(
-              source.get('strict_scope_marker') == v27.STRICT_SOURCE_MARKER
-              for source in sources.values()
-          ), sources
+          for tag in ('omni', 'veo', 'veo3'):
+              source = sources[f'hashtag_{tag}']
+              assert source.get('strict_scope_marker') == v27.STRICT_SOURCE_MARKER, source
+              assert source.get('actor_id') == 'apify/instagram-scraper', source
+              payload = source.get('input') or {}
+              assert payload.get('directUrls') == [f'https://www.instagram.com/explore/tags/{tag}/'], payload
+              assert payload.get('resultsType') == 'reels', payload
+              assert payload.get('resultsLimit') == 250, payload
+              assert payload.get('onlyPostsNewerThan') == '7 days', payload
 
-          print('V27 SINGLE RUNTIME + RENDER LIVENESS OK')
+          print('V27 SINGLE RUNTIME + HIGH-VOLUME DISCOVERY + RENDER LIVENESS OK')
           PY
