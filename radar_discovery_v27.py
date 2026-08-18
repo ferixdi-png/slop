@@ -108,3 +108,5 @@ def install_v27_high_volume_discovery():
 
     _APPLIED = True
     return info
+
+# Verification branch only: semantic no-op used to trigger path-filtered CI.
