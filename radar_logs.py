@@ -1,10 +1,12 @@
 import json
 import os
 import sys
+from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
 
 _RUN_ID = ContextVar("radar_run_id", default="-")
+_SUPPRESS_STARTUP_LOGS = ContextVar("suppress_radar_startup_logs", default=False)
 
 
 def set_radar_run_id(run_id):
@@ -21,6 +23,24 @@ def reset_radar_run_id(token):
 
 def get_radar_run_id():
     return _RUN_ID.get()
+
+
+@contextmanager
+def suppress_startup_logs():
+    """Suppress only legacy bootstrap READY lines while composing the final runtime.
+
+    Operational WARN/ERROR/tick/source logs are never suppressed. The final
+    product bootstrap emits one authoritative V27 startup line after the legacy
+    compatibility layers have been composed.
+    """
+    token = _SUPPRESS_STARTUP_LOGS.set(True)
+    try:
+        yield
+    finally:
+        try:
+            _SUPPRESS_STARTUP_LOGS.reset(token)
+        except Exception:
+            pass
 
 
 def _current_rss_mb():
@@ -72,6 +92,13 @@ def add_radar_log(message, level="INFO", stage="", details=None):
 
     level = str(level or "INFO").upper()[:16]
     stage = str(stage or "general")[:80]
+
+    # During final V27 bootstrap, old compatibility layers may still execute
+    # their setup functions. Hide only their noisy startup READY banners. Any
+    # operational warning/error from those layers remains visible.
+    if stage == "startup" and _SUPPRESS_STARTUP_LOGS.get():
+        return
+
     run_id = get_radar_run_id()
     timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     payload = _compact_details(details)
