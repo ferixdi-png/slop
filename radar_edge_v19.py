@@ -1,8 +1,10 @@
 """Final edge-case guards on top of v19 hardening.
 
-These are deliberately tiny wrappers around the tested v19 layer. They close four
+These are deliberately tiny wrappers around the tested v19 layer. They close
 race/state edges without changing discovery, semantic screening, ranking or the
-<$5 budget contract.
+<$5 budget contract. V20 additionally fixes source aggregation so successful
+new-generation discovery datasets cannot be lost because their IDs differ from
+legacy literal names.
 """
 
 from __future__ import annotations
@@ -20,8 +22,9 @@ from cloud_state import (
 from db import db_conn
 from progress import set_radar_status
 from radar_logs import add_radar_log
+from radar_source_aggregation_v20 import apply_source_aggregation_v20
 
-EDGE_PROFILE = "v19_edge_guard_1"
+EDGE_PROFILE = "v20_source_aggregation_edge_guard"
 
 _APPLIED = False
 _BASE_CREATE = None
@@ -153,6 +156,11 @@ def apply_edge_guards():
     if app_module is None:
         raise RuntimeError("radar_edge_v19 must be applied from app startup")
 
+    # Apply after v19 hardening has built its wrapper chain. This patches the
+    # legacy base preparer used inside that chain, preserving every hardening
+    # wrapper while making aggregation independent of source IDs.
+    source_aggregation_info = apply_source_aggregation_v20()
+
     _BASE_CREATE = app_module.create_or_resume_job
     _BASE_POLL = radar_job._poll_sources
     _BASE_ERROR_GUARD = hardening._apply_tick_error_guard
@@ -166,12 +174,17 @@ def apply_edge_guards():
     # Clean old-profile PASS rows immediately on deploy, not only at finalization.
     invalidated = invalidate_stale_recent_matches()
     add_radar_log(
-        "V19 EDGE GUARDS READY: STOP→START race, BUSY/error counter, stale TOP and missing run_id recovery закрыты.",
+        "V20 EDGE GUARDS READY: source aggregation, STOP→START race, BUSY/error counter, stale TOP and missing run_id recovery закрыты.",
         stage="startup",
         details={
             "edge_profile": EDGE_PROFILE,
             "radar_profile": hardening.PROFILE_VERSION,
             "stale_top_invalidated": invalidated,
+            **source_aggregation_info,
         },
     )
-    return {"edge_profile": EDGE_PROFILE, "stale_top_invalidated": invalidated}
+    return {
+        "edge_profile": EDGE_PROFILE,
+        "stale_top_invalidated": invalidated,
+        **source_aggregation_info,
+    }
