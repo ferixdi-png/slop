@@ -23,7 +23,8 @@ jobs:
           import app as app_module
           import radar_request_job as radar_job
           import radar_service, gemini_service, cloud_state
-          from radar_budget_v10 import budget_breakdown, PROFILE_VERSION, ACTOR_CAPS_USD
+          from radar_budget_v10 import budget_breakdown, ACTOR_CAPS_USD
+          from radar_highfreq_v12 import PROFILE_VERSION
           from progress import set_radar_status
           from models import RadarAssessment
 
@@ -48,13 +49,12 @@ jobs:
           assert {'popular_ai','ai_hashtags','ai_keywords'}<=set(sources)
           assert sources['popular_ai']['input']['searchLimit']==20
           tags=sources['ai_hashtags']['input']['hashtags']
-          assert len(tags)==18, tags
-          for required in ['ai','ии','grok','veo','omni','gemini','klingai','seedance','sora']:
+          assert len(tags)==16, tags
+          for required in ['ai','ии','grok','veo','omni','chatgpt','openai','klingai','seedance']:
               assert required in tags, (required,tags)
-          for removed in ['geminiomni','googleflowai','нейросетьприкол','midjourney','recraft','ideogram']:
+          for removed in ['sora','gemini','geminiomni','googleflowai','нейросетьприкол','midjourney','recraft','ideogram']:
               assert removed not in tags, (removed,tags)
 
-          # Verify actor.start receives real platform-side caps, not just estimates.
           calls=[]
           class FakeActor:
               def start(self, **kwargs):
@@ -75,7 +75,6 @@ jobs:
           assert radar_service.matches(foreign) is True
           assert 'RUSSIAN LOCALIZATION OVERRIDE' in gemini_service.production_system_prompt(False,8.0)
 
-          # Cloud state must survive a completely unavailable Apify KVS.
           original_store=cloud_state._store_client
           cloud_state._store_client=lambda: None
           probe={'phase':'queued','run_id':'local-fallback-smoke'}
@@ -94,7 +93,7 @@ jobs:
           assert c.post('/api/radar/sync').status_code==202
           assert c.post('/api/radar/tick').get_json()['phase']=='discovering'
           app_module.create_or_resume_job=rs; app_module.tick_job=rt
-          print('V11 HIGH-FREQUENCY BUDGET SMOKE OK',budget)
+          print('V12 CORE HIGH-FREQUENCY BUDGET SMOKE OK',budget)
           PY
       - uses: actions/setup-node@v4
         with:
@@ -108,4 +107,4 @@ jobs:
           grep -q "/api/radar/sync" static/runtime.js
           grep -q "/api/radar/tick" static/runtime.js
           grep -q "request_state_machine_v5" radar_request_job.py
-          grep -q "mass_global_ai_v11_highfreq5" radar_budget_v10.py
+          grep -q "mass_global_ai_v12_core5" radar_highfreq_v12.py
