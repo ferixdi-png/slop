@@ -1,15 +1,21 @@
 """Cost guard for the mass AI radar.
 
 High recall is preserved, but every Apify Actor gets a real platform-side dollar
-cap plus max-items cap. The discovery side therefore cannot silently grow into
-an expensive run after future hashtag/search changes.
+cap plus max-items cap. Gemini classification is also bounded to short 10-second
+inputs and a small structured output.
 """
 
 from decimal import Decimal
 
+from google.genai import types
+
+import gemini_service
 import radar_growth_v6 as growth
 import radar_request_job as radar_job
 from cloud_state import load_radar_job, save_radar_job
+from config import RADAR_MAX_DURATION_SEC, RADAR_MIN_DURATION_SEC
+from media_duration import measure_video_duration
+from models import RadarAssessment
 from progress import set_radar_status
 from radar_logs import add_radar_log
 
@@ -18,24 +24,23 @@ MAX_RUN_BUDGET_USD = 5.00
 BUDGET_GUARD_USD = 4.00
 BUDGET_HEADROOM_MULTIPLIER = 1.25
 BUDGETED_GEMINI_RESERVE_USD = 1.25
+MAX_GEMINI_OUTPUT_TOKENS = 512
 
-# Conservative rate assumptions for planning only. Actual Apify runs are also
-# protected by max_total_charge_usd below, which is the real hard stop.
+# Conservative planning rates. Actual Apify runs are also protected by
+# max_total_charge_usd below, which is the real platform-side hard stop.
 SEARCH_USD_PER_1000 = 2.70
 HASHTAG_USD_PER_1000 = 2.70
 REEL_USD_PER_1000 = 1.00
 
 SEARCH_LIMIT = 16
 HASHTAG_LIMIT = 14
-KEYWORD_RESULTS_LIMIT = 12  # fixed in growth._build_mass_sources
+KEYWORD_RESULTS_LIMIT = 12
 MAX_TRACKED_CREATORS = 15
-CREATOR_RESULTS_LIMIT = 12  # fixed in growth._build_mass_sources
+CREATOR_RESULTS_LIMIT = 12
 AI_ANALYZE_LIMIT = 320
 KEEP_LIMIT = 60
 
-# Real Apify platform-side caps. Even if a scraper pricing mode changes or a
-# query suddenly returns far more data, these four Actor runs are individually
-# stopped at these amounts. Maximum Apify charge for one discovery = $3.35.
+# Maximum Apify charge for one discovery = $3.35.
 ACTOR_CAPS_USD = {
     "popular_ai": 1.35,
     "ai_hashtags": 1.35,
@@ -43,7 +48,6 @@ ACTOR_CAPS_USD = {
     "known_ai_creators": 0.30,
 }
 
-# High-yield search phrases. Removed broad tool/image/tutorial queries.
 SEARCH_TERMS = [
     "AI comedy",
     "AI funny video",
@@ -79,9 +83,8 @@ SEARCH_TERMS = [
     "Sora funny",
 ]
 
-# Curated tags that usually point to generated VIDEO / comedy mechanics.
-# Intentionally removed generic #ai, #ии, #нейросеть, #chatgpt, #openai,
-# #gpt, #midjourney, #recraft, #ideogram and similar noisy discovery tags.
+# Curated VIDEO/comedy tags. Generic #ai/#ии/#chatgpt/#openai/#gpt and
+# image-centric Midjourney/Recraft/Ideogram tags are intentionally excluded.
 HASHTAGS = [
     "нейроюмор",
     "ииюмор",
@@ -102,21 +105,21 @@ HASHTAGS = [
     "aimeme",
     "aiskit",
     "aiabsurd",
-    "aiviral",
-    "aipov",
     "aigrandma",
     "aigrandpa",
     "aifamily",
     "aicouple",
     "aianimals",
     "aivillage",
-    "aiinterview",
     "grokvideo",
     "geminiomni",
     "omniai",
     "googleflowai",
     "veo3video",
     "klingvideo",
+    "seedancevideo",
+    "soravideo",
+    "minimaxvideo",
 ]
 
 KEYWORD_TERMS = [
@@ -173,6 +176,8 @@ def budget_breakdown():
         "guarded_apify_usd": round(guarded, 3),
         "hard_apify_actor_caps_usd": round(actor_hard_cap, 2),
         "budgeted_gemini_reserve_usd": BUDGETED_GEMINI_RESERVE_USD,
+        "gemini_max_output_tokens_per_reel": MAX_GEMINI_OUTPUT_TOKENS,
+        "gemini_max_reels": AI_ANALYZE_LIMIT,
         "designed_total_budget_usd": round(designed_total, 2),
         "hard_budget_usd": MAX_RUN_BUDGET_USD,
     }
@@ -194,6 +199,58 @@ def _assert_budget():
 def _is_apify_quota_message(value):
     text = str(value or "").lower()
     return "monthly usage hard limit exceeded" in text or "monthly usage limit" in text
+
+
+def classify_budget_video(file_path, caption=""):
+    """High-recall AI-gag classifier with bounded output tokens."""
+    measured = float(measure_video_duration(file_path, fallback=0) or 0)
+    if measured < RADAR_MIN_DURATION_SEC or measured > RADAR_MAX_DURATION_SEC:
+        return RadarAssessment(
+            is_russian=False,
+            is_ai_video=False,
+            is_comedy_scene=False,
+            is_tutorial_or_review=False,
+            is_talking_head=False,
+            simple_situation=False,
+            strong_first_frame=False,
+            one_clear_joke_or_twist=False,
+            characters_count=0,
+            scene_description="",
+            characters=[],
+            joke="",
+            hook="",
+            ending="",
+            reproducible_format=False,
+            reason=f"Фактическая длительность MP4 {measured:.2f} сек вне диапазона {RADAR_MIN_DURATION_SEC:.1f}–{RADAR_MAX_DURATION_SEC:.2f}",
+        )
+
+    prompt = f"""Проверь короткий Instagram Reel как кандидат для радара повторяемых AI-видео.
+PASS нужен с высоким recall. Язык исходника НЕ ограничение: иностранную речь потом локализуем на русский.
+Считай подходящими AI-сценки, AI-slop, короткий абсурд, визуальный гэг, реакцию, AI-персонажа в камеру, бабушек/дедов/животных/семью, мини-диалог или один понятный панчлайн.
+REJECT только если это обычная реальная съёмка/мем без AI, tutorial/обзор сервиса, обычный реальный talking head, бессюжетный продукт/пейзаж/музмонтаж или механику нельзя воспроизвести.
+is_russian = язык исходника, но false не означает reject.
+is_talking_head=true только для обычного реального блогера/эксперта; AI-персонаж внутри гэга не talking head.
+reproducible_format=true если структуру можно повторить с другими персонажами/локацией/русской репликой.
+Ответ строго по схеме и максимально кратко.
+Caption вторичен: {str(caption or '')[:1200]}""".strip()
+
+    def run(client, uploaded):
+        response = client.models.generate_content(
+            model=gemini_service.RADAR_MODEL,
+            contents=types.Content(parts=[
+                gemini_service.video_part(uploaded, gemini_service.RADAR_VIDEO_FPS),
+                types.Part(text=prompt),
+            ]),
+            config=types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(thinking_level="minimal"),
+                response_mime_type="application/json",
+                response_schema=RadarAssessment,
+                max_output_tokens=MAX_GEMINI_OUTPUT_TOKENS,
+            ),
+        )
+        return gemini_service.parse_response(response, RadarAssessment)
+
+    return gemini_service.with_uploaded_file(file_path, run)
 
 
 def _start_one_source_budget(client, job):
@@ -312,8 +369,6 @@ def wrap_tick_job(base_tick_job):
 def apply_budget_overrides():
     info = _assert_budget()
 
-    # growth wrappers read these globals dynamically, so this replaces v9
-    # discovery while preserving the stable request-state-machine and classifier.
     growth.PROFILE_VERSION = PROFILE_VERSION
     growth.SEARCH_LIMIT = SEARCH_LIMIT
     growth.HASHTAG_LIMIT = HASHTAG_LIMIT
@@ -329,9 +384,10 @@ def apply_budget_overrides():
     radar_job.RADAR_KEEP_LIMIT = KEEP_LIMIT
     radar_job._tracked_creators = _budget_tracked_creators
     radar_job._start_one_source = _start_one_source_budget
+    gemini_service.classify_radar_video = classify_budget_video
 
     add_radar_log(
-        "BUDGET AI v10 включён: мусорные broad-теги удалены; каждый Apify Actor имеет maxItems + maxTotalChargeUsd; общий план <$5.",
+        "BUDGET AI v10 включён: curated video-tags; Apify hard caps; Gemini 10s structured classifier with bounded output; общий план <$5.",
         stage="startup",
         details={"profile": PROFILE_VERSION, "actor_caps": ACTOR_CAPS_USD, **info},
     )
