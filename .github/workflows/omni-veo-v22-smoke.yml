@@ -1,4 +1,4 @@
-name: Omni Veo Veo3 V25 Smoke
+name: Omni Veo Veo3 V26 Smoke
 
 on:
   pull_request:
@@ -8,6 +8,7 @@ on:
       - 'radar_fresh_run_v23.py'
       - 'radar_omni_veo_veo3_v24.py'
       - 'radar_momentum_cloud_v25.py'
+      - 'radar_runtime_polish_v26.py'
       - 'radar_edge_v19.py'
       - 'templates/index.html'
       - 'static/fresh_run_v23.js'
@@ -22,6 +23,7 @@ on:
       - 'radar_fresh_run_v23.py'
       - 'radar_omni_veo_veo3_v24.py'
       - 'radar_momentum_cloud_v25.py'
+      - 'radar_runtime_polish_v26.py'
       - 'radar_edge_v19.py'
       - 'templates/index.html'
       - 'static/fresh_run_v23.js'
@@ -64,6 +66,7 @@ jobs:
           import radar_omni_veo_v22 as v22
           import radar_omni_veo_veo3_v24 as v24
           import radar_request_job as radar_job
+          import radar_runtime_polish_v26 as v26
           from cloud_state import load_radar_job, save_radar_job
           from db import db_conn
 
@@ -89,12 +92,8 @@ jobs:
               }, source
           assert not any('popular' in name or 'keyword' in name or 'creator' in name for name in sources)
 
-          fast = v24._v24_score({
-              'views': 30_000, 'hours_since_publish': 2.0, 'viral_score_v2': 50.0,
-          }, 15_000, 0.0, False)
-          slow = v24._v24_score({
-              'views': 300_000, 'hours_since_publish': 48.0, 'viral_score_v2': 80.0,
-          }, 1_500, 0.0, False)
+          fast = v24._v24_score({'views': 30_000, 'hours_since_publish': 2.0, 'viral_score_v2': 50.0}, 15_000, 0.0, False)
+          slow = v24._v24_score({'views': 300_000, 'hours_since_publish': 48.0, 'viral_score_v2': 80.0}, 1_500, 0.0, False)
           assert fast > slow, (fast, slow)
 
           now = datetime.now(timezone.utc)
@@ -125,6 +124,7 @@ jobs:
               passed = v22.classify_omni_veo_reel('/tmp/fake.mp4', '')
               assert v22.matches_omni_veo(passed) is True, passed
               assert passed.reason.startswith(v24.PASS_PREFIX), passed.reason
+              assert '#veo3' in passed.scene_description, passed.scene_description
 
               v22.measure_video_duration = lambda path, fallback=0: 10.4
               too_long = v22.classify_omni_veo_reel('/tmp/fake.mp4', '')
@@ -138,7 +138,6 @@ jobs:
               v22.measure_video_duration = real_duration
               v22.inspect_visual_motion = real_motion
 
-          # Fresh visible results reset; hidden momentum baseline survives.
           with db_conn() as conn:
               conn.execute(
                   "INSERT OR REPLACE INTO radar_posts(creator,post_url,published_at,duration_sec,search_term) VALUES(?,?,?,?,?)",
@@ -166,7 +165,6 @@ jobs:
               assert conn.execute('SELECT COUNT(*) FROM radar_meta').fetchone()[0] == 0
               assert conn.execute('SELECT COUNT(*) FROM radar_momentum_history').fetchone()[0] >= 1
 
-          # Simulate local loss: V25 must restore the hidden baseline from cloud/local KVS fallback.
           with db_conn() as conn:
               conn.execute('DELETE FROM radar_momentum_history')
               conn.commit()
@@ -198,9 +196,11 @@ jobs:
 
           b = budget.budget_breakdown()
           assert b['max_hashtag_results'] == 750, b
-          assert b['hard_apify_actor_caps_usd'] <= 3.0, b
+          assert b['hard_apify_actor_caps_usd'] <= 3.75, b
           assert b['designed_total_budget_usd'] <= 5.0, b
           assert b['hard_budget_usd'] == 5.0, b
+          assert v25.MAX_THREE_SOURCE_CAP_USD == 1.25
+          assert v26._APPLIED is True
 
-          print('OMNI/VEO/VEO3 V25 OK', status, b)
+          print('OMNI/VEO/VEO3 V26 OK', status, b)
           PY
