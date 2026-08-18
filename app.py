@@ -30,11 +30,22 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
 init_db()
 
-# Keep the stable request-driven Render architecture; only upgrade discovery,
-# classification recall, language adaptation and result volume.
-from radar_growth_v6 import apply_growth_overrides, top_eligible_v6, PROFILE_VERSION, KEEP_LIMIT
+# Stable request-driven Render architecture + high-recall classifier.
+from radar_growth_v6 import apply_growth_overrides, top_eligible_v6
 apply_growth_overrides()
 top_eligible = top_eligible_v6
+
+# Final production profile: curated high-yield discovery with a hard <$5
+# conservative Apify budget guard and clean handling of exhausted monthly quota.
+from radar_budget_v10 import (
+    PROFILE_VERSION,
+    KEEP_LIMIT,
+    apply_budget_overrides,
+    budget_breakdown,
+    wrap_tick_job,
+)
+BUDGET_INFO = apply_budget_overrides()
+tick_job = wrap_tick_job(tick_job)
 
 
 @app.get("/")
@@ -68,6 +79,7 @@ def status():
         radar_keep_limit=KEEP_LIMIT,
         radar_duration_min=RADAR_MIN_DURATION_SEC,
         radar_duration_max=RADAR_MAX_DURATION_SEC,
+        radar_budget=BUDGET_INFO,
     )
 
 
@@ -86,6 +98,7 @@ def radar_status():
         radar_keep_limit=KEEP_LIMIT,
         radar_duration_min=RADAR_MIN_DURATION_SEC,
         radar_duration_max=RADAR_MAX_DURATION_SEC,
+        radar_budget=budget_breakdown(),
         render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
         render_instance=os.environ.get("RENDER_INSTANCE_ID", ""),
         server_pid=os.getpid(),
@@ -174,6 +187,7 @@ def radar_sync():
                 details={
                     "runtime": RADAR_RUNTIME,
                     "radar_profile": PROFILE_VERSION,
+                    "radar_budget": budget_breakdown(),
                     "render_commit": str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
                 },
             )
@@ -291,6 +305,7 @@ def health():
         radar_runtime=RADAR_RUNTIME,
         radar_profile=PROFILE_VERSION,
         radar_keep_limit=KEEP_LIMIT,
+        radar_budget=BUDGET_INFO,
         server_pid=os.getpid(),
         render_commit=str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
     )
@@ -307,6 +322,7 @@ add_radar_log(
         "radar_keep_limit": KEEP_LIMIT,
         "radar_duration_min": RADAR_MIN_DURATION_SEC,
         "radar_duration_max": RADAR_MAX_DURATION_SEC,
+        "radar_budget": BUDGET_INFO,
         "render_cpu_count": os.environ.get("RENDER_CPU_COUNT", ""),
     },
 )
