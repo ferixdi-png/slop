@@ -21,7 +21,7 @@ import radar_request_job as radar_job
 from db import db_conn
 from progress import set_radar_status
 from radar_logs import add_radar_log
-from radar_omni_veo_veo3_v24 import apply_omni_veo_veo3_v24
+from radar_momentum_cloud_v25 import apply_momentum_cloud_v25
 
 RESET_VERSION = "omni_veo_veo3_v23_fresh_run_reset"
 
@@ -193,10 +193,10 @@ def apply_fresh_run_v23():
     if app_module is None:
         raise RuntimeError("radar_fresh_run_v23 must be applied from app startup")
 
-    # V24 is deliberately applied here: radar_edge_v19 calls V22 immediately
-    # before this layer, so V24 becomes the final search scope without changing
-    # the proven outer STOP/START race wrapper.
-    scope_info = apply_omni_veo_veo3_v24()
+    # V25 applies V24 first, restores the hidden cross-run momentum baseline,
+    # then adds a cloud checkpoint wrapper. radar_edge_v19 already applied V22
+    # immediately before entering this layer.
+    scope_info = apply_momentum_cloud_v25()
 
     _BASE_CREATE = app_module.create_or_resume_job
     _BASE_ADVANCE = radar_job._advance
