@@ -19,7 +19,9 @@ SOURCE_ACTOR = os.environ.get(
 ).strip() or "apify/instagram-scraper"
 RESULTS_PER_TAG = 250
 RECENCY = "7 days"
-SOURCE_MARKER = "V27_INSTAGRAM_SCRAPER_HASHTAG_URL"
+# Keep the authoritative V27 strict marker stable. The high-volume source is
+# distinguished by actor_id + exact hashtag URL/input, not by changing provenance semantics.
+SOURCE_MARKER = "STRICT_ACTUAL_HASHTAG_V27"
 _APPLIED = False
 
 
