@@ -14,10 +14,13 @@ import radar_budget_v10 as budget
 import radar_growth_v6 as growth
 import radar_hardening_v19 as hardening
 import radar_omni_veo_v21 as v21
+import radar_quality
 import radar_request_job as radar_job
 import radar_resilient_v17 as v17
 import radar_scale_v16 as scale
 import radar_service
+from config import RADAR_MAX_DURATION_SEC, RADAR_MIN_DURATION_SEC
+from db import db_conn
 from media_duration import measure_video_duration
 from models import RadarAssessment
 from radar_logs import add_radar_log
@@ -27,6 +30,7 @@ from static_video_gate import inspect_visual_motion
 # remains a real compatibility test. The product mode itself is exposed separately.
 PROFILE_VERSION = "dialogue_trends_v19_hardened_budget5"
 MODE_VERSION = "omni_veo_v22_mass_momentum"
+PASS_PREFIX = "PASS_OMNI_VEO_TAG:"
 AI_ANALYZE_LIMIT = v21._env_int("OMNI_VEO_ANALYZE_LIMIT", 420, 100, 500)
 KEEP_LIMIT = v21._env_int("OMNI_VEO_KEEP_LIMIT", 180, 60, 300)
 TARGET_MATCHES = AI_ANALYZE_LIMIT
@@ -62,10 +66,11 @@ def _assessment(passed: bool, reason: str) -> RadarAssessment:
 def classify_omni_veo_reel(file_path: str, caption: str = "") -> RadarAssessment:
     """No Gemini call: verify actual duration and reject static image-video only."""
     measured = float(measure_video_duration(file_path, fallback=0) or 0)
-    if measured < 1.0 or measured > 10.05:
+    if measured < RADAR_MIN_DURATION_SEC or measured > RADAR_MAX_DURATION_SEC:
         return _assessment(
             False,
-            f"DURATION_GATE: actual MP4 duration {measured:.2f}s is outside 1.0-10.05s",
+            f"DURATION_GATE: actual MP4 duration {measured:.2f}s is outside "
+            f"{RADAR_MIN_DURATION_SEC:.1f}-{RADAR_MAX_DURATION_SEC:.2f}s",
         )
 
     motion = inspect_visual_motion(file_path)
@@ -74,12 +79,42 @@ def classify_omni_veo_reel(file_path: str, caption: str = "") -> RadarAssessment
 
     return _assessment(
         True,
-        f"PASS_OMNI_VEO_TAG: moving Reel, actual duration {measured:.2f}s; ranked by momentum",
+        f"{PASS_PREFIX} moving Reel, actual duration {measured:.2f}s; ranked by momentum",
     )
 
 
 def matches_omni_veo(a: RadarAssessment) -> bool:
-    return str(getattr(a, "reason", "") or "").startswith("PASS_OMNI_VEO_TAG")
+    return str(getattr(a, "reason", "") or "").startswith(PASS_PREFIX)
+
+
+def top_eligible_omni_veo(row) -> bool:
+    """Never let an old broad-profile PASS leak into the Omni/Veo TOP."""
+    duration = float((row or {}).get("duration_sec") or 0)
+    term = str((row or {}).get("search_term") or "").strip().lower()
+    reason = str((row or {}).get("reason") or "")
+    return bool(
+        RADAR_MIN_DURATION_SEC <= duration <= RADAR_MAX_DURATION_SEC
+        and term in {"omni", "veo"}
+        and reason.startswith(PASS_PREFIX)
+    )
+
+
+def _invalidate_legacy_or_out_of_scope_passes() -> int:
+    """One-time-safe cleanup: current V22 PASS rows survive future restarts."""
+    with db_conn() as conn:
+        cur = conn.execute(
+            """UPDATE radar_posts
+               SET ai_checked=0, ai_match=0
+               WHERE datetime(published_at)>=datetime('now','-7 days')
+                 AND ai_match=1
+                 AND (
+                     LOWER(COALESCE(search_term,'')) NOT IN ('omni','veo')
+                     OR COALESCE(reason,'') NOT LIKE 'PASS_OMNI_VEO_TAG:%'
+                 )"""
+        )
+        changed = int(cur.rowcount or 0)
+        conn.commit()
+    return changed
 
 
 def apply_omni_veo_v22():
@@ -128,8 +163,12 @@ def apply_omni_veo_v22():
     radar_job.matches = matches_omni_veo
     radar_service.matches = matches_omni_veo
 
-    # Re-invalidate recent PASS rows under the final profile contract.
-    invalidated = v21._invalidate_noncurrent_passes()
+    # Final TOP/API eligibility must also prove that the row was screened by V22,
+    # not merely that it happens to share the legacy-compatible profile string.
+    radar_quality.top_eligible = top_eligible_omni_veo
+    radar_job.top_eligible = top_eligible_omni_veo
+
+    invalidated = _invalidate_legacy_or_out_of_scope_passes()
     info = budget._assert_budget()
 
     app_module = sys.modules.get("app")
@@ -138,6 +177,7 @@ def apply_omni_veo_v22():
         app_module.KEEP_LIMIT = KEEP_LIMIT
         app_module.BUDGET_INFO = info
         app_module.OMNI_VEO_MODE_VERSION = MODE_VERSION
+        app_module.top_eligible = top_eligible_omni_veo
 
     add_radar_log(
         f"OMNI/VEO V22 READY: {MODE_VERSION}; no dialogue/comedy gate, local <=10s + motion verification.",
@@ -152,7 +192,7 @@ def apply_omni_veo_v22():
             "ranking": "momentum-first / views-per-hour",
             "ai_analyze_limit": AI_ANALYZE_LIMIT,
             "keep_limit": KEEP_LIMIT,
-            "stale_passes_invalidated": invalidated,
+            "legacy_or_out_of_scope_passes_invalidated": invalidated,
             **info,
         },
     )
@@ -166,6 +206,6 @@ def apply_omni_veo_v22():
         "gemini_semantic_screening": False,
         "ai_analyze_limit": AI_ANALYZE_LIMIT,
         "keep_limit": KEEP_LIMIT,
-        "stale_passes_invalidated": invalidated,
+        "legacy_or_out_of_scope_passes_invalidated": invalidated,
         "budget": info,
     }
