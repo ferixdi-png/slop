@@ -1,0 +1,284 @@
+name: Omni Veo Veo3 V27 Strict Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'radar_omni_veo_v21.py'
+      - 'radar_omni_veo_v22.py'
+      - 'radar_fresh_run_v23.py'
+      - 'radar_omni_veo_veo3_v24.py'
+      - 'radar_momentum_cloud_v25.py'
+      - 'radar_runtime_polish_v26.py'
+      - 'radar_strict_scope_v27.py'
+      - 'radar_edge_v19.py'
+      - 'templates/index.html'
+      - 'static/fresh_run_v23.js'
+      - 'static/scope_v24.js'
+      - '.env.example'
+      - '.github/workflows/omni-veo-v22-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'radar_omni_veo_v21.py'
+      - 'radar_omni_veo_v22.py'
+      - 'radar_fresh_run_v23.py'
+      - 'radar_omni_veo_veo3_v24.py'
+      - 'radar_momentum_cloud_v25.py'
+      - 'radar_runtime_polish_v26.py'
+      - 'radar_strict_scope_v27.py'
+      - 'radar_edge_v19.py'
+      - 'templates/index.html'
+      - 'static/fresh_run_v23.js'
+      - 'static/scope_v24.js'
+      - '.env.example'
+      - '.github/workflows/omni-veo-v22-smoke.yml'
+
+jobs:
+  omni-veo-veo3-strict:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile Python
+        run: python -m compileall -q .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: JavaScript syntax
+        run: |
+          node --check static/fresh_run_v23.js
+          node --check static/scope_v24.js
+      - name: Verify strict provenance and 15-to-10 compression contract
+        env:
+          SECRET_KEY: smoke-test
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timedelta, timezone
+
+          import app as app_module
+          import cloud_state
+          import radar_budget_v10 as budget
+          import radar_fresh_run_v23 as fresh
+          import radar_momentum_cloud_v25 as v25
+          import radar_omni_veo_v21 as v21
+          import radar_omni_veo_veo3_v24 as v24
+          import radar_request_job as radar_job
+          import radar_runtime_polish_v26 as v26
+          import radar_strict_scope_v27 as v27
+          from cloud_state import load_radar_job, save_radar_job
+          from db import db_conn
+
+          c = app_module.app.test_client()
+          status = c.get('/api/status').get_json()
+
+          # Final public contract.
+          assert status['radar_hashtags'] == ['omni', 'veo', 'veo3'], status
+          assert status['radar_hashtag_limit_each'] == 250, status
+          assert status['radar_max_raw_requested'] == 750, status
+          assert status['radar_mode'] == v27.MODE_VERSION, status
+          assert status['radar_strict_actual_hashtag'] is True, status
+          assert status['radar_source_max_duration_sec'] == 15.05, status
+          assert status['radar_direct_max_duration_sec'] == 10.05, status
+          assert status['radar_compressed_target_sec'] == 10.0, status
+          assert app_module.RADAR_MAX_DURATION_SEC == 15.05
+          assert app_module.KEEP_LIMIT == 180
+          assert radar_job.RADAR_AI_ANALYZE_LIMIT == 420
+
+          # Exact three source feeds, every source stamped with V27 strict marker.
+          sources = radar_job._build_sources()
+          assert set(sources) == {'hashtag_omni', 'hashtag_veo', 'hashtag_veo3'}, sources
+          for tag in ('omni', 'veo', 'veo3'):
+              source = sources[f'hashtag_{tag}']
+              assert source['input'] == {
+                  'hashtags': [tag],
+                  'resultsType': 'reels',
+                  'resultsLimit': 250,
+              }, source
+              assert source['strict_scope_marker'] == v27.STRICT_SOURCE_MARKER, source
+          assert not any('popular' in name or 'keyword' in name or 'creator' in name for name in sources)
+
+          # CRITICAL: arriving from hashtag_veo is NOT enough. The post itself
+          # must explicitly contain one of the three target hashtags.
+          now = datetime.now(timezone.utc)
+          base = {
+              'ownerUsername': 'strict_user',
+              'timestamp': now.isoformat(),
+              'videoDuration': 12.4,
+              'videoPlayCount': 50_000,
+              'likesCount': 900,
+              'commentsCount': 40,
+          }
+          unrelated = {
+              **base,
+              'url': 'https://www.instagram.com/reel/UNRELATED/',
+              'caption': 'POV flirting after 50 #funny #over50 #over40',
+          }
+          assert v27.normalize_strict_candidate(unrelated, 'hashtag: veo', {}) is None
+
+          veo3_post = {
+              **base,
+              'url': 'https://www.instagram.com/reel/VEO3/',
+              'caption': 'new experiment #funny #veo3',
+          }
+          normalized = v27.normalize_strict_candidate(veo3_post, 'hashtag: veo3', {})
+          assert normalized is not None, veo3_post
+          assert normalized['search_term'] == 'veo3', normalized
+          assert normalized['duration_sec'] == 12.4, normalized
+
+          omni_structured = {
+              **base,
+              'url': 'https://www.instagram.com/reel/OMNI/',
+              'caption': 'caption without visible tag text',
+              'hashtags': ['omni', 'somethingelse'],
+          }
+          normalized_omni = v27.normalize_strict_candidate(omni_structured, 'hashtag: omni', {})
+          assert normalized_omni and normalized_omni['search_term'] == 'omni', normalized_omni
+
+          # Direct <=10.05s clips stay cheap/local. >15.05 always reject.
+          real_duration = v27.measure_video_duration
+          real_motion = v27.inspect_visual_motion
+          real_compression = v27._compression_verdict
+          class Moving:
+              checked = True
+              is_static_image_video = False
+              reason = 'moving'
+          class Static:
+              checked = True
+              is_static_image_video = True
+              reason = 'static card'
+          try:
+              v27.inspect_visual_motion = lambda path: Moving()
+              v27.measure_video_duration = lambda path, fallback=0: 8.4
+              direct = v27.classify_strict_reel('/tmp/fake.mp4', '')
+              assert radar_job.matches(direct) is True, direct
+              assert direct.reason.startswith(v27.PASS_PREFIX + 'DIRECT'), direct.reason
+
+              v27.measure_video_duration = lambda path, fallback=0: 15.2
+              too_long = v27.classify_strict_reel('/tmp/fake.mp4', '')
+              assert radar_job.matches(too_long) is False, too_long
+              assert too_long.reason.startswith('DURATION_GATE'), too_long.reason
+
+              # A 12.4s source survives only when the entire core mechanic can
+              # naturally fit exactly 10 seconds.
+              v27.measure_video_duration = lambda path, fallback=0: 12.4
+              v27._compression_verdict = lambda *args, **kwargs: (True, 'remove dead air and shorten final hold')
+              compressed = v27.classify_strict_reel('/tmp/fake.mp4', '')
+              assert radar_job.matches(compressed) is True, compressed
+              assert compressed.reason.startswith(v27.PASS_PREFIX + 'COMPRESSIBLE_TO_10S'), compressed.reason
+
+              v27.measure_video_duration = lambda path, fallback=0: 14.8
+              v27._compression_verdict = lambda *args, **kwargs: (False, 'critical payoff cannot fit without rushing speech')
+              rejected = v27.classify_strict_reel('/tmp/fake.mp4', '')
+              assert radar_job.matches(rejected) is False, rejected
+              assert rejected.reason.startswith('REJECT_NOT_COMPRESSIBLE_TO_10S'), rejected.reason
+
+              v27.measure_video_duration = lambda path, fallback=0: 7.0
+              v27.inspect_visual_motion = lambda path: Static()
+              static = v27.classify_strict_reel('/tmp/fake.mp4', '')
+              assert radar_job.matches(static) is False, static
+              assert static.reason.startswith('REJECT_STATIC_IMAGE'), static.reason
+          finally:
+              v27.measure_video_duration = real_duration
+              v27.inspect_visual_motion = real_motion
+              v27._compression_verdict = real_compression
+
+          # Production override must explicitly preserve full-source mechanics
+          # while targeting 10 seconds, never a blind global speed-up.
+          token = v27._SOURCE_DURATION_CONTEXT.set(13.7)
+          try:
+              prod = v27.production_prompt_v27(False, 10.0)
+              audit = v27.audit_prompt_v27(10.0)
+              assert 'SOURCE lasts 13.70 seconds' in prod, prod
+              assert 'FINAL GENERATED VIDEO must last EXACTLY 10.00 seconds' in prod, prod
+              assert 'Do NOT simply speed the whole source up' in prod, prod
+              assert 'complete core mechanic still lands naturally' in audit, audit
+          finally:
+              v27._SOURCE_DURATION_CONTEXT.reset(token)
+
+          # Existing momentum calculation remains intact.
+          fast = v24._v24_score({'views': 30_000, 'hours_since_publish': 2.0, 'viral_score_v2': 50.0}, 15_000, 0.0, False)
+          slow = v24._v24_score({'views': 300_000, 'hours_since_publish': 48.0, 'viral_score_v2': 80.0}, 1_500, 0.0, False)
+          assert fast > slow, (fast, slow)
+          previous = {
+              'observed_at': (now - timedelta(hours=1)).isoformat(),
+              'views': 40_000,
+              'average_views_per_hour': 5_000,
+          }
+          measured, acceleration, has_history = v24._history_velocity(
+              {'views': 95_000, 'views_per_hour': 8_000}, previous, now
+          )
+          assert has_history is True
+          assert 54_900 <= measured <= 55_100, measured
+          assert acceleration >= 10.9, acceleration
+
+          # Fresh visible output reset still preserves hidden momentum history.
+          with db_conn() as conn:
+              conn.execute(
+                  "INSERT OR REPLACE INTO radar_posts(creator,post_url,published_at,duration_sec,search_term) VALUES(?,?,?,?,?)",
+                  ('old', 'https://example.com/old', now.isoformat(), 8.0, 'omni'),
+              )
+              conn.execute(
+                  "INSERT INTO radar_meta(created_at,source_count,average_duration_sec,report_json) VALUES(?,?,?,?)",
+                  (now.isoformat(), 1, 8.0, '{}'),
+              )
+              conn.execute(
+                  "INSERT OR REPLACE INTO radar_momentum_history(post_url,observed_at,views,average_views_per_hour,search_term) VALUES(?,?,?,?,?)",
+                  ('https://example.com/old', now.isoformat(), 1000, 500, 'omni'),
+              )
+              conn.commit()
+              assert v25.save_momentum_checkpoint(conn) is True
+
+          checkpoint = cloud_state.load_cloud_record(v25.MOMENTUM_RECORD_KEY)
+          assert checkpoint and checkpoint['rows'], checkpoint
+          reset_info = fresh._reset_result_tables('smoke-fresh-run')
+          assert reset_info['cleared_radar_posts'] >= 1
+          assert reset_info['cleared_radar_meta'] >= 1
+          with db_conn() as conn:
+              assert conn.execute('SELECT COUNT(*) FROM radar_posts').fetchone()[0] == 0
+              assert conn.execute('SELECT COUNT(*) FROM radar_meta').fetchone()[0] == 0
+              assert conn.execute('SELECT COUNT(*) FROM radar_momentum_history').fetchone()[0] >= 1
+
+          with db_conn() as conn:
+              conn.execute('DELETE FROM radar_momentum_history')
+              conn.commit()
+          restored = v25.restore_momentum_checkpoint()
+          assert restored >= 1, restored
+
+          # Resume safety contract remains present with strict source marker.
+          active = {
+              'version': 5,
+              'runtime': radar_job.RUNTIME,
+              'run_id': 'resume-safe-v27',
+              'phase': 'discovering',
+              'created_at': now.isoformat(),
+              'sources': sources,
+              'candidates': [],
+              'warnings': [],
+              'source_failures': {},
+              'stats': {},
+              'result': {},
+              'error': '',
+              'dataset_reset_done': True,
+              'dataset_reset_pending': False,
+              'dataset_reset_version': fresh.RESET_VERSION,
+          }
+          save_radar_job(active)
+          before = load_radar_job()
+          assert before['dataset_reset_done'] is True
+          assert all(s.get('strict_scope_marker') == v27.STRICT_SOURCE_MARKER for s in before['sources'].values())
+
+          b = budget.budget_breakdown()
+          assert b['max_hashtag_results'] == 750, b
+          assert b['hard_apify_actor_caps_usd'] <= 3.75, b
+          assert b['designed_total_budget_usd'] <= 5.0, b
+          assert b['hard_budget_usd'] == 5.0, b
+          assert v25.MAX_THREE_SOURCE_CAP_USD == 1.25
+          assert v26._APPLIED is True
+          assert v27._APPLIED is True
+
+          print('OMNI/VEO/VEO3 V27 STRICT OK', status, b)
+          PY

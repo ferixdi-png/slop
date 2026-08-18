@@ -23,6 +23,8 @@ from db import db_conn
 from progress import set_radar_status
 from radar_logs import add_radar_log
 from radar_source_aggregation_v20 import apply_source_aggregation_v20
+from radar_omni_veo_v22 import apply_omni_veo_v22
+from radar_fresh_run_v23 import apply_fresh_run_v23
 
 # Kept as an explicit compatibility marker because the long-lived smoke suite
 # verifies that the original edge-hardening contract is still present.
@@ -164,6 +166,16 @@ def apply_edge_guards():
     # wrapper while making aggregation independent of source IDs.
     source_aggregation_info = apply_source_aggregation_v20()
 
+    # Final product scope override. V22 activates V21's exact #omni/#veo sources
+    # and then removes the old dialogue/comedy gate from the mass radar so the
+    # pool stays large while actual <=10s duration and motion are verified.
+    omni_veo_info = apply_omni_veo_v22()
+
+    # V23 must sit below the final STOP/START edge wrapper but above the original
+    # create function: a genuinely new run clears the previous TOP/meta exactly
+    # once, while active-run resume remains untouched.
+    fresh_run_info = apply_fresh_run_v23()
+
     _BASE_CREATE = app_module.create_or_resume_job
     _BASE_POLL = radar_job._poll_sources
     _BASE_ERROR_GUARD = hardening._apply_tick_error_guard
@@ -177,17 +189,21 @@ def apply_edge_guards():
     # Clean old-profile PASS rows immediately on deploy, not only at finalization.
     invalidated = invalidate_stale_recent_matches()
     add_radar_log(
-        "V20 EDGE GUARDS READY: source aggregation, STOP→START race, BUSY/error counter, stale TOP and missing run_id recovery закрыты.",
+        "V20 EDGE GUARDS READY: source aggregation + OMNI/VEO mass momentum + fresh-run reset + STOP→START race, BUSY/error counter, stale TOP and missing run_id recovery.",
         stage="startup",
         details={
             "edge_profile": EDGE_PROFILE,
             "radar_profile": hardening.PROFILE_VERSION,
             "stale_top_invalidated": invalidated,
             **source_aggregation_info,
+            **omni_veo_info,
+            **fresh_run_info,
         },
     )
     return {
         "edge_profile": EDGE_PROFILE,
         "stale_top_invalidated": invalidated,
         **source_aggregation_info,
+        **omni_veo_info,
+        **fresh_run_info,
     }
