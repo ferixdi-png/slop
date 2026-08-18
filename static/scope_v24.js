@@ -1,8 +1,10 @@
 (() => {
   const DIRECT_MAX = 10.05;
   const TARGET = 10.0;
+  const TARGET_TAGS = new Set(['omni', 'veo', 'veo3']);
 
-  // Keep the stable renderer but surface measured momentum and V27 compression.
+  // Keep the stable renderer but surface measured momentum, verified provenance
+  // and V27 compression in every final TOP card.
   const originalRadarCard = window.radarCard;
   if (typeof originalRadarCard === 'function') {
     window.radarCard = function strictRadarCard(row, index) {
@@ -12,6 +14,10 @@
       let html = originalRadarCard(copy, index);
 
       const badges = [];
+      const tag = String(copy.search_term || '').trim().toLowerCase();
+      if (TARGET_TAGS.has(tag)) {
+        badges.push(`<div class="anomaly hot">источник: <b>подтверждённый #${tag}</b></div>`);
+      }
       if (measured > 0) {
         const acceleration = Number(copy.growth_acceleration || 0);
         badges.push(`<div class="anomaly hot">замер между поисками: <b>${Math.round(measured).toLocaleString('ru-RU')}/ч</b>${acceleration > 0 ? ` · ускорение ×${acceleration.toFixed(acceleration >= 10 ? 0 : 1)}` : ''}</div>`);
