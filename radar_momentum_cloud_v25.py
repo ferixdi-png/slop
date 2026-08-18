@@ -14,7 +14,7 @@ import radar_omni_veo_veo3_v24 as v24
 import radar_quality
 from db import db_conn
 from radar_logs import add_radar_log
-from radar_runtime_polish_v26 import apply_runtime_polish_v26
+from radar_strict_scope_v27 import apply_strict_scope_v27
 
 MOMENTUM_RECORD_KEY = "RADAR_MOMENTUM_V25"
 MAX_HISTORY_ROWS = 1500
@@ -123,7 +123,9 @@ def apply_momentum_cloud_v25():
     # Render env contains a larger two-source cap from a previous deployment.
     v24.v21.SOURCE_CAP_USD = min(float(v24.v21.SOURCE_CAP_USD), MAX_THREE_SOURCE_CAP_USD)
 
-    scope_info = apply_runtime_polish_v26()
+    # V27 calls V26 first, then adds strict actual-hashtag provenance and the
+    # 10-15s semantic-compression path while keeping all prior runtime hardening.
+    scope_info = apply_strict_scope_v27()
     restored = restore_momentum_checkpoint()
 
     _BASE_REFRESH = radar_quality.refresh_recent_scores_quality
