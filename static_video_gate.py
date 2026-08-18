@@ -1,17 +1,16 @@
 """Cheap local visual-motion gate for Reels.
 
-The radar wants actual moving video scenes. Instagram frequently exposes image posts,
-quote cards and single-photo Reels as MP4 files. Those should be rejected before a
-Gemini upload so they neither consume model budget nor pollute the final TOP.
-
-This module deliberately fails open if ffmpeg is unavailable: availability problems
-must never reject a real Reel. The semantic Gemini prompt remains a second guard.
+Instagram may expose image posts, quote cards and single-photo Reels as MP4 files.
+Those must be rejected before Gemini so they neither consume model budget nor
+pollute the final TOP. A bundled ffmpeg fallback makes the gate independent of the
+Render host image.
 """
 
 from __future__ import annotations
 
 import math
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 
@@ -32,6 +31,20 @@ class MotionGateResult:
     reason: str
 
 
+def ffmpeg_executable() -> str:
+    system = shutil.which("ffmpeg")
+    if system:
+        return system
+    try:
+        from imageio_ffmpeg import get_ffmpeg_exe
+        bundled = str(get_ffmpeg_exe() or "").strip()
+        if bundled:
+            return bundled
+    except Exception:
+        pass
+    return ""
+
+
 def inspect_visual_motion(path: str, sample_fps: float = 3.0) -> MotionGateResult:
     """Detect a still-image/card/slideshow MP4 without decoding frames in Python.
 
@@ -42,6 +55,10 @@ def inspect_visual_motion(path: str, sample_fps: float = 3.0) -> MotionGateResul
     duration = float(measure_video_duration(path, fallback=0) or 0)
     if duration <= 0:
         return MotionGateResult(False, False, 0.0, 0, 0, 1.0, "duration unavailable; fail-open")
+
+    ffmpeg = ffmpeg_executable()
+    if not ffmpeg:
+        return MotionGateResult(False, False, duration, 0, 0, 1.0, "ffmpeg unavailable; fail-open")
 
     fps = max(1.0, min(float(sample_fps or 3.0), 4.0))
     expected = max(1, int(math.ceil(duration * fps)))
@@ -55,7 +72,7 @@ def inspect_visual_motion(path: str, sample_fps: float = 3.0) -> MotionGateResul
     try:
         proc = subprocess.run(
             [
-                "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "info",
+                ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "info",
                 "-i", path, "-an", "-vf", vf, "-f", "null", "-",
             ],
             capture_output=True,
@@ -76,9 +93,9 @@ def inspect_visual_motion(path: str, sample_fps: float = 3.0) -> MotionGateResul
 
     ratio = kept / max(1, expected)
 
-    # Require enough temporal evidence before rejecting. For ordinary 5–10 second
-    # clips this rejects one still image and very sparse slide cards, while a real
-    # speaking face, handheld camera or animated action easily stays above the gate.
+    # For a normal 5–10s clip a true static card collapses to ~1 frame. A tiny
+    # handful of retained frames also catches sparse image slides. Real talking
+    # faces, handheld footage and actual action remain comfortably above the gate.
     threshold_frames = max(1, int(math.floor(expected * 0.12)))
     static_like = expected >= 6 and kept <= threshold_frames
 
