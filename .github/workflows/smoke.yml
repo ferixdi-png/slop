@@ -1,7 +1,7 @@
 name: Smoke Check
 on:
   push:
-    branches: [main, hardening-v19-top10]
+    branches: [main, hardening-v19-top10, hardening-v19-edgecases]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -33,6 +33,8 @@ jobs:
           import gemini_service
           import radar_budget_v10 as budget_module
           import radar_cancel_v18 as cancel
+          import radar_edge_v19 as edge
+          import radar_growth_v6 as growth
           import radar_hardening_v19 as v19
           import radar_request_job as radar_job
           import radar_resilient_v17 as v17
@@ -48,9 +50,11 @@ jobs:
           # Core truth + hard budget.
           status = c.get('/api/status').get_json()
           assert status['radar_profile'] == v19.PROFILE_VERSION, status
+          assert status['edge_profile'] == edge.EDGE_PROFILE, status
           assert v19.PROFILE_VERSION == 'dialogue_trends_v19_hardened_budget5'
           assert status['radar_keep_limit'] == 180
           assert radar_job.RADAR_AI_ANALYZE_LIMIT == 420
+          assert growth._ORIGINAL_FINALIZE is edge.finalize_edge
           b = budget_module.budget_breakdown()
           assert b['guarded_apify_usd'] <= 4.00, b
           assert b['hard_apify_actor_caps_usd'] <= 3.35, b
@@ -84,7 +88,7 @@ jobs:
           assert stopped_json['phase'] == 'cancelled', stopped_json
 
           # 3) A stale active pre-v19 queue is reset BEFORE more paid work.
-          restarted = c.post('/api/radar/sync').get_json()
+          c.post('/api/radar/sync')
           stale = load_radar_job()
           stale['profile'] = 'old-profile-v1'
           stale['phase'] = 'ai'
@@ -223,6 +227,72 @@ jobs:
           assert meta.status_code == 200, meta.get_data(as_text=True)
           assert meta.get_json()['report_parse_error'] is True, meta.get_json()
 
+          # EDGE A: STOP marker wins over START from another tab/request.
+          c.post('/api/radar/sync')
+          race_job = load_radar_job()
+          race_run = race_job['run_id']
+          assert radar_job._tick_lock.acquire(blocking=False)
+          try:
+              pending, pending_code = cancel.cancel_active_job(wait_seconds=0)
+              assert pending_code == 202 and pending['stop_pending'] is True
+              raced_start = c.post('/api/radar/sync')
+              raced_json = raced_start.get_json()
+              assert raced_start.status_code == 202, raced_start.get_data(as_text=True)
+              assert raced_json['accepted'] is False and raced_json['stop_pending'] is True, raced_json
+              marker = load_radar_cancel_request()
+              assert marker and marker['run_id'] == race_run, marker
+          finally:
+              radar_job._tick_lock.release()
+          c.post('/api/radar/tick')
+          assert load_radar_job()['phase'] == 'cancelled'
+
+          # EDGE B: harmless BUSY from a second tab cannot erase backend error history.
+          c.post('/api/radar/sync')
+          first_error = v19._apply_tick_error_guard({
+              'active':True,'transient_error':True,'message':'same-edge-error'
+          })
+          assert first_error['same_error_repeats'] == 1, first_error
+          busy_payload = v19._apply_tick_error_guard({'active':True,'busy':True,'message':'tick busy'})
+          assert busy_payload['busy'] is True
+          second_error = v19._apply_tick_error_guard({
+              'active':True,'transient_error':True,'message':'same-edge-error'
+          })
+          assert second_error['same_error_repeats'] == 2, second_error
+          c.post('/api/radar/stop')
+
+          # EDGE C: discovering with a missing run_id self-heals to starting_sources.
+          missing_job = {
+              'run_id':'missing-source','phase':'discovering','profile':v19.PROFILE_VERSION,
+              'sources':{
+                  'started':{'run_id':'good','status':'RUNNING','started_at':now},
+                  'missing':{'run_id':'','status':'NOT_STARTED','started_at':''},
+              },
+              'source_failures':{},'candidates':[],'stats':{},'result':{},'error':''
+          }
+          recovered = edge.poll_sources_edge(fc, missing_job)
+          assert recovered['phase'] == 'starting_sources', recovered
+
+          # EDGE D: old-profile PASS cannot leak into TOP/status and is invalidated.
+          stale_top_url = 'https://example.com/reel/stale-top'
+          baseline_matches = c.get('/api/status').get_json()['radar_matches']
+          with db_conn() as conn:
+              conn.execute(
+                  """INSERT OR REPLACE INTO radar_posts(
+                       creator,post_url,published_at,duration_sec,views,likes,comments,
+                       hours_since_publish,views_per_hour,viral_score_v2,ai_checked,ai_match,screening_profile
+                     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  ('stale_top', stale_top_url, datetime.now(timezone.utc).isoformat(), 7.0,
+                   999999, 9999, 999, 2.0, 499999, 99.0, 1, 1, 'obsolete-profile'),
+              )
+              conn.commit()
+          assert c.get('/api/status').get_json()['radar_matches'] == baseline_matches
+          assert stale_top_url not in {row.get('post_url') for row in c.get('/api/radar').get_json()}
+          invalidated = edge.invalidate_stale_recent_matches()
+          assert invalidated >= 1
+          with db_conn() as conn:
+              row = conn.execute('SELECT ai_match FROM radar_posts WHERE post_url=?',(stale_top_url,)).fetchone()
+              assert int(row['ai_match']) == 0
+
           # Static card rejection remains local/no Gemini key needed.
           ffmpeg = ffmpeg_executable()
           assert ffmpeg, 'No system or bundled ffmpeg available'
@@ -249,7 +319,7 @@ jobs:
           assert 'explicit_duration_instruction_ok' in audit
           assert 'publication_russian_ok' in audit
 
-          print('V19 TOP-10 HARDENING OK', status['radar_profile'], b)
+          print('V19 TOP-10 + EDGE HARDENING OK', status['radar_profile'], status['edge_profile'], b)
           PY
 
       - uses: actions/setup-node@v4
@@ -264,9 +334,11 @@ jobs:
           grep -q "/api/radar/job" static/runtime.js
           grep -q "trend-radar-driver-v19" static/runtime.js
           grep -q "consecutiveTransportErrors >= 8" static/runtime.js
+          grep -q "data?.stop_pending || data?.accepted === false" static/runtime.js
           grep -q "/api/radar/stop" static/runtime.js
           grep -q "id=\"stopRadar\"" templates/index.html
           grep -q "dialogue_trends_v19_hardened_budget5" radar_hardening_v19.py
+          grep -q "v19_edge_guard_1" radar_edge_v19.py
           grep -q "force_stop_v19_marker" radar_cancel_v18.py
           grep -q "screening_profile" db.py
           grep -q "frame0_cleanplate_capcut_ru_v15" overlay_cleanplate_v15.py

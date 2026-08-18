@@ -40,7 +40,6 @@
       const confirmed = readLease();
       return Boolean(confirmed && confirmed.owner === CLIENT_ID);
     } catch (_) {
-      // Private browsing/storage restrictions: backend tick lock remains the fallback.
       return true;
     }
   }
@@ -145,9 +144,6 @@
   function scheduleDrive(delay = 3500) {
     clearTimeout(driveTimer);
     if (!driveEnabled || stopRequested) return;
-
-    // Exactly one open tab actively advances the request-driven job. Other tabs
-    // remain read-only observers and automatically take over if the leader closes.
     if (!claimDriverLease()) {
       driveTimer = setTimeout(async () => {
         await refreshTruth();
@@ -274,6 +270,17 @@
 
     try {
       const data = await startWithRetry();
+
+      // A pending STOP always wins over a new START, even from another tab.
+      if (data?.stop_pending || data?.accepted === false) {
+        releaseDriverLease();
+        if (stage) stage.textContent = 'Завершаю предыдущую остановку';
+        if (eta) eta.textContent = 'несколько секунд';
+        if (status) status.textContent = data?.message || 'Предыдущий поиск ещё останавливается. Сначала подтверждаю STOP.';
+        await stopRadar();
+        return;
+      }
+
       const runId = data?.run_id || '—';
       if (pct) pct.textContent = '1%';
       if (stage) stage.textContent = data?.migrated ? 'Обновляю старый поиск' : (data?.resumed ? 'Продолжаю поиск' : 'Поиск принят');
@@ -372,8 +379,6 @@
     }, true);
   }
 
-  // Read-only bootstrap: merely opening/reloading another browser tab must never
-  // consume a radar step. Only the elected leader tab begins POST /tick driving.
   setTimeout(async () => {
     try {
       const data = await jsonGet('/api/radar/job', 12000);
@@ -386,9 +391,7 @@
       } else {
         setRunningUi(false);
       }
-    } catch (_) {
-      // Page stays usable. Explicit start has its own bounded retry policy.
-    }
+    } catch (_) {}
   }, 900);
 
   window.addEventListener('beforeunload', releaseDriverLease);
