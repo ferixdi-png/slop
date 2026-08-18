@@ -15,7 +15,7 @@
         <div><strong>ПОИСК ТРЕНДОВ</strong><small>радар #omni + #veo</small></div>
       </div>
       <div class="side-note">
-        1. Запусти радар. 2. Выбери сильный смешной диалог или короткую сценку. 3. Нажми «Получить ультра-промпты». 4. Сгенерируй CLEAN PHOTO + CLEAN VIDEO без монтажных фото/скринов/PIP. 5. Если в оригинале были наложения, добавь их после генерации по отдельному CAPCUT OVERLAY PLAN. 6. Речь и весь блок публикации автоматически адаптируются на естественный русский.
+        1. Запусти радар. 2. Выбери быстро растущий Reel. 3. Нажми «Получить ультра-промпты». 4. Сгенерируй CLEAN PHOTO + CLEAN VIDEO без монтажных фото/скринов/PIP. 5. Если в оригинале были наложения, добавь их после генерации по отдельному CAPCUT OVERLAY PLAN. 6. Речь и весь блок публикации автоматически адаптируются на естественный русский.
       </div>
     </aside>
 
@@ -38,20 +38,20 @@
           <div class="card api-card" id="geminiApiCard">
             <div><span class="api-dot"></span><b>Google AI Studio</b></div>
             <strong id="geminiApiStatus">Проверяю ключ…</strong>
-            <small id="geminiApiMeta">Проверка ключа и доступа к gemini-3.1-flash-lite без генерации текста</small>
+            <small id="geminiApiMeta">Gemini используется для production-анализа выбранного Reel</small>
           </div>
           <div class="card api-card" id="apifyApiCard">
             <div><span class="api-dot"></span><b>Apify</b></div>
             <strong id="apifyApiStatus">Проверяю ключ…</strong>
-            <small id="apifyApiMeta">Проверка доступа к аккаунту Apify</small>
+            <small id="apifyApiMeta">Глубокий сбор Reels только по #omni и #veo</small>
           </div>
           <button id="checkApis" class="secondary api-check-btn">ПРОВЕРИТЬ API</button>
         </div>
 
         <div class="card radar-intro">
           <div>
-            <b>Только #omni и #veo. Сначала скорость роста, потом смысловая проверка</b>
-            <span>Два отдельных Apify-источника собирают до 250 Reels по #omni и до 250 по #veo → остаются публикации последних 7 дней и фактической длительностью ≤10 сек → кандидаты ранжируются прежде всего по скорости набора просмотров в час, а не по старому абсолютному числу просмотров → momentum-score: 72% velocity, 16% свежесть, 9% подтверждённый объём, 3% предыдущий score → дальше сохраняется существующая проверка самого видео, отсев статичных карточек и весь production-пайплайн с clean plate, русской адаптацией речи и CAPCUT OVERLAY PLAN. Никакие другие хештеги, keyword search, popular search или tracked creators в discovery не используются.</span>
+            <b>Только #omni и #veo. Максимум кандидатов, минимум лишних фильтров</b>
+            <span>Два отдельных Apify-источника собирают до 250 Reels по #omni и до 250 по #veo → остаются публикации последних 7 дней → каждый кандидат проверяется по реальному MP4: фактическая длительность должна быть ≤10 сек, статичные карточки и image-video отбрасываются → никакого обязательного фильтра «только диалог» или «только комедия» → momentum-score ставит наверх ролики, которые прямо сейчас быстрее всего набирают просмотры: 72% скорость просмотров/час, 16% свежесть, 9% подтверждённый объём, 3% дополнительный score → TOP может содержать до 300 роликов, общий пул кандидатов — до 500. Keyword search, popular search, другие хештеги и tracked creators в discovery не используются. Полный Gemini production-анализ запускается только для выбранного тобой Reel.</span>
           </div>
           <div class="radar-controls">
             <button id="syncRadar" class="secondary">ЗАПУСТИТЬ ПОИСК</button>
@@ -89,7 +89,7 @@
         </div>
 
         <div class="section-mini-title">
-          <div><b>TOP НАБИРАЮЩИХ ОБОРОТЫ</b><span>#omni + #veo · ≤10 сек · последние 7 дней · приоритет просмотрам/час</span></div>
+          <div><b>TOP НАБИРАЮЩИХ ОБОРОТЫ</b><span>#omni + #veo · ≤10 сек · последние 7 дней · приоритет просмотрам/час · до 300 Reels</span></div>
         </div>
         <div class="card">
           <div id="radarRows" class="radar-table">
@@ -98,7 +98,7 @@
         </div>
 
         <div class="section-mini-title candidates-title">
-          <div><b>Пул #omni + #veo</b><span>до 500 найденных Reels; фактическая длительность и пригодность проверяются по самому видео</span></div>
+          <div><b>Пул #omni + #veo</b><span>до 500 найденных Reels; фактическая длительность проверяется по самому видео</span></div>
         </div>
         <div class="card">
           <div id="candidateRows" class="candidate-table">
