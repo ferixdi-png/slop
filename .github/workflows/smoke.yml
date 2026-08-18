@@ -1,7 +1,7 @@
 name: Smoke Check
 on:
   push:
-    branches: [main, fix/radar-request-state-machine, fix/more-10s-ai-reels, fix-apify-quota-v10]
+    branches: [main, fix/radar-request-state-machine, fix/more-10s-ai-reels, fix-apify-quota-v10, fix-highfreq-v13-kling]
   workflow_dispatch:
 jobs:
   smoke:
@@ -49,11 +49,18 @@ jobs:
           assert {'popular_ai','ai_hashtags','ai_keywords'}<=set(sources)
           assert sources['popular_ai']['input']['searchLimit']==20
           tags=sources['ai_hashtags']['input']['hashtags']
-          assert len(tags)==16, tags
-          for required in ['ai','ии','grok','veo','omni','chatgpt','openai','klingai','seedance']:
+          assert len(tags)==15, tags
+          for required in ['ai','ии','grok','veo','omni','kling','klingai','seedance']:
               assert required in tags, (required,tags)
-          for removed in ['sora','gemini','geminiomni','googleflowai','нейросетьприкол','midjourney','recraft','ideogram']:
+          for removed in ['chatgpt','openai','sora','gemini','geminiomni','googleflowai','нейросетьприкол','midjourney','recraft','ideogram']:
               assert removed not in tags, (removed,tags)
+
+          search_text=sources['popular_ai']['input']['search'].lower()
+          assert 'chatgpt' not in search_text
+          assert 'openai' not in search_text
+          assert 'gemini' not in search_text
+          assert 'sora' not in search_text
+          assert 'kling' in search_text
 
           calls=[]
           class FakeActor:
@@ -93,7 +100,7 @@ jobs:
           assert c.post('/api/radar/sync').status_code==202
           assert c.post('/api/radar/tick').get_json()['phase']=='discovering'
           app_module.create_or_resume_job=rs; app_module.tick_job=rt
-          print('V12 CORE HIGH-FREQUENCY BUDGET SMOKE OK',budget)
+          print('V13 CORE HIGH-FREQUENCY KLING BUDGET SMOKE OK',budget)
           PY
       - uses: actions/setup-node@v4
         with:
@@ -107,4 +114,4 @@ jobs:
           grep -q "/api/radar/sync" static/runtime.js
           grep -q "/api/radar/tick" static/runtime.js
           grep -q "request_state_machine_v5" radar_request_job.py
-          grep -q "mass_global_ai_v12_core5" radar_highfreq_v12.py
+          grep -q "mass_global_ai_v13_core5" radar_highfreq_v12.py
