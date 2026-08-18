@@ -13,8 +13,55 @@
   let driveTimer = null;
   let driveEnabled = false;
   let stopRequested = false;
+  let consecutiveTransportErrors = 0;
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const CLIENT_ID = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
+    ? globalThis.crypto.randomUUID()
+    : `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const LEASE_KEY = 'trend-radar-driver-v19';
+  const LEASE_TTL_MS = 12000;
+
+  function readLease() {
+    try {
+      const value = JSON.parse(localStorage.getItem(LEASE_KEY) || 'null');
+      return value && typeof value === 'object' ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function claimDriverLease() {
+    try {
+      const now = Date.now();
+      const lease = readLease();
+      if (lease && lease.owner !== CLIENT_ID && Number(lease.expires || 0) > now) return false;
+      localStorage.setItem(LEASE_KEY, JSON.stringify({owner: CLIENT_ID, expires: now + LEASE_TTL_MS}));
+      const confirmed = readLease();
+      return Boolean(confirmed && confirmed.owner === CLIENT_ID);
+    } catch (_) {
+      // Private browsing/storage restrictions: backend tick lock remains the fallback.
+      return true;
+    }
+  }
+
+  function renewDriverLease() {
+    try {
+      const lease = readLease();
+      if (!lease || lease.owner !== CLIENT_ID) return false;
+      localStorage.setItem(LEASE_KEY, JSON.stringify({owner: CLIENT_ID, expires: Date.now() + LEASE_TTL_MS}));
+      return true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  function releaseDriverLease() {
+    try {
+      const lease = readLease();
+      if (lease && lease.owner === CLIENT_ID) localStorage.removeItem(LEASE_KEY);
+    } catch (_) {}
+  }
 
   function setRunningUi(running) {
     button.disabled = Boolean(running);
@@ -34,14 +81,14 @@
     if (status) status.textContent = message;
   }
 
-  async function jsonPost(url, timeoutMs = 30000) {
+  async function requestJson(url, options = {}, timeoutMs = 30000) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(url, {
-        method: 'POST',
         cache: 'no-store',
-        headers: {Accept: 'application/json'},
+        headers: {Accept: 'application/json', ...(options.headers || {})},
+        ...options,
         signal: controller.signal,
       });
       const text = await response.text();
@@ -82,6 +129,9 @@
     }
   }
 
+  const jsonPost = (url, timeoutMs = 30000) => requestJson(url, {method: 'POST'}, timeoutMs);
+  const jsonGet = (url, timeoutMs = 15000) => requestJson(url, {method: 'GET'}, timeoutMs);
+
   async function refreshTruth() {
     try {
       if (typeof loadRadarStatus === 'function') await loadRadarStatus();
@@ -95,14 +145,31 @@
   function scheduleDrive(delay = 3500) {
     clearTimeout(driveTimer);
     if (!driveEnabled || stopRequested) return;
+
+    // Exactly one open tab actively advances the request-driven job. Other tabs
+    // remain read-only observers and automatically take over if the leader closes.
+    if (!claimDriverLease()) {
+      driveTimer = setTimeout(async () => {
+        await refreshTruth();
+        scheduleDrive(2200);
+      }, 2200);
+      return;
+    }
     driveTimer = setTimeout(driveOnce, delay);
   }
 
   async function driveOnce() {
     if (stopRequested) {
       driveEnabled = false;
+      releaseDriverLease();
       return;
     }
+    if (!claimDriverLease()) {
+      scheduleDrive(1800);
+      return;
+    }
+    renewDriverLease();
+
     if (tickBusy) {
       scheduleDrive(1500);
       return;
@@ -110,33 +177,66 @@
     tickBusy = true;
     try {
       const data = await jsonPost('/api/radar/tick', 150000);
+      consecutiveTransportErrors = 0;
+      renewDriverLease();
       if (stopRequested) {
         driveEnabled = false;
         await refreshTruth();
+        releaseDriverLease();
         return;
       }
       driveEnabled = Boolean(data?.active);
       await refreshTruth();
+
+      if (data?.retry_budget_exceeded) {
+        driveEnabled = false;
+        releaseDriverLease();
+        setRunningUi(false);
+        if (status) status.textContent = data.message || 'Сервер остановил одинаковую повторяющуюся ошибку.';
+        return;
+      }
+
       if (data?.transient_error && status) {
-        status.textContent = `Шаг временно не прошёл: ${data.message || 'ошибка'}. Повторяю автоматически…`;
+        const repeats = Number(data?.same_error_repeats || 1);
+        status.textContent = `Шаг временно не прошёл (${repeats}/${data?.same_error_retry_limit || 6}): ${data.message || 'ошибка'}. Повторяю автоматически…`;
       }
       if (driveEnabled) {
         setRunningUi(true);
-        scheduleDrive(data?.busy ? 1800 : 3200);
+        const repeats = Number(data?.same_error_repeats || 0);
+        const retryDelay = data?.transient_error ? Math.min(15000, 2800 + repeats * 1700) : (data?.busy ? 1800 : 3200);
+        scheduleDrive(retryDelay);
       } else {
+        releaseDriverLease();
         setRunningUi(false);
       }
     } catch (error) {
       if (stopRequested) {
         driveEnabled = false;
+        releaseDriverLease();
         return;
       }
-      // During a Render deploy/swap the edge can return 502 before Flask sees the
-      // request. The durable state is already in KVS, so simply retry the tick.
-      if (status) status.textContent = `Render переключает instance: ${error.message}. Продолжаю автоматически…`;
+      consecutiveTransportErrors += 1;
+
+      if (!error?.transient) {
+        driveEnabled = false;
+        releaseDriverLease();
+        setRunningUi(false);
+        if (status) status.textContent = `Автоповтор остановлен: ${error.message}. Ошибка не выглядит временной.`;
+        return;
+      }
+
+      if (consecutiveTransportErrors >= 8) {
+        driveEnabled = false;
+        releaseDriverLease();
+        setRunningUi(false);
+        if (status) status.textContent = `Связь с Render не восстановилась после ${consecutiveTransportErrors} попыток. Автоповтор приостановлен, чтобы не создавать бесконечный цикл. Нажми «ЗАПУСТИТЬ ПОИСК» — сервер продолжит сохранённый run.`;
+        return;
+      }
+
+      if (status) status.textContent = `Render временно недоступен: ${error.message}. Попытка ${consecutiveTransportErrors}/8…`;
       driveEnabled = true;
       setRunningUi(true);
-      scheduleDrive(3500);
+      scheduleDrive(Math.min(16000, 2500 + consecutiveTransportErrors * 1800));
     } finally {
       tickBusy = false;
     }
@@ -151,7 +251,7 @@
       attempt += 1;
       try {
         if (status) status.textContent = attempt === 1
-          ? 'Создаю durable job в Apify KVS…'
+          ? 'Создаю durable job…'
           : `Render ещё переключается. Повтор запуска ${attempt}…`;
         return await jsonPost('/api/radar/sync', 25000);
       } catch (error) {
@@ -165,6 +265,8 @@
 
   async function startRadar() {
     stopRequested = false;
+    consecutiveTransportErrors = 0;
+    claimDriverLease();
     button.disabled = true;
     button.textContent = 'ПОДКЛЮЧАЮСЬ…';
     if (stopButton) stopButton.classList.add('hidden');
@@ -174,14 +276,10 @@
       const data = await startWithRetry();
       const runId = data?.run_id || '—';
       if (pct) pct.textContent = '1%';
-      if (stage) stage.textContent = data?.resumed ? 'Продолжаю поиск' : 'Поиск принят';
+      if (stage) stage.textContent = data?.migrated ? 'Обновляю старый поиск' : (data?.resumed ? 'Продолжаю поиск' : 'Поиск принят');
       if (eta) eta.textContent = '≈ 6–10 мин';
       if (bar) bar.style.width = '1%';
-      if (status) {
-        status.textContent = data?.resumed
-          ? `Найден job ${runId}. Продолжаю ровно с сохранённого этапа.`
-          : `Job ${runId} сохранён. Теперь поиск идёт короткими restart-safe шагами.`;
-      }
+      if (status) status.textContent = data?.message || `Run ${runId} сохранён.`;
       driveEnabled = true;
       setRunningUi(true);
       await refreshTruth();
@@ -189,14 +287,30 @@
     } catch (error) {
       if (status) status.textContent = `Не удалось подтвердить запуск: ${error.message}. Ничего не считаю запущенным.`;
       driveEnabled = false;
+      releaseDriverLease();
       setRunningUi(false);
     }
+  }
+
+  async function confirmStopUntilTerminal(firstData) {
+    let data = firstData || {};
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      if (data?.cancelled || data?.already_stopped || data?.active === false) return data;
+      await sleep(1500);
+      try {
+        data = await jsonPost('/api/radar/stop', 12000);
+      } catch (error) {
+        if (!error?.transient) throw error;
+      }
+    }
+    return data;
   }
 
   async function stopRadar() {
     stopRequested = true;
     driveEnabled = false;
     clearTimeout(driveTimer);
+    releaseDriverLease();
 
     button.disabled = true;
     button.textContent = 'ОСТАНАВЛИВАЮ…';
@@ -206,25 +320,25 @@
       stopButton.textContent = 'ОСТАНАВЛИВАЮ…';
     }
     if (stage) stage.textContent = 'Останавливаю поиск';
-    if (eta) eta.textContent = 'жду текущий шаг';
-    if (status) status.textContent = 'Принудительно останавливаю durable job и активные источники. Текущий атомарный шаг может завершиться перед остановкой.';
+    if (eta) eta.textContent = 'подтверждаю stop-marker';
+    if (status) status.textContent = 'Фиксирую принудительную остановку. Уже начатый атомарный шаг может закончиться, но следующий не запустится.';
 
     try {
-      const data = await jsonPost('/api/radar/stop', 205000);
+      const first = await jsonPost('/api/radar/stop', 15000);
+      const data = await confirmStopUntilTerminal(first);
       await refreshTruth();
 
-      if (data?.stop_pending) {
-        if (status) status.textContent = data.message || 'Текущий шаг ещё завершается. Нажми остановку повторно через несколько секунд.';
+      if (data?.active === true && !data?.cancelled) {
+        if (status) status.textContent = 'Stop-marker сохранён, но текущий внешний шаг ещё не завершился. Сервер не запустит следующий шаг; обнови статус через несколько секунд.';
         if (stopButton) {
           stopButton.disabled = false;
-          stopButton.textContent = 'ОСТАНОВИТЬ ПОВТОРНО';
+          stopButton.textContent = 'ПРОВЕРИТЬ ОСТАНОВКУ';
         }
         button.disabled = true;
         button.textContent = 'ОСТАНОВКА ЗАПРОШЕНА';
         return;
       }
 
-      driveEnabled = false;
       if (pct) pct.textContent = '0%';
       if (stage) stage.textContent = 'Поиск остановлен';
       if (eta) eta.textContent = 'ОСТАНОВЛЕНО';
@@ -233,18 +347,17 @@
       setRunningUi(false);
     } catch (error) {
       await refreshTruth();
-      if (status) status.textContent = `Не удалось подтвердить остановку: ${error.message}. Нажми «ОСТАНОВИТЬ ПОИСК» ещё раз.`;
+      if (status) status.textContent = `Не удалось подтвердить остановку: ${error.message}. Stop можно безопасно нажать повторно.`;
       button.disabled = true;
-      button.textContent = 'ПОИСК ИДЁТ…';
+      button.textContent = 'ОСТАНОВКА НЕ ПОДТВЕРЖДЕНА';
       if (stopButton) {
         stopButton.classList.remove('hidden');
         stopButton.disabled = false;
-        stopButton.textContent = 'ОСТАНОВИТЬ ПОИСК';
+        stopButton.textContent = 'ОСТАНОВИТЬ ПОВТОРНО';
       }
     }
   }
 
-  // Capture phase prevents the legacy app.js handler from issuing a duplicate POST.
   button.addEventListener('click', event => {
     event.preventDefault();
     event.stopImmediatePropagation();
@@ -259,22 +372,24 @@
     }, true);
   }
 
-  // One bootstrap tick is enough to recover a KVS job after a Render restart or
-  // browser reload. If it is active, the loop keeps driving it; if not, it stops.
+  // Read-only bootstrap: merely opening/reloading another browser tab must never
+  // consume a radar step. Only the elected leader tab begins POST /tick driving.
   setTimeout(async () => {
     try {
-      const data = await jsonPost('/api/radar/tick', 30000);
+      const data = await jsonGet('/api/radar/job', 12000);
       if (stopRequested) return;
       driveEnabled = Boolean(data?.active);
       await refreshTruth();
       if (driveEnabled) {
         setRunningUi(true);
-        scheduleDrive(1200);
+        scheduleDrive(900);
       } else {
         setRunningUi(false);
       }
     } catch (_) {
-      // Page remains usable; the next explicit start has its own 90s retry window.
+      // Page stays usable. Explicit start has its own bounded retry policy.
     }
   }, 900);
+
+  window.addEventListener('beforeunload', releaseDriverLease);
 })();
