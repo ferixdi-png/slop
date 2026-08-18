@@ -14,8 +14,6 @@ from radar_logs import add_radar_log, reset_radar_run_id, set_radar_run_id
 from radar_quality import recommendation_status_for_row, top_eligible
 from radar_source_compat import apply_source_alias_compat
 
-# The mass profile uses renamed Apify source keys. Apply the deterministic alias
-# bridge before importing request-state-machine entry points.
 apply_source_alias_compat()
 
 from radar_request_job import (
@@ -30,12 +28,10 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
 init_db()
 
-# Stable request-driven Render architecture + high-recall classifier.
 from radar_growth_v6 import apply_growth_overrides, top_eligible_v6
 apply_growth_overrides()
 top_eligible = top_eligible_v6
 
-# Production budget guard: real Apify dollar caps + bounded Gemini classifier.
 from radar_budget_v10 import (
     KEEP_LIMIT,
     apply_budget_overrides,
@@ -44,13 +40,19 @@ from radar_budget_v10 import (
 )
 BUDGET_INFO = apply_budget_overrides()
 
-# Final source profile: fewer, much larger hashtags. Low-frequency tails are
-# removed while the same <$5 hard budget remains in force.
-from radar_highfreq_v12 import (
-    PROFILE_VERSION,
-    apply_highfreq_overrides,
-)
+from radar_highfreq_v12 import apply_highfreq_overrides
 BUDGET_INFO = apply_highfreq_overrides()
+
+# Final production target: funny spoken scenes first. AI is optional; ordinary
+# real Reels with a reusable comedic dialogue are valid candidates.
+from radar_dialogue_v14 import (
+    PROFILE_VERSION,
+    apply_dialogue_first_overrides,
+    top_eligible_dialogue,
+)
+BUDGET_INFO = apply_dialogue_first_overrides()
+top_eligible = top_eligible_dialogue
+
 tick_job = wrap_tick_job(tick_job)
 
 
@@ -239,7 +241,7 @@ def radar_analyze(item_id):
 
         row = dict(row)
         if not bool(row.get("ai_match")) or not top_eligible(row):
-            return jsonify(error="Этот ролик не прошёл финальный AI/10-секундный фильтр TOP."), 400
+            return jsonify(error="Этот ролик не прошёл финальный фильтр короткой повторяемой сценки."), 400
 
         tmp = None
         add_radar_log(
