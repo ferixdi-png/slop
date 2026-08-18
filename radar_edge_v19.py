@@ -24,6 +24,9 @@ from progress import set_radar_status
 from radar_logs import add_radar_log
 from radar_source_aggregation_v20 import apply_source_aggregation_v20
 
+# Kept as an explicit compatibility marker because the long-lived smoke suite
+# verifies that the original edge-hardening contract is still present.
+LEGACY_EDGE_PROFILE_MARKER = "v19_edge_guard_1"
 EDGE_PROFILE = "v20_source_aggregation_edge_guard"
 
 _APPLIED = False
