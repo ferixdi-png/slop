@@ -17,6 +17,7 @@ import sys
 from flask import request
 
 from apify_start_compat import install_apify_start_compat
+from radar_discovery_v27 import install_v27_high_volume_discovery
 from radar_logs import add_radar_log, suppress_startup_logs
 
 RUNTIME_VERSION = "omni_veo_veo3_v27_strict_compress10"
@@ -140,6 +141,10 @@ def activate_v27_runtime():
         if not V27_APPLIED:
             raise RuntimeError("V27 strict scope did not activate during final bootstrap")
 
+        # Replace only discovery construction after the final V27 strict layer is
+        # active. Exact hashtag provenance remains enforced by V27 normalization.
+        discovery_info = install_v27_high_volume_discovery()
+
         # Read mutable final values only AFTER V24/V25/V27 finished composing.
         # Do not copy early module constants before those layers can update them.
         final_keep_limit = int(budget.KEEP_LIMIT)
@@ -176,6 +181,9 @@ def activate_v27_runtime():
         "legacy_startup_banners_suppressed": True,
         "render_fast_liveness": True,
         "apify_start_compat": True,
+        "discovery_actor": discovery_info.get("actor"),
+        "discovery_recency": discovery_info.get("recency"),
+        "discovery_results_per_tag": discovery_info.get("results_per_tag"),
         "internal_edge": str((edge_info or {}).get("edge_profile") or ""),
     }
     _APPLIED = True
