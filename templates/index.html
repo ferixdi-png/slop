@@ -30,7 +30,7 @@
 
       <section id="radar" class="screen active">
         <div class="section-title">
-          <div><span class="step">7 ДНЕЙ</span><h2>Смешные диалоги и короткие сценки до 10 секунд — AI или обычное видео</h2></div>
+          <div><span class="step">7 ДНЕЙ</span><h2>Смешные диалоги и короткие сценки до 10 секунд — происхождение видео не важно</h2></div>
           <span class="muted">{{ creator_count }} авторов уже в наблюдении</span>
         </div>
 
@@ -51,7 +51,7 @@
         <div class="card radar-intro">
           <div>
             <b>Сначала ищем короткие смешные диалоги, потом ранжируем и собираем production-пакет</b>
-            <span>Apify ищет по крупным AI-тегам и массовым юморным/скетчевым источникам → фильтр последних 7 дней и фактической длительности ≤10 сек → Gemini смотрит само видео и слушает речь → AI-происхождение не является обязательным критерием → главное короткая повторяемая юморная механика/диалог → иностранная речь адаптируется на русский с сохранением спикеров, панчлайна и тайминга → Viral Score 2.0 определяет только приоритет S / A / B / C. При создании промптов монтажные фото, скрины, карточки и PIP не генерируются внутри видео: система делает clean plate и отдельно выдаёт CAPCUT OVERLAY PLAN. Пост, заголовок, retention-фраза и хештеги всегда адаптируются под русскую публикацию.</span>
+            <span>Система собирает большой пул коротких роликов → фильтр последних 7 дней и фактической длительности ≤10 сек → локально отбрасываются статичные картинки, карточки и почти неподвижные слайды → смысловая проверка слушает речь и оценивает саму шутку → происхождение видео не влияет на PASS → главное короткая повторяемая юморная механика/диалог → иностранная речь адаптируется на русский с сохранением спикеров, панчлайна и тайминга → Viral Score 2.0 определяет только приоритет S / A / B / C. При создании промптов монтажные фото, скрины, карточки и PIP не генерируются внутри видео: система делает clean plate и отдельно выдаёт CAPCUT OVERLAY PLAN. Пост, заголовок, retention-фраза и хештеги всегда адаптируются под русскую публикацию.</span>
           </div>
           <div class="radar-controls">
             <button id="syncRadar" class="secondary">ЗАПУСТИТЬ ПОИСК</button>
@@ -76,7 +76,7 @@
         <div id="analysisProgress" class="card progress hidden">
           <div class="spinner"></div>
           <div>
-            <strong>Gemini собирает production-пакет по выбранному Reel…</strong>
+            <strong>Система собирает production-пакет по выбранному Reel…</strong>
             <span>Forensic pass → отделение реальной сцены от монтажных overlay-слоёв → clean Frame 0 → clean Video Prompt → русская речь → русский блок публикации → CAPCUT OVERLAY PLAN → QA audit → при необходимости repair-pass. Точная длительность сохраняется 1:1.</span>
           </div>
         </div>
@@ -88,7 +88,7 @@
         </div>
 
         <div class="section-mini-title">
-          <div><b>TOP для повторения</b><span>≤10 сек · последние 7 дней · подтверждены Gemini как смешная повторяемая сценка/диалог</span></div>
+          <div><b>TOP для повторения</b><span>≤10 сек · последние 7 дней · подтверждены как смешная повторяемая сценка/диалог</span></div>
         </div>
         <div class="card">
           <div id="radarRows" class="radar-table">
@@ -97,11 +97,11 @@
         </div>
 
         <div class="section-mini-title candidates-title">
-          <div><b>Кандидаты из Apify</b><span>широкий dialogue + comedy + AI discovery; точная длительность и пригодность проверяются по самому видео</span></div>
+          <div><b>Кандидаты</b><span>широкий dialogue + comedy discovery; точная длительность и пригодность проверяются по самому видео</span></div>
         </div>
         <div class="card">
           <div id="candidateRows" class="candidate-table">
-            <div class="empty">После получения данных от Apify здесь появятся кандидаты даже если TOP ещё не готов.</div>
+            <div class="empty">После получения данных здесь появятся кандидаты даже если TOP ещё не готов.</div>
           </div>
         </div>
       </section>
@@ -109,6 +109,7 @@
   </div>
 
   <script src="/static/app.js?v=20260818-0915"></script>
+  <script src="/static/v17_ui.js?v=20260818-1032"></script>
   <script src="/static/overlay_v15.js?v=20260818-0915"></script>
   <script src="/static/runtime.js?v=20260818-0915"></script>
 </body>
