@@ -1,0 +1,105 @@
+name: Omni Veo V22 Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'radar_omni_veo_v21.py'
+      - 'radar_omni_veo_v22.py'
+      - 'radar_edge_v19.py'
+      - 'templates/index.html'
+      - '.env.example'
+      - '.github/workflows/omni-veo-v22-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'radar_omni_veo_v21.py'
+      - 'radar_omni_veo_v22.py'
+      - 'radar_edge_v19.py'
+      - '.github/workflows/omni-veo-v22-smoke.yml'
+
+jobs:
+  omni-veo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile Python
+        run: python -m compileall -q .
+      - name: Verify Omni/Veo mass momentum contract
+        env:
+          SECRET_KEY: smoke-test
+        run: |
+          python - <<'PY'
+          import app as app_module
+          import radar_budget_v10 as budget
+          import radar_omni_veo_v21 as v21
+          import radar_omni_veo_v22 as v22
+          import radar_request_job as radar_job
+
+          c = app_module.app.test_client()
+          status = c.get('/api/status').get_json()
+
+          assert status['radar_hashtags'] == ['omni', 'veo'], status
+          assert status['radar_hashtag_limit_each'] == 250, status
+          assert status['radar_max_raw_requested'] == 500, status
+          assert status['radar_ranking_mode'] == 'momentum_views_per_hour', status
+          assert app_module.KEEP_LIMIT == 180
+          assert radar_job.RADAR_AI_ANALYZE_LIMIT == 420
+
+          sources = radar_job._build_sources()
+          assert set(sources) == {'hashtag_omni', 'hashtag_veo'}, sources
+          for tag in ('omni', 'veo'):
+              source = sources[f'hashtag_{tag}']
+              assert source['input'] == {
+                  'hashtags': [tag],
+                  'resultsType': 'reels',
+                  'resultsLimit': 250,
+              }, source
+          assert not any('popular' in name or 'keyword' in name or 'creator' in name for name in sources)
+
+          # Faster current growth must outrank slower historical popularity.
+          fast = v21._momentum_score(30_000, 15_000, 2.0, 50.0)
+          slow = v21._momentum_score(300_000, 1_500, 48.0, 80.0)
+          assert fast > slow, (fast, slow)
+
+          # Technical mass screening: actual duration + motion, no dialogue/comedy requirement.
+          real_duration = v22.measure_video_duration
+          real_motion = v22.inspect_visual_motion
+          class Moving:
+              checked = True
+              is_static_image_video = False
+              reason = 'moving'
+          class Static:
+              checked = True
+              is_static_image_video = True
+              reason = 'static card'
+          try:
+              v22.measure_video_duration = lambda path, fallback=0: 8.4
+              v22.inspect_visual_motion = lambda path: Moving()
+              passed = v22.classify_omni_veo_reel('/tmp/fake.mp4', '')
+              assert v22.matches_omni_veo(passed) is True, passed
+
+              v22.measure_video_duration = lambda path, fallback=0: 10.4
+              too_long = v22.classify_omni_veo_reel('/tmp/fake.mp4', '')
+              assert v22.matches_omni_veo(too_long) is False, too_long
+              assert too_long.reason.startswith('DURATION_GATE'), too_long
+
+              v22.measure_video_duration = lambda path, fallback=0: 7.0
+              v22.inspect_visual_motion = lambda path: Static()
+              static = v22.classify_omni_veo_reel('/tmp/fake.mp4', '')
+              assert v22.matches_omni_veo(static) is False, static
+              assert static.reason.startswith('REJECT_STATIC_IMAGE'), static
+          finally:
+              v22.measure_video_duration = real_duration
+              v22.inspect_visual_motion = real_motion
+
+          b = budget.budget_breakdown()
+          assert b['designed_total_budget_usd'] <= 5.0, b
+          assert b['hard_budget_usd'] == 5.0, b
+
+          print('OMNI/VEO V22 OK', status, b)
+          PY
