@@ -1,8 +1,9 @@
-"""Fresh-run isolation for the Omni/Veo radar.
+"""Fresh-run isolation for the Omni/Veo/Veo3 radar.
 
 A genuinely new radar run must start from an empty result surface. This layer
 clears only transient radar output (radar_posts + radar_meta), never analyses,
-tracked creators, credentials, or production packages. Active-run resume is
+tracked creators, credentials, production packages or the hidden momentum
+history used to measure real cross-run acceleration. Active-run resume is
 idempotent and never clears already collected results.
 
 It also guards snapshot restoration: a Render instance may restore a radar
@@ -20,8 +21,9 @@ import radar_request_job as radar_job
 from db import db_conn
 from progress import set_radar_status
 from radar_logs import add_radar_log
+from radar_omni_veo_veo3_v24 import apply_omni_veo_veo3_v24
 
-RESET_VERSION = "omni_veo_v23_fresh_run_reset"
+RESET_VERSION = "omni_veo_veo3_v23_fresh_run_reset"
 
 _APPLIED = False
 _BASE_CREATE = None
@@ -71,7 +73,7 @@ def restore_snapshot_for_latest_run_only():
 
 
 def _reset_result_tables(run_id: str):
-    """Delete only previous radar output; keep analyses and durable configuration."""
+    """Delete previous visible radar output; preserve internal momentum history."""
     with db_conn() as conn:
         old_posts = int(conn.execute("SELECT COUNT(*) FROM radar_posts").fetchone()[0] or 0)
         old_meta = int(conn.execute("SELECT COUNT(*) FROM radar_meta").fetchone()[0] or 0)
@@ -100,12 +102,14 @@ def _reset_result_tables(run_id: str):
             "run_id": run_id,
             "cleared_radar_posts": old_posts,
             "cleared_radar_meta": old_meta,
+            "momentum_history_preserved": True,
             "snapshot_saved": snapshot_saved,
         },
     )
     return {
         "cleared_radar_posts": old_posts,
         "cleared_radar_meta": old_meta,
+        "momentum_history_preserved": True,
         "snapshot_saved": snapshot_saved,
     }
 
@@ -129,7 +133,7 @@ def _finish_pending_reset(job):
         "Новый поиск: старая выдача очищена",
         1,
         600,
-        "Предыдущий TOP, пул кандидатов и старая мета удалены. Собираю новый #omni/#veo run с нуля.",
+        "Предыдущий TOP, пул кандидатов и старая мета удалены. Собираю новый #omni/#veo/#veo3 run с нуля.",
         details={
             "run_id": run_id,
             "fresh_run_reset": True,
@@ -173,7 +177,7 @@ def create_or_resume_fresh_run():
 
 
 def advance_after_fresh_reset(job):
-    """No Apify/Gemini step may start while a fresh-run reset is pending."""
+    """No Apify/local MP4 step may start while a fresh-run reset is pending."""
     if job and job.get("dataset_reset_pending") and str(job.get("dataset_reset_version") or "") == RESET_VERSION:
         job, _ = _finish_pending_reset(job)
     return _BASE_ADVANCE(job)
@@ -189,6 +193,11 @@ def apply_fresh_run_v23():
     if app_module is None:
         raise RuntimeError("radar_fresh_run_v23 must be applied from app startup")
 
+    # V24 is deliberately applied here: radar_edge_v19 calls V22 immediately
+    # before this layer, so V24 becomes the final search scope without changing
+    # the proven outer STOP/START race wrapper.
+    scope_info = apply_omni_veo_veo3_v24()
+
     _BASE_CREATE = app_module.create_or_resume_job
     _BASE_ADVANCE = radar_job._advance
     _BASE_RESTORE = radar_job.restore_radar_snapshot_if_empty
@@ -200,6 +209,6 @@ def apply_fresh_run_v23():
     add_radar_log(
         "FRESH RUN V23 READY: новый START очищает старый TOP/meta; resume не очищает текущий run; старый snapshot не воскресает.",
         stage="startup",
-        details={"fresh_run_reset_version": RESET_VERSION},
+        details={"fresh_run_reset_version": RESET_VERSION, **scope_info},
     )
-    return {"fresh_run_reset_version": RESET_VERSION}
+    return {"fresh_run_reset_version": RESET_VERSION, **scope_info}
