@@ -15,8 +15,10 @@ import radar_quality
 import radar_request_job as radar_job
 import radar_service
 from config import RADAR_MAX_DURATION_SEC, RADAR_MIN_DURATION_SEC
+from db import db_conn
 from media_duration import measure_video_duration
 from models import RadarAssessment
+from progress import set_radar_status
 from radar_logs import add_radar_log
 from static_video_gate import inspect_visual_motion
 
@@ -27,9 +29,10 @@ KEEP_LIMIT = 180
 GEMINI_ANALYZE_LIMIT = 420
 RADAR_CLASSIFICATION_FPS = 1.0
 MAX_CLASSIFICATION_OUTPUT_TOKENS = 320
+FINAL_QUERY_LIMIT = 360
 
-# Keep estimated discovery close to the existing budget guard rather than adding
-# more Actors. The platform-side hard caps remain unchanged in radar_budget_v10.
+# Same actor set and same platform-side dollar hard caps as before. We only spend
+# the available discovery budget on broader/high-yield comedy feeds.
 SEARCH_LIMIT = 20
 HASHTAG_LIMIT = 24
 KEYWORD_RESULTS_LIMIT = 12
@@ -126,7 +129,7 @@ def _reject_assessment(reason: str, measured: float = 0.0) -> RadarAssessment:
 
 
 def matches_dialogue_v16(a: RadarAssessment) -> bool:
-    """High-recall target: the spoken joke matters more than AI origin."""
+    """High-recall target: a funny spoken bit is enough; AI origin never decides PASS."""
     if a.is_tutorial_or_review:
         return False
     return bool(a.has_spoken_dialogue and a.dialogue_is_comedic)
@@ -199,6 +202,88 @@ Caption вторичен: {str(caption or '')[:1000]}""".strip()
     return gemini_service.with_uploaded_file(file_path, run)
 
 
+def finalize_scale_v16(job):
+    """Same finalization semantics as v5, but allow a real TOP up to 180 rows."""
+    candidates = job.get("candidates") or []
+    set_radar_status(
+        "running",
+        "Формирую расширенный TOP",
+        92,
+        45,
+        "Пересчитываю качество, аномалии и мету недели. Выдача может содержать до 180 подходящих роликов.",
+        details={
+            "ai_total": len(candidates),
+            "ai_done": sum(1 for x in candidates if x.get("ai_done")),
+            "run_id": job.get("run_id"),
+            "keep_limit": KEEP_LIMIT,
+        },
+    )
+
+    with db_conn() as conn:
+        radar_quality.refresh_recent_scores_quality(conn)
+        rows = conn.execute(
+            f"""SELECT * FROM radar_posts
+               WHERE datetime(published_at)>=datetime('now','-7 days') AND ai_match=1
+               ORDER BY viral_score_v2 DESC,views_per_hour DESC,views DESC
+               LIMIT {int(FINAL_QUERY_LIMIT)}"""
+        ).fetchall()
+    top_rows = [dict(row) for row in rows if dialogue.top_eligible_dialogue(dict(row))][:KEEP_LIMIT]
+
+    meta_error = ""
+    if top_rows:
+        try:
+            with db_conn() as conn:
+                radar_quality.save_meta_report_quality(conn, top_rows)
+                conn.commit()
+        except Exception as exc:
+            meta_error = str(exc)[:300]
+            add_radar_log(f"Мета недели не собрана: {exc}", level="WARN", stage="meta")
+
+    try:
+        radar_job.save_radar_snapshot()
+    except Exception as exc:
+        add_radar_log(f"Финальный snapshot не сохранён: {exc}", level="WARN", stage="snapshot")
+
+    done = sum(1 for item in candidates if item.get("ai_done"))
+    matched = sum(1 for item in candidates if item.get("ai_done") and item.get("ai_match"))
+    errors = sum(1 for item in candidates if item.get("ai_error"))
+    stats = job.get("stats") or {}
+    static_rejected = sum(
+        1 for item in candidates
+        if str(((item.get("assessment") or {}).get("reason") or "")).startswith("REJECT_STATIC_IMAGE")
+    )
+    result = {
+        "raw": stats.get("raw", 0),
+        "after_numeric_filter": stats.get("numeric_candidates", 0),
+        "ai_checked": done,
+        "matched": matched,
+        "errors": errors,
+        "source_errors": len(job.get("source_failures") or {}),
+        "static_rejected": static_rejected,
+        "kept": len(top_rows),
+        "meta_error": meta_error,
+    }
+    job["phase"] = "done"
+    job["completed_at"] = radar_job._now_iso()
+    job["result"] = result
+    job["error"] = ""
+    job["current_ai_index"] = None
+    job["current_ai_post_url"] = ""
+    radar_job._persist(job)
+
+    set_radar_status(
+        "done",
+        "Поиск завершён",
+        100,
+        0,
+        f"Собрано {result['raw']} → проверено {done} → статичных картинок отброшено {static_rejected} → в TOP {len(top_rows)}.",
+        warning=(f"Мета: {meta_error}" if meta_error else ""),
+        details=result,
+    )
+    add_radar_log("DIALOGUE MOTION v16 DONE.", stage="done", details=result)
+    return job
+
+
 def apply_scale_v16_overrides():
     # Cost guard: keep existing platform-side actor dollar caps unchanged. Only
     # rebalance result depth and make each Gemini radar check cheaper.
@@ -235,6 +320,10 @@ def apply_scale_v16_overrides():
     radar_service.matches = matches_dialogue_v16
     radar_quality.top_eligible = dialogue.top_eligible_dialogue
     radar_job.top_eligible = dialogue.top_eligible_dialogue
+
+    # growth._finalize_v6 calls this global at runtime, so replacing it here lifts
+    # the old SQL LIMIT 120 without disturbing the durable request-state machine.
+    growth._ORIGINAL_FINALIZE = finalize_scale_v16
 
     info = budget._assert_budget()
     add_radar_log(
