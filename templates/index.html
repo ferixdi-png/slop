@@ -4,18 +4,18 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>ФАБРИКА СЛОПА — Радар недели</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260817-2115" />
-  <link rel="stylesheet" href="/static/upgrade.css?v=20260817-2115" />
+  <link rel="stylesheet" href="/static/style.css?v=20260818-0835" />
+  <link rel="stylesheet" href="/static/upgrade.css?v=20260818-0835" />
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark">ФС</div>
-        <div><strong>ФАБРИКА СЛОПА</strong><small>радар AI-охватов</small></div>
+        <div><strong>ФАБРИКА СЛОПА</strong><small>радар вирусных диалогов</small></div>
       </div>
       <div class="side-note">
-        1. Запусти радар. 2. Выбери победителя из TOP. 3. Нажми «Получить ультра-промпты». 4. Скопируй PHOTO PROMPT стартового кадра и VIDEO PROMPT. Если исходник не на русском, речь автоматически адаптируется на русский с сохранением ролей и тайминга.
+        1. Запусти радар. 2. Выбери победителя из TOP. 3. Нажми «Получить ультра-промпты». 4. Скопируй PHOTO PROMPT стартового кадра и VIDEO PROMPT. Реальное или AI-видео неважно: если исходная речь не на русском, она автоматически адаптируется на русский с сохранением ролей, шутки и тайминга.
       </div>
     </aside>
 
@@ -30,7 +30,7 @@
 
       <section id="radar" class="screen active">
         <div class="section-title">
-          <div><span class="step">7 ДНЕЙ</span><h2>AI-комедийные Reels со всего мира до 10 секунд</h2></div>
+          <div><span class="step">7 ДНЕЙ</span><h2>Смешные диалоги и короткие сценки до 10 секунд — AI или обычное видео</h2></div>
           <span class="muted">{{ creator_count }} авторов уже в наблюдении</span>
         </div>
 
@@ -50,8 +50,8 @@
 
         <div class="card radar-intro">
           <div>
-            <b>Сначала находим максимум AI-механик, потом ранжируем и собираем промпты</b>
-            <span>Apify ищет AI Reels по русским и международным запросам + расширенному набору AI-хештегов → фильтр последних 7 дней и фактической длительности ≤10 сек → Gemini проверяет само видео → нерусские ролики тоже допускаются, если механику можно повторить → при создании промптов речь переводится и адаптируется на русский с сохранением спикеров, панчлайна и тайминга → Viral Score 2.0 → TOP со статусами S / A / B / C. Слабый, но подходящий ролик не исчезает: он просто ранжируется ниже.</span>
+            <b>Сначала ищем короткие смешные диалоги, потом ранжируем и собираем промпты</b>
+            <span>Apify ищет по крупным AI-тегам и массовым юморным/скетчевым источникам → фильтр последних 7 дней и фактической длительности ≤10 сек → Gemini смотрит само видео и слушает речь → обычная реальная сценка проходит наравне с AI, если в ней есть короткий повторяемый юморный диалог → иностранная речь допускается и при создании промптов адаптируется на русский с сохранением спикеров, панчлайна и тайминга → Viral Score 2.0 определяет только приоритет S / A / B / C. Подходящий ролик больше не исчезает из TOP из-за слабых лайков.</span>
           </div>
           <div class="radar-controls">
             <button id="syncRadar" class="secondary">ЗАПУСТИТЬ ПОИСК</button>
@@ -84,11 +84,11 @@
         <div id="analysisResult" class="result hidden"></div>
 
         <div id="radarMeta" class="meta-wrap">
-          <div class="card"><div class="empty">После первого завершённого поиска здесь появится мета TOP-30.</div></div>
+          <div class="card"><div class="empty">После первого завершённого поиска здесь появится мета TOP.</div></div>
         </div>
 
         <div class="section-mini-title">
-          <div><b>TOP для повторения</b><span>≤10 сек · последние 7 дней · подтверждены Gemini как AI-механика, пригодная для русской адаптации</span></div>
+          <div><b>TOP для повторения</b><span>≤10 сек · последние 7 дней · подтверждены Gemini как смешная повторяемая сценка/диалог или сильная AI-механика</span></div>
         </div>
         <div class="card">
           <div id="radarRows" class="radar-table">
@@ -97,7 +97,7 @@
         </div>
 
         <div class="section-mini-title candidates-title">
-          <div><b>Кандидаты из Apify</b><span>широкий AI-discovery; точная длительность и пригодность проверяются по самому видео</span></div>
+          <div><b>Кандидаты из Apify</b><span>широкий dialogue + comedy + AI discovery; точная длительность и пригодность проверяются по самому видео</span></div>
         </div>
         <div class="card">
           <div id="candidateRows" class="candidate-table">
@@ -108,7 +108,7 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260817-2115"></script>
-  <script src="/static/runtime.js?v=20260817-2115"></script>
+  <script src="/static/app.js?v=20260818-0835"></script>
+  <script src="/static/runtime.js?v=20260818-0835"></script>
 </body>
 </html>
