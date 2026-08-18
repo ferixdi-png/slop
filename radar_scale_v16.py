@@ -5,6 +5,8 @@ budget. Discovery is rebalanced toward high-yield comedy/dialogue sources; stati
 image MP4s are rejected locally before Gemini; AI origin remains metadata only.
 """
 
+import sys
+
 from google.genai import types
 
 import gemini_service
@@ -326,6 +328,17 @@ def apply_scale_v16_overrides():
     growth._ORIGINAL_FINALIZE = finalize_scale_v16
 
     info = budget._assert_budget()
+
+    # app.py imported the old v15 integer/string constants before this last override
+    # runs. Synchronize those module globals so /api/status and /api/radar/status
+    # truthfully expose v16 without touching the stable request-state-machine code.
+    app_module = sys.modules.get("app")
+    if app_module is not None:
+        app_module.PROFILE_VERSION = PROFILE_VERSION
+        app_module.KEEP_LIMIT = KEEP_LIMIT
+        app_module.BUDGET_INFO = info
+        app_module.top_eligible = dialogue.top_eligible_dialogue
+
     add_radar_log(
         "DIALOGUE MOTION v16: статичные image-Reels режутся локально; цель/выдача до 180; AI не обязателен; hard budget <$5 сохранён.",
         stage="startup",
