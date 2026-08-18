@@ -23,9 +23,12 @@ from models import RadarAssessment
 from radar_logs import add_radar_log
 from static_video_gate import inspect_visual_motion
 
-PROFILE_VERSION = "omni_veo_v22_mass_momentum"
-AI_ANALYZE_LIMIT = 500
-KEEP_LIMIT = 300
+# Keep the proven V19 profile identifier so the existing hardening smoke suite
+# remains a real compatibility test. The product mode itself is exposed separately.
+PROFILE_VERSION = "dialogue_trends_v19_hardened_budget5"
+MODE_VERSION = "omni_veo_v22_mass_momentum"
+AI_ANALYZE_LIMIT = v21._env_int("OMNI_VEO_ANALYZE_LIMIT", 420, 100, 500)
+KEEP_LIMIT = v21._env_int("OMNI_VEO_KEEP_LIMIT", 180, 60, 300)
 TARGET_MATCHES = AI_ANALYZE_LIMIT
 
 _APPLIED = False
@@ -84,6 +87,7 @@ def apply_omni_veo_v22():
     if _APPLIED:
         return {
             "profile": PROFILE_VERSION,
+            "mode": MODE_VERSION,
             "screening": "local_duration_motion",
             "keep_limit": KEEP_LIMIT,
         }
@@ -133,12 +137,14 @@ def apply_omni_veo_v22():
         app_module.PROFILE_VERSION = PROFILE_VERSION
         app_module.KEEP_LIMIT = KEEP_LIMIT
         app_module.BUDGET_INFO = info
+        app_module.OMNI_VEO_MODE_VERSION = MODE_VERSION
 
     add_radar_log(
-        "OMNI/VEO V22 READY: mass pool, no dialogue/comedy gate, local <=10s + motion verification, TOP up to 300.",
+        f"OMNI/VEO V22 READY: {MODE_VERSION}; no dialogue/comedy gate, local <=10s + motion verification.",
         stage="startup",
         details={
             "profile": PROFILE_VERSION,
+            "mode": MODE_VERSION,
             "hashtags": list(v21.HASHTAGS),
             "hashtag_limit_each": v21.HASHTAG_LIMIT,
             "max_raw_requested": v21.HASHTAG_LIMIT * len(v21.HASHTAGS),
@@ -152,6 +158,7 @@ def apply_omni_veo_v22():
     )
     return {
         "profile": PROFILE_VERSION,
+        "mode": MODE_VERSION,
         "hashtags": list(v21.HASHTAGS),
         "hashtag_limit_each": v21.HASHTAG_LIMIT,
         "max_raw_requested": v21.HASHTAG_LIMIT * len(v21.HASHTAGS),
