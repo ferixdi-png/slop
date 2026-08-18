@@ -2,6 +2,8 @@ name: Smoke Check
 on:
   push:
     branches: [main, fix/overlay-cleanplate-v15]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
