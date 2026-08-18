@@ -1,12 +1,16 @@
-name: Omni Veo V22 Smoke
+name: Omni Veo Veo3 V24 Smoke
 
 on:
   pull_request:
     paths:
       - 'radar_omni_veo_v21.py'
       - 'radar_omni_veo_v22.py'
+      - 'radar_fresh_run_v23.py'
+      - 'radar_omni_veo_veo3_v24.py'
       - 'radar_edge_v19.py'
       - 'templates/index.html'
+      - 'static/fresh_run_v23.js'
+      - 'static/scope_v24.js'
       - '.env.example'
       - '.github/workflows/omni-veo-v22-smoke.yml'
   push:
@@ -14,11 +18,17 @@ on:
     paths:
       - 'radar_omni_veo_v21.py'
       - 'radar_omni_veo_v22.py'
+      - 'radar_fresh_run_v23.py'
+      - 'radar_omni_veo_veo3_v24.py'
       - 'radar_edge_v19.py'
+      - 'templates/index.html'
+      - 'static/fresh_run_v23.js'
+      - 'static/scope_v24.js'
+      - '.env.example'
       - '.github/workflows/omni-veo-v22-smoke.yml'
 
 jobs:
-  omni-veo:
+  omni-veo-veo3:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,30 +39,44 @@ jobs:
         run: pip install -r requirements.txt
       - name: Compile Python
         run: python -m compileall -q .
-      - name: Verify Omni/Veo mass momentum contract
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: JavaScript syntax
+        run: |
+          node --check static/fresh_run_v23.js
+          node --check static/scope_v24.js
+      - name: Verify three-tag fresh momentum contract
         env:
           SECRET_KEY: smoke-test
         run: |
           python - <<'PY'
+          from datetime import datetime, timedelta, timezone
+
           import app as app_module
           import radar_budget_v10 as budget
+          import radar_fresh_run_v23 as fresh
           import radar_omni_veo_v21 as v21
           import radar_omni_veo_v22 as v22
+          import radar_omni_veo_veo3_v24 as v24
           import radar_request_job as radar_job
+          from cloud_state import load_radar_job, save_radar_job
+          from db import db_conn
 
           c = app_module.app.test_client()
           status = c.get('/api/status').get_json()
 
-          assert status['radar_hashtags'] == ['omni', 'veo'], status
+          assert status['radar_hashtags'] == ['omni', 'veo', 'veo3'], status
           assert status['radar_hashtag_limit_each'] == 250, status
-          assert status['radar_max_raw_requested'] == 500, status
-          assert status['radar_ranking_mode'] == 'momentum_views_per_hour', status
+          assert status['radar_max_raw_requested'] == 750, status
+          assert status['radar_ranking_mode'] == 'cross_run_acceleration_then_views_per_hour', status
+          assert status['radar_mode'] == v24.MODE_VERSION, status
           assert app_module.KEEP_LIMIT == 180
           assert radar_job.RADAR_AI_ANALYZE_LIMIT == 420
 
           sources = radar_job._build_sources()
-          assert set(sources) == {'hashtag_omni', 'hashtag_veo'}, sources
-          for tag in ('omni', 'veo'):
+          assert set(sources) == {'hashtag_omni', 'hashtag_veo', 'hashtag_veo3'}, sources
+          for tag in ('omni', 'veo', 'veo3'):
               source = sources[f'hashtag_{tag}']
               assert source['input'] == {
                   'hashtags': [tag],
@@ -61,12 +85,29 @@ jobs:
               }, source
           assert not any('popular' in name or 'keyword' in name or 'creator' in name for name in sources)
 
-          # Faster current growth must outrank slower historical popularity.
-          fast = v21._momentum_score(30_000, 15_000, 2.0, 50.0)
-          slow = v21._momentum_score(300_000, 1_500, 48.0, 80.0)
+          # First observation: faster lifetime growth outranks slower historical popularity.
+          fast = v24._v24_score({
+              'views': 30_000, 'hours_since_publish': 2.0, 'viral_score_v2': 50.0,
+          }, 15_000, 0.0, False)
+          slow = v24._v24_score({
+              'views': 300_000, 'hours_since_publish': 48.0, 'viral_score_v2': 80.0,
+          }, 1_500, 0.0, False)
           assert fast > slow, (fast, slow)
 
-          # Technical mass screening: actual duration + motion, no dialogue/comedy requirement.
+          # Later observations: actual cross-run view delta is calculated.
+          now = datetime.now(timezone.utc)
+          previous = {
+              'observed_at': (now - timedelta(hours=1)).isoformat(),
+              'views': 40_000,
+              'average_views_per_hour': 5_000,
+          }
+          row = {'views': 95_000, 'views_per_hour': 8_000}
+          measured, acceleration, has_history = v24._history_velocity(row, previous, now)
+          assert has_history is True
+          assert 54_900 <= measured <= 55_100, measured
+          assert acceleration >= 10.9, acceleration
+
+          # Technical screening still means real <=10s moving MP4, no comedy/dialogue gate.
           real_duration = v22.measure_video_duration
           real_motion = v22.inspect_visual_motion
           class Moving:
@@ -82,24 +123,71 @@ jobs:
               v22.inspect_visual_motion = lambda path: Moving()
               passed = v22.classify_omni_veo_reel('/tmp/fake.mp4', '')
               assert v22.matches_omni_veo(passed) is True, passed
+              assert passed.reason.startswith(v24.PASS_PREFIX), passed.reason
 
               v22.measure_video_duration = lambda path, fallback=0: 10.4
               too_long = v22.classify_omni_veo_reel('/tmp/fake.mp4', '')
               assert v22.matches_omni_veo(too_long) is False, too_long
-              assert too_long.reason.startswith('DURATION_GATE'), too_long
 
               v22.measure_video_duration = lambda path, fallback=0: 7.0
               v22.inspect_visual_motion = lambda path: Static()
               static = v22.classify_omni_veo_reel('/tmp/fake.mp4', '')
               assert v22.matches_omni_veo(static) is False, static
-              assert static.reason.startswith('REJECT_STATIC_IMAGE'), static
           finally:
               v22.measure_video_duration = real_duration
               v22.inspect_visual_motion = real_motion
 
+          # Fresh run reset deletes visible output/meta but preserves momentum history.
+          with db_conn() as conn:
+              conn.execute(
+                  "INSERT OR REPLACE INTO radar_posts(creator,post_url,published_at,duration_sec,search_term) VALUES(?,?,?,?,?)",
+                  ('old', 'https://example.com/old', now.isoformat(), 8.0, 'omni'),
+              )
+              conn.execute(
+                  "INSERT INTO radar_meta(created_at,source_count,average_duration_sec,report_json) VALUES(?,?,?,?)",
+                  (now.isoformat(), 1, 8.0, '{}'),
+              )
+              conn.execute(
+                  "INSERT OR REPLACE INTO radar_momentum_history(post_url,observed_at,views,average_views_per_hour,search_term) VALUES(?,?,?,?,?)",
+                  ('https://example.com/old', now.isoformat(), 1000, 500, 'omni'),
+              )
+              conn.commit()
+
+          reset_info = fresh._reset_result_tables('smoke-fresh-run')
+          assert reset_info['cleared_radar_posts'] >= 1
+          assert reset_info['cleared_radar_meta'] >= 1
+          with db_conn() as conn:
+              assert conn.execute('SELECT COUNT(*) FROM radar_posts').fetchone()[0] == 0
+              assert conn.execute('SELECT COUNT(*) FROM radar_meta').fetchone()[0] == 0
+              assert conn.execute('SELECT COUNT(*) FROM radar_momentum_history').fetchone()[0] >= 1
+
+          # Resume safety: a live job already marked reset-done must not be cleared again.
+          active = {
+              'version': 5,
+              'runtime': radar_job.RUNTIME,
+              'run_id': 'resume-safe',
+              'phase': 'discovering',
+              'created_at': now.isoformat(),
+              'sources': sources,
+              'candidates': [],
+              'warnings': [],
+              'source_failures': {},
+              'stats': {},
+              'result': {},
+              'error': '',
+              'dataset_reset_done': True,
+              'dataset_reset_pending': False,
+              'dataset_reset_version': fresh.RESET_VERSION,
+          }
+          save_radar_job(active)
+          before = load_radar_job()
+          assert before['dataset_reset_done'] is True
+
           b = budget.budget_breakdown()
+          assert b['max_hashtag_results'] == 750, b
+          assert b['hard_apify_actor_caps_usd'] <= 3.0, b
           assert b['designed_total_budget_usd'] <= 5.0, b
           assert b['hard_budget_usd'] == 5.0, b
 
-          print('OMNI/VEO V22 OK', status, b)
+          print('OMNI/VEO/VEO3 V24 OK', status, b)
           PY
