@@ -11,7 +11,7 @@ from media_duration import measure_video_duration
 from models import RadarAssessment
 from radar_logs import add_radar_log
 
-PROFILE_VERSION="mass_global_ai_v7"
+PROFILE_VERSION="mass_global_ai_v8_brands"
 TARGET_MATCHES=75
 MIN_AI_CHECKS_BEFORE_EARLY_STOP=120
 AI_ANALYZE_LIMIT=420
@@ -20,29 +20,52 @@ SEARCH_LIMIT=64
 HASHTAG_LIMIT=20
 
 SEARCH_QUERY=(
+"AI, ИИ, искусственный интеллект, нейросеть, нейронка, generative AI, GenAI, AI video, AI generated video, "
 "нейроюмор, ии юмор, AI юмор, нейросеть прикол, AI прикол, нейровидео юмор, ии видео юмор, "
 "AI бабушка юмор, нейросеть бабушка, AI дед юмор, нейросеть дед, AI деревня юмор, нейросеть деревня, "
 "AI муж жена юмор, AI семья юмор, AI животные юмор, AI comedy, AI funny video, AI generated comedy, "
 "AI generated funny, AI humor, AI skit, AI short comedy, AI meme video, AI absurd video, AI viral video, "
 "AI slop, funny AI slop, AI grandma, AI grandpa, AI old people funny, AI family comedy, AI couple comedy, "
 "AI animals funny, AI dog funny, AI cat funny, AI baby funny, AI village comedy, AI interview funny, "
-"AI POV funny, Veo 3 comedy, Veo 3 funny, Veo3 AI video, Kling AI comedy, Seedance comedy, Sora comedy, "
-"Runway AI comedy, Hailuo AI funny, Minimax AI video funny"
+"AI POV funny, Omni AI video, Gemini Omni, Google Flow Omni, Grok AI video, Grok video, xAI Grok, "
+"Gemini AI video, Google Gemini video, Google AI video, ChatGPT AI video, OpenAI video, GPT Image video, "
+"Veo 3 comedy, Veo 3 funny, Veo3 AI video, Veo 3.1 video, Google Veo, Google Flow AI, "
+"Kling AI comedy, Kling AI video, Seedance comedy, Seedance AI video, Sora comedy, Sora AI video, "
+"Runway AI comedy, Runway AI video, Hailuo AI funny, Minimax AI video funny, Flux AI video, "
+"Midjourney AI video, Luma AI video, Dream Machine AI, Pika AI video, Higgsfield AI video, HeyGen AI video, "
+"Nano Banana AI, Nano Banana video"
 )
 HASHTAGS_V7=[
+"ai","ии","искусственныйинтеллект","нейронка","нейронки","нейросеть","нейросети","genai","generativeai",
 "нейроюмор","ииюмор","аиюмор","нейровидео","иивидео","аивидео","нейроконтент","нейромем",
-"нейросетьюмор","нейросетьприкол","нейрослоп","нейросеть","нейросети","ииконтент",
+"нейросетьюмор","нейросетьприкол","нейрослоп","ииконтент","генерацияии","иигенерация",
 "aicomedy","aihumor","aifunny","funnyai","aivideo","aivideos","aigeneratedvideo","aigeneratedvideos",
 "aigenerated","aicontent","aicreator","aislop","aislopvideo","aimeme","aimemes","aiskit","aishorts",
 "aishortvideo","aiabsurd","aiviral","viralai","aistory","aipov","aigrandma","aigrandpa","aifamily",
 "aicouple","aibaby","aikids","aianimals","aianimal","aidog","aicat","aivillage","aiinterview",
-"veo3","veo3ai","veo3video","googleveo","klingai","klingvideo","seedance","seedanceai","sora","soraai",
-"runwayai","hailuoai","minimaxai"
+"omni","omniai","geminiomni","googleflow","googleflowai","flowai",
+"grok","grokai","grokvideo","xai","xaigrok",
+"gemini","geminiai","googleai","googlegemini","geminivideo",
+"chatgpt","openai","openaiart","gpt","gptimage","gptvideo",
+"veo","veo3","veo31","veo3ai","veo3video","googleveo","googleveo3",
+"klingai","klingvideo","klingaivideo","seedance","seedanceai","seedancevideo",
+"sora","soraai","soravideo","runwayai","runwayml","runwayvideo",
+"hailuoai","hailuo","minimaxai","minimaxvideo",
+"flux","fluxai","fluxvideo","midjourney","midjourneyai",
+"lumaai","lumadreammachine","dreammachine","pika","pikaai","pikaart",
+"higgsfield","higgsfieldai","heygen","heygenai","hedra","hedraai",
+"nanobanana","nanobananaai","recraftai","ideogramai"
 ]
 KEYWORD_TERMS=[
+"AI","ИИ","искусственный интеллект","нейросеть","generative AI","GenAI","AI video","AI generated video",
 "AI comedy","AI funny","AI generated video","AI slop","AI meme","AI skit","AI absurd","AI viral",
 "AI grandma","AI grandpa","AI family","AI couple","AI baby","AI animals","AI dog","AI cat","AI village",
-"AI interview","AI POV","Veo 3 funny","Veo 3 comedy","Kling AI funny","Seedance funny","Sora funny",
+"AI interview","AI POV","Omni AI","Gemini Omni","Google Flow Omni","Grok AI","Grok video","xAI Grok",
+"Gemini AI video","Google AI video","ChatGPT AI video","OpenAI video","GPT Image video",
+"Veo 3 funny","Veo 3 comedy","Veo 3.1","Google Veo","Google Flow AI",
+"Kling AI funny","Kling AI video","Seedance funny","Seedance AI","Sora funny","Sora AI video",
+"Runway AI","Hailuo AI","Minimax AI","Flux AI","Midjourney AI","Luma AI","Dream Machine AI","Pika AI",
+"Higgsfield AI","HeyGen AI","Nano Banana AI",
 "нейроюмор","ии юмор","нейровидео","нейросеть прикол","AI бабушка","AI дед","AI деревня","AI животные"
 ]
 
@@ -100,7 +123,7 @@ def _is_v7_source_set(job):
 def _reset_stale_job_to_v7(job,stage):
     job["profile"]=PROFILE_VERSION; job["phase"]="queued"; job["sources"]=_build_mass_sources(); job["candidates"]=[]; job["stats"]={}; job["result"]={}; job["error"]=""; job["current_ai_index"]=None; job["current_ai_post_url"]=""
     radar_job._persist(job)
-    add_radar_log("Старый незавершённый radar job автоматически сброшен: начинаю новый GLOBAL AI v7 discovery вместо продолжения старой узкой выборки.",stage=stage,details={"profile":PROFILE_VERSION,"sources":list(job["sources"].keys())})
+    add_radar_log("Старый незавершённый radar job автоматически сброшен: начинаю новый GLOBAL AI v8 brand discovery вместо продолжения старой выборки.",stage=stage,details={"profile":PROFILE_VERSION,"sources":list(job["sources"].keys())})
     return job
 
 def matches_v6(a):
@@ -186,4 +209,4 @@ def apply_growth_overrides():
     radar_quality.top_eligible=top_eligible_v6; radar_job.top_eligible=top_eligible_v6; radar_quality._legacy_save_post=_save_post_and_learn_ai_creator
     radar_job._prepare_candidates=_prepare_candidates_v6; radar_job._process_one_ai=_process_one_ai_v6; radar_job._finalize=_finalize_v6; radar_job.save_radar_snapshot=_snapshot_throttled
     gemini_service.forensic_system_prompt=forensic_system_prompt_v7; gemini_service.production_system_prompt=production_system_prompt_v7; gemini_service.audit_system_prompt=audit_system_prompt_v7
-    add_radar_log("GLOBAL AI v7 включён: международный AI discovery, нерусские ролики допустимы, production всегда локализует речь на русский, до 420 Gemini-проверок.",stage="startup",details={"profile":PROFILE_VERSION,"duration_min":RADAR_MIN_DURATION_SEC,"duration_max":RADAR_MAX_DURATION_SEC,"search_terms":SEARCH_QUERY.count(",")+1,"hashtags":len(HASHTAGS_V7),"keyword_terms":len(KEYWORD_TERMS),"search_limit_per_term":SEARCH_LIMIT,"hashtag_limit_per_tag":HASHTAG_LIMIT,"ai_analyze_limit":AI_ANALYZE_LIMIT,"keep_limit":KEEP_LIMIT,"target_matches":TARGET_MATCHES})
+    add_radar_log("GLOBAL AI v8 включён: международный AI discovery + крупнейшие AI-бренды/модели, нерусские ролики допустимы, production всегда локализует речь на русский, до 420 Gemini-проверок.",stage="startup",details={"profile":PROFILE_VERSION,"duration_min":RADAR_MIN_DURATION_SEC,"duration_max":RADAR_MAX_DURATION_SEC,"search_terms":SEARCH_QUERY.count(",")+1,"hashtags":len(HASHTAGS_V7),"keyword_terms":len(KEYWORD_TERMS),"search_limit_per_term":SEARCH_LIMIT,"hashtag_limit_per_tag":HASHTAG_LIMIT,"ai_analyze_limit":AI_ANALYZE_LIMIT,"keep_limit":KEEP_LIMIT,"target_matches":TARGET_MATCHES})
