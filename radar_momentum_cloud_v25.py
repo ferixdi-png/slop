@@ -12,9 +12,9 @@ from datetime import datetime, timezone
 import cloud_state
 import radar_omni_veo_veo3_v24 as v24
 import radar_quality
+import radar_strict_scope_v27 as v27
 from db import db_conn
 from radar_logs import add_radar_log
-from radar_strict_scope_v27 import apply_strict_scope_v27
 
 MOMENTUM_RECORD_KEY = "RADAR_MOMENTUM_V25"
 MAX_HISTORY_ROWS = 1500
@@ -125,7 +125,16 @@ def apply_momentum_cloud_v25():
 
     # V27 calls V26 first, then adds strict actual-hashtag provenance and the
     # 10-15s semantic-compression path while keeping all prior runtime hardening.
-    scope_info = apply_strict_scope_v27()
+    scope_info = dict(v27.apply_strict_scope_v27() or {})
+
+    # Flask after_request handlers execute as a stack. V24's older response guard
+    # can run after V27's guard, so keep the module-global mode authoritative too.
+    # Its closure reads v24.MODE_VERSION dynamically and will therefore expose V27
+    # instead of cosmetically downgrading only the status field back to V24.
+    v24.MODE_VERSION = v27.MODE_VERSION
+    v24.v22.MODE_VERSION = v27.MODE_VERSION
+    scope_info["mode"] = v27.MODE_VERSION
+
     restored = restore_momentum_checkpoint()
 
     _BASE_REFRESH = radar_quality.refresh_recent_scores_quality
