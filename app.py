@@ -43,7 +43,7 @@ BUDGET_INFO = apply_budget_overrides()
 from radar_highfreq_v12 import apply_highfreq_overrides
 BUDGET_INFO = apply_highfreq_overrides()
 
-# Final production target: funny spoken scenes first. AI is optional; ordinary
+# Final radar target: funny spoken scenes first. AI is optional; ordinary
 # real Reels with a reusable comedic dialogue are valid candidates.
 from radar_dialogue_v14 import (
     PROFILE_VERSION,
@@ -52,6 +52,14 @@ from radar_dialogue_v14 import (
 )
 BUDGET_INFO = apply_dialogue_first_overrides()
 top_eligible = top_eligible_dialogue
+
+# Final production target: generate only the underlying camera footage. Any
+# editorial photo/screenshot/PIP layer is reconstructed as a separate CapCut plan.
+from overlay_cleanplate_v15 import (
+    PRODUCTION_PROFILE_VERSION,
+    apply_overlay_cleanplate_overrides,
+)
+PRODUCTION_INFO = apply_overlay_cleanplate_overrides()
 
 tick_job = wrap_tick_job(tick_job)
 
@@ -84,6 +92,7 @@ def status():
         render_cpu_count=os.environ.get("RENDER_CPU_COUNT", ""),
         radar_runtime=RADAR_RUNTIME,
         radar_profile=PROFILE_VERSION,
+        production_profile=PRODUCTION_PROFILE_VERSION,
         radar_keep_limit=KEEP_LIMIT,
         radar_duration_min=RADAR_MIN_DURATION_SEC,
         radar_duration_max=RADAR_MAX_DURATION_SEC,
@@ -103,6 +112,7 @@ def radar_status():
     details.update(
         runtime=RADAR_RUNTIME,
         radar_profile=PROFILE_VERSION,
+        production_profile=PRODUCTION_PROFILE_VERSION,
         radar_keep_limit=KEEP_LIMIT,
         radar_duration_min=RADAR_MIN_DURATION_SEC,
         radar_duration_max=RADAR_MAX_DURATION_SEC,
@@ -195,6 +205,7 @@ def radar_sync():
                 details={
                     "runtime": RADAR_RUNTIME,
                     "radar_profile": PROFILE_VERSION,
+                    "production_profile": PRODUCTION_PROFILE_VERSION,
                     "radar_budget": budget_breakdown(),
                     "render_commit": str(os.environ.get("RENDER_GIT_COMMIT", ""))[:12],
                 },
@@ -277,12 +288,18 @@ def radar_analyze(item_id):
             add_radar_log(
                 f"Ультра-промпты для @{row.get('creator','')} готовы.",
                 stage="prompts",
-                details={"analysis_id": analysis_id, "qa": result.get("reconstruction_confidence")},
+                details={
+                    "analysis_id": analysis_id,
+                    "qa": result.get("reconstruction_confidence"),
+                    "production_profile": PRODUCTION_PROFILE_VERSION,
+                    "capcut_overlays": len((result.get("capcut_overlay_plan") or {}).get("steps") or []),
+                },
             )
             return jsonify(
                 id=analysis_id,
                 model=ANALYSIS_MODEL,
                 generation_target="gemini-omni-flash-preview",
+                production_profile=PRODUCTION_PROFILE_VERSION,
                 source_duration_sec=source_duration,
                 result=result,
             )
@@ -312,6 +329,7 @@ def health():
         radar_model=RADAR_MODEL,
         radar_runtime=RADAR_RUNTIME,
         radar_profile=PROFILE_VERSION,
+        production_profile=PRODUCTION_PROFILE_VERSION,
         radar_keep_limit=KEEP_LIMIT,
         radar_budget=BUDGET_INFO,
         server_pid=os.getpid(),
@@ -320,13 +338,14 @@ def health():
 
 
 add_radar_log(
-    f"Сервис запущен. Radar runtime: {RADAR_RUNTIME}. Profile: {PROFILE_VERSION}. Startup без внешних API-вызовов.",
+    f"Сервис запущен. Radar runtime: {RADAR_RUNTIME}. Profile: {PROFILE_VERSION}. Production: {PRODUCTION_PROFILE_VERSION}. Startup без внешних API-вызовов.",
     stage="startup",
     details={
         "python": sys.version.split()[0],
         "analysis_model": ANALYSIS_MODEL,
         "radar_model": RADAR_MODEL,
         "radar_profile": PROFILE_VERSION,
+        "production_profile": PRODUCTION_PROFILE_VERSION,
         "radar_keep_limit": KEEP_LIMIT,
         "radar_duration_min": RADAR_MIN_DURATION_SEC,
         "radar_duration_max": RADAR_MAX_DURATION_SEC,

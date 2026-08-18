@@ -1,9 +1,9 @@
-"""Dialogue-first discovery and classification profile.
+"""Dialogue-only discovery and classification profile.
 
 Primary target: short funny spoken scenes up to 10 seconds that can be recreated.
-The source may be AI-generated or ordinary real video. Non-Russian dialogue is
-allowed because the production pipeline localizes it to Russian while preserving
-speaker ownership, joke, order and timing.
+The source may be AI-generated or ordinary real video. AI origin is metadata only.
+Non-Russian dialogue is allowed because production localizes it to Russian while
+preserving speaker ownership, joke, order and timing.
 """
 
 from google.genai import types
@@ -20,9 +20,9 @@ from media_duration import measure_video_duration
 from models import RadarAssessment
 from radar_logs import add_radar_log
 
-PROFILE_VERSION = "dialogue_first_v14_core5"
+PROFILE_VERSION = "dialogue_only_v15_core5"
 TARGET_MATCHES = 60
-AI_ANALYZE_LIMIT = 420
+AI_ANALYZE_LIMIT = 420  # legacy internal variable name: this is Gemini candidate analysis, not an AI-origin gate
 KEEP_LIMIT = 60
 SEARCH_LIMIT = 20
 HASHTAG_LIMIT = 24
@@ -58,18 +58,20 @@ SEARCH_TERMS = [
     "муж жена прикол",
     "семейный прикол",
     "бабушка прикол",
+    "вопрос ответ прикол",
+    "короткая шутка диалог",
     "funny dialogue",
     "comedy dialogue",
     "comedy skit",
     "funny skit",
-    "short comedy",
-    "couple comedy",
-    "family comedy",
-    "AI funny",
-    "Grok",
-    "Veo",
-    "Omni",
-    "Kling",
+    "short comedy dialogue",
+    "couple comedy dialogue",
+    "family comedy dialogue",
+    "AI funny dialogue",
+    "Grok funny dialogue",
+    "Veo funny dialogue",
+    "Omni funny dialogue",
+    "Kling funny dialogue",
 ]
 
 KEYWORD_TERMS = [
@@ -77,8 +79,9 @@ KEYWORD_TERMS = [
     "прикол",
     "скетч",
     "смешной диалог",
-    "funny",
-    "comedy",
+    "вопрос ответ прикол",
+    "funny dialogue",
+    "comedy dialogue",
     "Grok",
     "Veo",
     "Omni",
@@ -87,25 +90,21 @@ KEYWORD_TERMS = [
 
 DIALOGUE_HINTS = (
     "диалог", "юмор", "прикол", "смеш", "скетч", "сценк", "комед",
-    "шутк", "муж", "жена", "семья", "бабуш", "дед", "funny",
-    "comedy", "skit", "dialogue", "dialog",
+    "шутк", "вопрос", "ответ", "муж", "жена", "семья", "бабуш", "дед",
+    "funny", "comedy", "skit", "dialogue", "dialog", "question", "answer",
 )
 
 
 def matches_dialogue_first(a: RadarAssessment) -> bool:
-    """Accept a reusable funny dialogue OR a strong reusable AI gag."""
+    """PASS only a reusable funny SPOKEN scene; AI origin never decides PASS."""
     if a.is_tutorial_or_review:
         return False
     dialogue_hit = bool(a.has_spoken_dialogue and a.dialogue_is_comedic)
-    ai_gag_hit = bool(
-        a.is_ai_video
-        and (a.is_comedy_scene or a.one_clear_joke_or_twist or a.simple_situation)
-    )
     repeatable = bool(
         a.reproducible_format
-        or (a.simple_situation and (dialogue_hit or a.one_clear_joke_or_twist))
+        or (a.simple_situation and (a.one_clear_joke_or_twist or a.is_comedy_scene))
     )
-    return bool(repeatable and (dialogue_hit or ai_gag_hit))
+    return bool(dialogue_hit and repeatable)
 
 
 def top_eligible_dialogue(row) -> bool:
@@ -115,20 +114,21 @@ def top_eligible_dialogue(row) -> bool:
 
 
 def normalize_dialogue_candidate(raw, source, creator_stats=None):
-    """Undo the old AI-only ranking bias and prioritize comedy/dialogue signals."""
+    """Remove old AI-only ranking bias and prioritize comedy/dialogue signals."""
     item = radar_normalize.normalize_reel(raw, source, creator_stats)
     if not item:
         return None
 
     score = float(item.get("viral_score_v2") or 0)
     if item.get("ai_discovery_hint"):
-        # radar_normalize added +12 for AI. Keep AI useful, but no longer dominant.
-        score = max(0.0, score - 12.0) + 5.0
+        # The legacy normalizer adds +12 for AI. AI remains useful for discovery
+        # but must not outrank an ordinary real Reel with a stronger dialogue.
+        score = max(0.0, score - 12.0) + 3.0
 
     blob = f"{item.get('caption','')} {item.get('search_term','')}".lower()
     dialogue_hint = any(token in blob for token in DIALOGUE_HINTS)
     if dialogue_hint:
-        score += 14.0
+        score += 16.0
     item["dialogue_discovery_hint"] = dialogue_hint
     item["viral_score_v2"] = round(min(100.0, score), 1)
     return item
@@ -167,27 +167,29 @@ def classify_dialogue_first(file_path, caption=""):
     if measured < RADAR_MIN_DURATION_SEC or measured > RADAR_MAX_DURATION_SEC:
         return _duration_reject(measured)
 
-    prompt = f"""Ты high-recall классификатор коротких Instagram Reels для радара повторяемых вирусных сценок.
+    prompt = f"""Ты high-recall классификатор коротких Instagram Reels для радара повторяемых смешных ДИАЛОГОВ.
 
-ГЛАВНАЯ ЦЕЛЬ: найти КОРОТКИЙ СМЕШНОЙ ДИАЛОГ или мини-сценку до 10 секунд, которую можно переснять/сгенерировать с другими персонажами. Видео НЕ обязано быть AI. Обычная реальная съёмка с хорошим юморным диалогом — отличный кандидат.
+ГЛАВНАЯ ЦЕЛЬ: найти КОРОТКУЮ СМЕШНУЮ СЦЕНКУ С РЕАЛЬНО СЛЫШИМОЙ РЕЧЬЮ до 10 секунд, которую можно переснять/сгенерировать с другими персонажами. Видео НЕ обязано быть AI. Обычная реальная съёмка с хорошим юморным диалогом — идеальный кандидат.
 
-ПРИОРИТЕТ PASS:
-1. В ролике есть слышимая речь/диалог/короткая реплика с шуткой, конфликтом, неожиданным ответом, бытовым приколом или панчлайном.
-2. Ситуация понятна без длинного контекста и помещается в 1–2 предложения.
-3. Механику можно повторить с другими персонажами, сохранив структуру диалога и панчлайн.
-4. Исходный язык ЛЮБОЙ. is_russian только фиксирует язык. Иностранную речь потом переведём на естественный русский с тем же таймингом и спикерами.
-5. AI-видео без диалога тоже может PASS как второй приоритет, если есть очень понятный визуальный гэг/абсурд/реакция и его легко повторить.
+AI-ПРОИСХОЖДЕНИЕ НЕ ЯВЛЯЕТСЯ КРИТЕРИЕМ PASS. Поле is_ai_video заполняй только как справочный факт. Никогда не ставь PASS только потому что ролик AI.
+
+ОБЯЗАТЕЛЬНО ДЛЯ PASS:
+1. В ролике есть слышимая речь: обмен репликами ИЛИ одна короткая реплика/панчлайн.
+2. Сама речь является юмористической механикой: смешной вопрос-ответ, бытовой конфликт, нелепая фраза, неожиданный ответ, короткий панчлайн, смешная реакция словами.
+3. Ситуация понятна без длинного контекста и помещается в 1–2 предложения.
+4. Механику можно повторить с другими персонажами, сохранив структуру диалога и панчлайн.
+5. Исходный язык ЛЮБОЙ. is_russian только фиксирует язык. Иностранную речь production-пайплайн адаптирует на естественный русский с тем же смыслом, очередностью спикеров и приблизительным окном липсинга.
 
 ПОЛЯ ДИАЛОГА:
-has_spoken_dialogue=true если в видео реально слышна человеческая/синтетическая речь, а не только музыка/звуки.
-dialogue_is_comedic=true если сама реплика/обмен репликами является юмористической механикой: смешной вопрос-ответ, конфликт, нелепая фраза, неожиданный ответ, бытовой прикол, короткий панчлайн.
+has_spoken_dialogue=true только если в видео реально слышна человеческая/синтетическая речь, а не только музыка/шумы.
+dialogue_is_comedic=true только если именно речь/реплика создаёт или завершает шутку.
 dialogue_summary — очень кратко смысл диалога без длинной транскрипции.
 detected_language — фактический язык исходной речи.
 
 НЕ СТАВЬ REJECT только потому что видео реальное, снято на телефон, не AI, не русское, примитивное, кринжовое или с одним персонажем.
-REJECT: tutorial/обзор/обучение; реклама без шутки; обычный информационный блог; музыка без диалога/действия; бессюжетный монтаж; диалог без юмористической механики; формат невозможно воспроизвести.
+REJECT: ролик без речи; немой визуальный AI-гэг; tutorial/обзор/обучение; реклама без шутки; обычный информационный блог; музыка без юморной речи; бессюжетный монтаж; разговор без юмористической механики; формат невозможно воспроизвести.
 
-is_talking_head=true только для обычного информационного монолога. Если человек говорит в камеру смешную реплику/панчлайн как часть сценки, это НЕ причина REJECT.
+is_talking_head=true только для обычного информационного монолога. Если человек говорит в камеру короткую смешную реплику/панчлайн как часть сценки, это НЕ причина REJECT.
 reproducible_format=true если можно повторить структуру с другими героями/локацией/русским переводом.
 Ответ строго по JSON-схеме и кратко.
 Caption вторичен: {str(caption or '')[:1200]}""".strip()
@@ -247,12 +249,12 @@ def apply_dialogue_first_overrides():
 
     info = budget._assert_budget()
     add_radar_log(
-        "DIALOGUE-FIRST v14: приоритет смешным диалогам/сценкам до 10 сек; AI не обязателен; иностранная речь допустима и локализуется на русский; hard budget <$5 сохранён.",
+        "DIALOGUE-ONLY v15: PASS решает смешная слышимая речь/диалог до 10 сек; AI только metadata; иностранная речь локализуется на русский; hard budget <$5 сохранён.",
         stage="startup",
         details={
             "profile": PROFILE_VERSION,
             "target_matches": TARGET_MATCHES,
-            "ai_analyze_limit": AI_ANALYZE_LIMIT,
+            "gemini_analyze_limit": AI_ANALYZE_LIMIT,
             "keep_limit": KEEP_LIMIT,
             "hashtags": list(HASHTAGS),
             "search_terms": list(SEARCH_TERMS),
