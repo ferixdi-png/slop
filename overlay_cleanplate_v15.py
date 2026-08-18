@@ -1,16 +1,11 @@
-"""Clean-plate generation + manual CapCut overlay separation.
-
-Editorial overlays belong to post-production, not to image/video generation.
-The AI package recreates the underlying camera-captured scene only, while a
-separate CapCut plan preserves overlay timing, placement and compositing.
-"""
+"""Clean-plate generation + manual CapCut overlay separation + strict Frame 0/duration locks."""
 
 from pydantic import BaseModel, Field
 
 import gemini_service
 from radar_logs import add_radar_log
 
-PRODUCTION_PROFILE_VERSION = "clean_plate_capcut_ru_v15"
+PRODUCTION_PROFILE_VERSION = "frame0_cleanplate_capcut_ru_v15"
 
 
 class ForensicEditorialOverlay(BaseModel):
@@ -71,8 +66,10 @@ class ProductionPackageV15(gemini_service.ProductionPackage):
 
 
 class ReconstructionAuditV15(gemini_service.ReconstructionAudit):
-    overlay_separation_ok: bool = True
-    capcut_overlay_plan_ok: bool = True
+    overlay_separation_ok: bool
+    capcut_overlay_plan_ok: bool
+    frame_zero_literal_match_ok: bool
+    explicit_duration_instruction_ok: bool
 
 
 _ORIGINAL_FORENSIC_PROMPT = gemini_service.forensic_system_prompt
@@ -84,100 +81,61 @@ _APPLIED = False
 
 
 FORENSIC_OVERLAY_RULES = r"""
+FRAME ZERO FORENSICS — ABSOLUTE
+Treat timestamp 0.000 seconds as the authoritative visual source for Block 1. Record the exact camera position, framing, perspective, subject positions, poses, hands, gaze, mouth state, object states, lighting and visible background from that first source frame. Never substitute a later, cleaner or more aesthetically useful frame.
+
 EDITORIAL OVERLAY FORENSICS — ABSOLUTE SEPARATION
-Detect every NON-DIEGETIC visual layer that was composited on top of the camera footage after capture. Examples include a pasted photo, screenshot, meme image, product creative, picture-in-picture image/video, floating UI card, subtitle card, sticker, logo, social-media graphic, screen-space caption or any other editorial layer that is attached to the final frame rather than physically present in the filmed scene.
-
-Do NOT confuse an editorial overlay with an in-world physical object. A real phone held by a person, a television in the room, a framed photograph on a wall, a paper print, a physical sign or a monitor that exists in perspective inside the scene is NOT an editorial overlay and remains part of the generated base scene.
-
-For each actual editorial overlay, populate editorial_overlays with:
-layer_id
-overlay_kind
-precise start_sec and end_sec
-what the asset visibly contains
-screen-space bounding box in percentages
-anchor/position
-crop/aspect ratio
-opacity/blend
-border/corner radius/shadow
-entry animation
-exit animation
-movement/tracking
-what underlying scene area it occludes
-how the editor should source/reuse the asset
-
-If an overlay is present on Frame Zero, record it in editorial_overlays but do NOT treat it as a physical Frame Zero object. The underlying camera-captured scene must still be described as far as visible evidence allows.
-If there are no editorial overlays, return an empty editorial_overlays list and explicitly note that the source is clean footage.
+Detect every NON-DIEGETIC layer composited over the camera footage after capture: pasted photo, screenshot, meme image, product creative, picture-in-picture image/video, floating UI card, subtitle/caption card, sticker, logo, social graphic or other screen-space layer.
+Do NOT confuse these with in-world physical objects. A real phone, TV, monitor, framed photograph, paper print or physical sign that exists in 3D perspective remains part of the base scene.
+For every actual editorial overlay, populate editorial_overlays with exact source-relative timing, visible asset content, screen box percentages, anchor/position, crop/aspect, opacity/blend, border/radius/shadow, animation in/out, motion/tracking, occlusion and reuse notes.
+If an overlay covers part of Frame Zero, record the overlay separately and reconstruct only the underlying base scene from surrounding evidence. The overlay itself is never a physical Frame Zero object.
 """.strip()
 
 
 PRODUCTION_OVERLAY_RULES = r"""
-CLEAN-PLATE GENERATION + CAPCUT OVERLAY WORKFLOW — ABSOLUTE PRIORITY
-The image/video generator must create ONLY the underlying camera-captured base footage. Every item listed in forensic.editorial_overlays is POST-PRODUCTION and must be EXCLUDED from Block 1 Frame 0 and Block 3 Video Prompt.
+FRAME 0 PHOTO PROMPT — ABSOLUTE LITERAL LOCK
+Block 1 must recreate SOURCE TIMESTAMP 0.000s, not a representative frame and not a later frame. Match forensic.frame_zero as literally as possible: camera height and position, framing, crop, subject scale, normalized screen positions, body pose, hands, head angle, gaze, expression, mouth state, object positions, background layout, light direction and exposure. Do not improve the pose, recompose the scene, center subjects, change camera distance or invent a more attractive starting image.
+The ONLY permitted difference from the visible source Frame 0 is removal of NON-DIEGETIC editorial overlays listed in forensic.editorial_overlays. Under those overlays generate the natural clean base scene. Real in-world screens/photos/signs remain.
 
-NEVER ask the image/video model to generate or bake in:
-pasted photos
-screenshots
-meme images
-product creatives
-picture-in-picture cards
-floating UI panels
-captions/subtitle graphics
-stickers
-logos
-social-media interface graphics
-or any other editorial overlay identified by the forensic map
+EXACT VIDEO DURATION — ABSOLUTE LOCK
+Block 3 must explicitly state the exact source MP4 duration in seconds. The JSON fields duration, exact_duration_sec and duration_lock must all agree. The user must be able to see immediately what duration to set in the video generator. Never round to a generic 5/8/10 seconds when the measured source length differs.
 
-This exclusion applies even when the overlay is visible at the first frame or covers a large part of the source. Generate a clean plate underneath it. Reconstruct the obscured base scene conservatively from surrounding evidence and continuity. Do not invent a new prop where the overlay used to be.
-
-If a person points at, looks toward or reacts to an overlay, PRESERVE that physical action in the base video, but describe it as pointing/looking toward the reserved screen-space area. The overlay itself is added later in CapCut.
-
-Do NOT remove real in-world objects such as a physical TV, real phone screen, framed photo, paper, sign or monitor that exists inside the photographed 3D scene. Only screen-space editorial/composited layers are excluded.
+CLEAN-PLATE GENERATION + CAPCUT OVERLAY WORKFLOW — ABSOLUTE
+Generate ONLY the underlying camera-captured footage. Every forensic.editorial_overlays item is POST-PRODUCTION and must be excluded from Block 1 and Block 3. Never bake pasted photos, screenshots, meme images, product creatives, PIP cards, floating UI, subtitle graphics, stickers, logos or social-media graphics into the generated image/video.
+If a person points at, looks toward or reacts to an overlay, preserve that physical action toward the reserved screen-space area; add the overlay later in CapCut.
 
 CAPCUT OVERLAY PLAN
-Always fill capcut_overlay_plan.
-If forensic.editorial_overlays is empty, set has_editorial_overlays=false and steps=[] exactly.
-If overlays exist, set has_editorial_overlays=true and create one CapCutOverlayStep per forensic overlay. Preserve source timing and screen geometry as closely as the evidence supports.
-For each step specify:
-asset_to_use — use the same user-supplied/licensed source asset when available, otherwise a manually supplied equivalent; do not ask the video model to recreate it
-asset_preparation — crop/trim/mask needed before placement
-start_sec and end_sec
-screen_box_percent
-anchor_and_position
-crop_and_aspect_ratio
-opacity_and_blend
-border_corner_radius_shadow
-animation_in
-animation_out
-motion_or_tracking
-layering_and_occlusion
-capcut_action — a concise practical editing instruction
-
-The generated PHOTO PROMPT and VIDEO PROMPT must remain clean-plate prompts and must make sense even before overlays are added.
+Always fill capcut_overlay_plan. If no editorial overlays exist, has_editorial_overlays=false and steps=[]. If overlays exist, create one step per overlay preserving timing, geometry, crop, opacity, border/shadow, entry/exit, tracking and layering. asset_to_use should instruct the editor to reuse the same licensed/user-supplied asset when available rather than regenerate it inside the video model.
 """.strip()
 
 
 AUDIT_OVERLAY_RULES = r"""
-OVERLAY QA — REQUIRED
-Treat absence of editorial overlays from the generated base footage as CORRECT, not as a Frame Zero mismatch.
-overlay_separation_ok=true only when every forensic editorial overlay is absent from Block 1 and Block 3 as a rendered scene element, while physical in-world screens/photos/signs remain preserved.
-capcut_overlay_plan_ok=true only when the CapCut plan contains the same editorial overlay layers with correct source-relative timing, approximate screen geometry, crop/compositing behavior and entry/exit logic.
-If a source overlay is baked into the PHOTO/VIDEO prompt, set overlay_separation_ok=false.
-If an overlay exists in forensic data but is missing or materially mis-timed/mis-positioned in the CapCut plan, set capcut_overlay_plan_ok=false.
-If no editorial overlays exist, both fields should be true when the plan clearly says clean footage and has no steps.
+FRAME ZERO + DURATION + OVERLAY QA — REQUIRED
+frame_zero_literal_match_ok=true only when Block 1 describes the literal source frame at 0.000s with the same composition and subject/object states, except that editorial overlays are intentionally absent as clean-plate post-production layers.
+explicit_duration_instruction_ok=true only when Block 3 visibly and unambiguously tells the user the exact source duration to set and duration/exact_duration_sec/duration_lock agree.
+overlay_separation_ok=true only when every editorial overlay is absent from Block 1/3 as a rendered scene element while physical in-world screens/photos/signs remain preserved.
+capcut_overlay_plan_ok=true only when every forensic overlay has a corresponding CapCut step with correct source-relative timing and approximate screen geometry/compositing behavior.
+Fail QA if Block 1 uses a later frame, changes composition for aesthetics, bakes an editorial overlay into the generated scene, or Block 3 omits/changes the exact source duration.
 """.strip()
 
+
+FRAME_ZERO_PROMPT_SUFFIX = r"""
+
+ABSOLUTE FRAME ZERO LOCK:
+This PHOTO PROMPT represents source timestamp 0.000 seconds exactly. Preserve the original first-frame camera position, framing, crop, perspective, subject scale, normalized screen positions, pose, hands, head angle, gaze, expression, mouth state, physical objects, background geometry, lighting and exposure. Do not substitute any later frame and do not improve or recompose the shot.
+""".rstrip()
 
 CLEAN_PLATE_PROMPT_SUFFIX = r"""
 
 CLEAN PLATE / POST-PRODUCTION SEPARATION — ABSOLUTE:
-Generate only the underlying real camera scene. Do not render any editorial photo overlay, screenshot, pasted creative, picture-in-picture card, caption graphic, sticker, logo, UI panel or other screen-space post-production layer from the source. Leave those regions as the natural unobstructed scene because overlays will be added manually in CapCut afterward. Preserve physical in-world screens, phones, framed photos, paper and signs when they genuinely exist inside the 3D scene.
+Generate only the underlying real camera scene. Do not render editorial photo overlays, screenshots, pasted creatives, PIP cards, caption graphics, stickers, logos, UI panels or other screen-space post-production layers. Leave those regions as the natural unobstructed scene because the overlays will be added manually in CapCut. Preserve physical in-world screens, phones, framed photos, paper and signs when they genuinely exist inside the 3D scene.
 """.rstrip()
-
 
 CLEAN_PLATE_HARD_RULE = (
     "Generate CLEAN BASE FOOTAGE ONLY: never bake forensic editorial overlays into the image or video; "
     "all pasted photos screenshots PIP cards captions stickers logos and UI layers are added later in CapCut"
 )
+FRAME_ZERO_HARD_RULE = "Frame 0 must be the literal source image at timestamp 0.000s with no recomposition or later-frame substitution"
 
 
 def forensic_system_prompt_v15(owned, expected_duration=None):
@@ -185,27 +143,49 @@ def forensic_system_prompt_v15(owned, expected_duration=None):
 
 
 def production_system_prompt_v15(owned, expected_duration=None):
-    return _ORIGINAL_PRODUCTION_PROMPT(owned, expected_duration) + "\n\n" + PRODUCTION_OVERLAY_RULES
+    prompt = _ORIGINAL_PRODUCTION_PROMPT(owned, expected_duration) + "\n\n" + PRODUCTION_OVERLAY_RULES
+    if expected_duration is not None:
+        prompt += f"\n\nMANDATORY DURATION VALUE FOR THIS PACKAGE: EXACT DURATION = {float(expected_duration):.2f} seconds. Put this exact number explicitly into Block 3."
+    return prompt
 
 
 def audit_system_prompt_v15(expected_duration=None):
-    return _ORIGINAL_AUDIT_PROMPT(expected_duration) + "\n\n" + AUDIT_OVERLAY_RULES
+    prompt = _ORIGINAL_AUDIT_PROMPT(expected_duration) + "\n\n" + AUDIT_OVERLAY_RULES
+    if expected_duration is not None:
+        prompt += f"\nExpected exact source duration for audit: {float(expected_duration):.2f} seconds."
+    return prompt
 
 
 def normalize_package_v15(package, expected_duration=None, audit_score=None):
     package = _ORIGINAL_NORMALIZE(package, expected_duration, audit_score)
-    if CLEAN_PLATE_PROMPT_SUFFIX.strip() not in (package.block_1_frame0_prompt or ""):
-        package.block_1_frame0_prompt = (package.block_1_frame0_prompt or "").rstrip() + CLEAN_PLATE_PROMPT_SUFFIX
+
+    suffix = FRAME_ZERO_PROMPT_SUFFIX + CLEAN_PLATE_PROMPT_SUFFIX
+    if "ABSOLUTE FRAME ZERO LOCK:" not in (package.block_1_frame0_prompt or ""):
+        package.block_1_frame0_prompt = (package.block_1_frame0_prompt or "").rstrip() + suffix
+
+    duration = float(expected_duration or package.source_duration_sec or package.block_3_video.exact_duration_sec or 0)
+    if duration > 0:
+        duration = round(duration, 2)
+        package.source_duration_sec = duration
+        package.block_3_video.exact_duration_sec = duration
+        package.block_3_video.duration = f"EXACT DURATION: {duration:.2f} seconds"
+        package.block_3_video.duration_lock = (
+            f"SET THE VIDEO GENERATOR DURATION TO EXACTLY {duration:.2f} SECONDS. "
+            "Do not shorten, extend, round to a preset length, add freeze frames, or change dialogue timing."
+        )
 
     rules = list(package.block_3_video.hard_rules or [])
-    if CLEAN_PLATE_HARD_RULE not in rules:
-        rules.append(CLEAN_PLATE_HARD_RULE)
+    for rule in (FRAME_ZERO_HARD_RULE, CLEAN_PLATE_HARD_RULE):
+        if rule not in rules:
+            rules.append(rule)
+    if duration > 0:
+        duration_rule = f"EXACT OUTPUT DURATION IS {duration:.2f} SECONDS — this exact value must be selected in the video generator"
+        if duration_rule not in rules:
+            rules.append(duration_rule)
     package.block_3_video.hard_rules = rules
 
     object_rules = list(package.block_3_video.object_lock or [])
-    clean_object_rule = (
-        "Editorial screen-space overlays are not scene objects and must not be rendered; preserve only physical in-world objects"
-    )
+    clean_object_rule = "Editorial screen-space overlays are not scene objects and must not be rendered; preserve only physical in-world objects"
     if clean_object_rule not in object_rules:
         object_rules.append(clean_object_rule)
     package.block_3_video.object_lock = object_rules
@@ -221,8 +201,10 @@ def normalize_package_v15(package, expected_duration=None, audit_score=None):
 def audit_passes_v15(audit):
     return bool(
         _ORIGINAL_AUDIT_PASSES(audit)
-        and getattr(audit, "overlay_separation_ok", True)
-        and getattr(audit, "capcut_overlay_plan_ok", True)
+        and getattr(audit, "frame_zero_literal_match_ok", False)
+        and getattr(audit, "explicit_duration_instruction_ok", False)
+        and getattr(audit, "overlay_separation_ok", False)
+        and getattr(audit, "capcut_overlay_plan_ok", False)
     )
 
 
@@ -240,14 +222,12 @@ def apply_overlay_cleanplate_overrides():
     gemini_service.normalize_package = normalize_package_v15
     gemini_service.audit_passes = audit_passes_v15
 
-    # Russian publication localization must capture the already-patched clean-plate
-    # production/audit functions, so import and apply it only after the overlay layer.
     from russian_publish_v15 import apply_russian_publication_overrides
     apply_russian_publication_overrides()
 
     _APPLIED = True
     add_radar_log(
-        "Production v15: clean-plate + CapCut overlay plan + Russian publication localization включены.",
+        "Production v15: literal Frame 0 + exact duration + clean plate + CapCut overlays + Russian publication включены.",
         stage="startup",
         details={"production_profile": PRODUCTION_PROFILE_VERSION},
     )
