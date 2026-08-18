@@ -1,0 +1,72 @@
+name: Source Aggregation V20 Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'radar_source_aggregation_v20.py'
+      - 'radar_edge_v19.py'
+      - 'radar_growth_v6.py'
+      - 'radar_request_job.py'
+      - '.github/workflows/source-aggregation-v20-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'radar_source_aggregation_v20.py'
+      - 'radar_edge_v19.py'
+      - 'radar_growth_v6.py'
+      - 'radar_request_job.py'
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Verify current and future source IDs cannot disappear
+        run: |
+          python - <<'PY'
+          from radar_source_aggregation_v20 import flatten_source_results, _source_kind
+
+          # Exact shape of the production regression: successful datasets were
+          # loaded under newer IDs but the legacy preparer only read old names.
+          datasets = {
+              'popular_ai': [{} for _ in range(238)],
+              'ai_hashtags': [{} for _ in range(480)],
+              'ai_keywords': [{} for _ in range(134)],
+          }
+          raw, creators, counts, non_mapping = flatten_source_results(datasets)
+          assert len(raw) == 852, (len(raw), counts)
+          assert sum(counts.values()) == 852
+          assert creators == []
+          assert non_mapping == 0
+
+          # Legacy IDs remain compatible.
+          legacy = {
+              'popular': [{}],
+              'hashtags': [{}],
+              'creators': [{}],
+          }
+          raw, creators, counts, non_mapping = flatten_source_results(legacy)
+          assert len(raw) == 3
+          assert len(creators) == 1
+          assert non_mapping == 0
+
+          # Future source IDs are included instead of silently ignored.
+          future = {'experimental_dialogue_feed': [{'url': 'x'}]}
+          raw, creators, counts, non_mapping = flatten_source_results(future)
+          assert len(raw) == 1
+          assert counts['experimental_dialogue_feed'] == 1
+          assert _source_kind('known_ai_creators') == 'creator'
+          assert _source_kind('popular_ai') == 'popular'
+          assert _source_kind('ai_hashtags') == 'hashtag'
+          assert _source_kind('ai_keywords') == 'keyword'
+
+          print('source aggregation v20 regression smoke: OK')
+          PY
+      - name: Compile critical runtime modules
+        run: |
+          python -m py_compile radar_source_aggregation_v20.py radar_edge_v19.py radar_hardening_v19.py radar_growth_v6.py radar_request_job.py app.py
