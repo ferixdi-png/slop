@@ -6,11 +6,13 @@ allowed because the production pipeline localizes it to Russian while preserving
 speaker ownership, joke, order and timing.
 """
 
+from datetime import datetime, timezone
 from google.genai import types
 
 import gemini_service
 import radar_budget_v10 as budget
 import radar_growth_v6 as growth
+import radar_normalize
 import radar_quality
 import radar_request_job as radar_job
 import radar_service
@@ -27,8 +29,6 @@ SEARCH_LIMIT = 20
 HASHTAG_LIMIT = 24
 KEYWORD_RESULTS_LIMIT = 12
 
-# Keep the large AI feeds, but spend part of the same capped discovery budget on
-# the biggest humour/skit feeds so ordinary viral dialogue scenes can enter.
 HASHTAGS = [
     "ai",
     "ии",
@@ -50,8 +50,6 @@ HASHTAGS = [
     "skit",
 ]
 
-# Search is intentionally dialogue-centric. These queries catch both AI and
-# ordinary real comedy clips; Gemini decides whether the mechanism is reusable.
 SEARCH_TERMS = [
     "смешной диалог",
     "юмор диалог",
@@ -88,6 +86,12 @@ KEYWORD_TERMS = [
     "Kling",
 ]
 
+DIALOGUE_HINTS = (
+    "диалог", "юмор", "прикол", "смеш", "скетч", "сценк", "комед",
+    "шутк", "муж", "жена", "семья", "бабуш", "дед", "funny",
+    "comedy", "skit", "dialogue", "dialog",
+)
+
 
 def matches_dialogue_first(a: RadarAssessment) -> bool:
     """Accept a reusable funny dialogue OR a strong reusable AI gag."""
@@ -103,9 +107,6 @@ def matches_dialogue_first(a: RadarAssessment) -> bool:
         a.reproducible_format
         or (a.simple_situation and (dialogue_hit or a.one_clear_joke_or_twist))
     )
-
-    # A real person speaking to camera is allowed when the content itself is a
-    # joke/scene. Informational talking heads are already rejected as tutorial/review.
     return bool(repeatable and (dialogue_hit or ai_gag_hit))
 
 
@@ -113,6 +114,49 @@ def top_eligible_dialogue(row) -> bool:
     """After Gemini PASS, metrics rank the item but no longer hide it."""
     duration = float(row.get("duration_sec") or 0)
     return RADAR_MIN_DURATION_SEC <= duration <= RADAR_MAX_DURATION_SEC
+
+
+def normalize_dialogue_candidate(raw, source, creator_stats=None):
+    """Undo the old AI-only ranking bias and prioritize comedy/dialogue signals."""
+    item = radar_normalize.normalize_reel(raw, source, creator_stats)
+    if not item:
+        return None
+
+    score = float(item.get("viral_score_v2") or 0)
+    if item.get("ai_discovery_hint"):
+        # radar_normalize added +12 for AI. Keep AI useful, but no longer dominant.
+        score = max(0.0, score - 12.0) + 5.0
+
+    blob = f"{item.get('caption','')} {item.get('search_term','')}".lower()
+    dialogue_hint = any(token in blob for token in DIALOGUE_HINTS)
+    if dialogue_hint:
+        score += 14.0
+    item["dialogue_discovery_hint"] = dialogue_hint
+    item["viral_score_v2"] = round(min(100.0, score), 1)
+    return item
+
+
+def _save_post_and_learn_dialogue_creator(conn, item, assessment):
+    """Preserve old AI learning and also remember creators of matched dialogue scenes."""
+    growth._save_post_and_learn_ai_creator(conn, item, assessment)
+    if not assessment or not matches_dialogue_first(assessment) or not item.get("creator"):
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO tracked_creators(
+            username,first_seen_at,last_seen_at,best_views_per_hour,matching_reels,
+            followers_count,usual_views,sample_size
+        ) VALUES(?,?,?,?,1,?,?,0)
+        ON CONFLICT(username) DO UPDATE SET
+            last_seen_at=excluded.last_seen_at,
+            best_views_per_hour=MAX(tracked_creators.best_views_per_hour,excluded.best_views_per_hour),
+            matching_reels=tracked_creators.matching_reels+1,
+            followers_count=CASE WHEN excluded.followers_count>0 THEN excluded.followers_count ELSE tracked_creators.followers_count END""",
+        (
+            item.get("creator", ""), now, now, float(item.get("views_per_hour") or 0),
+            int(item.get("followers_count") or 0), float(item.get("creator_usual_views") or 0),
+        ),
+    )
 
 
 def _duration_reject(measured: float) -> RadarAssessment:
@@ -193,7 +237,6 @@ Caption вторичен: {str(caption or '')[:1200]}""".strip()
 
 
 def apply_dialogue_first_overrides():
-    # Budget guard remains authoritative. We only redistribute the same capped spend.
     budget.PROFILE_VERSION = PROFILE_VERSION
     budget.SEARCH_LIMIT = SEARCH_LIMIT
     budget.HASHTAG_LIMIT = HASHTAG_LIMIT
@@ -204,7 +247,6 @@ def apply_dialogue_first_overrides():
     budget.HASHTAGS = list(HASHTAGS)
     budget.KEYWORD_TERMS = list(KEYWORD_TERMS)
 
-    # Source builder lives in growth and reads these globals dynamically.
     growth.PROFILE_VERSION = PROFILE_VERSION
     growth.TARGET_MATCHES = TARGET_MATCHES
     growth.AI_ANALYZE_LIMIT = AI_ANALYZE_LIMIT
@@ -221,11 +263,14 @@ def apply_dialogue_first_overrides():
     radar_job.RADAR_KEEP_LIMIT = KEEP_LIMIT
     radar_service.RADAR_KEEP_LIMIT = KEEP_LIMIT
 
+    # The durable pipeline reads these symbols directly from radar_request_job.
+    radar_job.normalize_reel = normalize_dialogue_candidate
     gemini_service.classify_radar_video = classify_dialogue_first
     radar_job.matches = matches_dialogue_first
     radar_service.matches = matches_dialogue_first
     radar_quality.top_eligible = top_eligible_dialogue
     radar_job.top_eligible = top_eligible_dialogue
+    radar_quality._legacy_save_post = _save_post_and_learn_dialogue_creator
 
     info = budget._assert_budget()
     add_radar_log(
