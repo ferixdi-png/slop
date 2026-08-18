@@ -67,6 +67,10 @@ PRODUCTION_INFO = apply_overlay_cleanplate_overrides()
 from radar_resilient_v17 import apply_resilient_v17_overrides
 BUDGET_INFO = apply_resilient_v17_overrides()
 
+# Explicit user hard-stop. This shares the request-state-machine tick lock, marks
+# the durable job terminal and best-effort aborts any still-running Apify runs.
+from radar_cancel_v18 import cancel_active_job
+
 tick_job = wrap_tick_job(tick_job)
 
 
@@ -225,6 +229,20 @@ def radar_sync():
 def radar_tick():
     payload, status_code = tick_job()
     return jsonify(payload), status_code
+
+
+@app.post("/api/radar/stop")
+def radar_stop():
+    try:
+        payload, status_code = cancel_active_job()
+        return jsonify(payload), status_code
+    except Exception as exc:
+        add_radar_log(
+            f"FORCE STOP ERROR: {exc}",
+            level="ERROR",
+            stage="stop",
+        )
+        return jsonify(error=f"Не удалось остановить поиск: {exc}"), 500
 
 
 def save_analysis(title, source_url, views, viral_score, result):
