@@ -71,11 +71,15 @@ BUDGET_INFO = apply_resilient_v17_overrides()
 # endpoint never waits minutes behind an in-flight Gemini/Apify request.
 from radar_cancel_v18 import cancel_active_job
 
-# Preserve the monthly-quota budget wrapper first, then put the final v19 safety
-# layer around that already-stable request-driven state machine.
+# Preserve the monthly-quota budget wrapper first, then put the v19 safety layer
+# around the stable request-driven state machine.
 tick_job = wrap_tick_job(tick_job)
 from radar_hardening_v19 import apply_hardening_v19
 BUDGET_INFO = apply_hardening_v19()
+
+# Final race/cache guards. These do not change search semantics or spend.
+from radar_edge_v19 import EDGE_PROFILE, apply_edge_guards
+EDGE_INFO = apply_edge_guards()
 
 
 @app.get("/")
@@ -90,8 +94,10 @@ def status():
     with db_conn() as conn:
         radar = conn.execute(
             """SELECT COUNT(*) FROM radar_posts
-               WHERE ai_match=1 AND duration_sec>=? AND duration_sec<=?""",
-            (RADAR_MIN_DURATION_SEC, RADAR_MAX_DURATION_SEC),
+               WHERE ai_match=1
+                 AND COALESCE(screening_profile,'')=?
+                 AND duration_sec>=? AND duration_sec<=?""",
+            (PROFILE_VERSION, RADAR_MIN_DURATION_SEC, RADAR_MAX_DURATION_SEC),
         ).fetchone()[0]
         creators = conn.execute("SELECT COUNT(*) FROM tracked_creators").fetchone()[0]
     return jsonify(
@@ -106,6 +112,7 @@ def status():
         render_cpu_count=os.environ.get("RENDER_CPU_COUNT", ""),
         radar_runtime=RADAR_RUNTIME,
         radar_profile=PROFILE_VERSION,
+        edge_profile=EDGE_PROFILE,
         production_profile=PRODUCTION_PROFILE_VERSION,
         radar_keep_limit=KEEP_LIMIT,
         radar_duration_min=RADAR_MIN_DURATION_SEC,
@@ -121,6 +128,7 @@ def diagnostics():
     if isinstance(payload, dict):
         payload["cloud_state"] = cloud_state_diagnostics()
         payload["radar_profile"] = PROFILE_VERSION
+        payload["edge_profile"] = EDGE_PROFILE
     return jsonify(payload)
 
 
@@ -131,6 +139,7 @@ def radar_status():
     details.update(
         runtime=RADAR_RUNTIME,
         radar_profile=PROFILE_VERSION,
+        edge_profile=EDGE_PROFILE,
         production_profile=PRODUCTION_PROFILE_VERSION,
         radar_keep_limit=KEEP_LIMIT,
         radar_duration_min=RADAR_MIN_DURATION_SEC,
@@ -158,10 +167,11 @@ def radar():
             """SELECT * FROM radar_posts
                WHERE datetime(published_at)>=datetime('now','-7 days')
                  AND ai_match=1
+                 AND COALESCE(screening_profile,'')=?
                  AND duration_sec>=? AND duration_sec<=?
                ORDER BY viral_score_v2 DESC, views_per_hour DESC, views DESC
                LIMIT 300""",
-            (RADAR_MIN_DURATION_SEC, RADAR_MAX_DURATION_SEC),
+            (PROFILE_VERSION, RADAR_MIN_DURATION_SEC, RADAR_MAX_DURATION_SEC),
         ).fetchall()
 
     out = []
@@ -212,7 +222,6 @@ def radar_meta():
         data["report"] = json.loads(raw_report)
         data["report_parse_error"] = False
     except Exception as exc:
-        # A single corrupted old meta row must never break the entire dashboard.
         data["report"] = {}
         data["report_parse_error"] = True
         data["warning"] = f"Старая meta-запись повреждена: {str(exc)[:180]}"
@@ -301,8 +310,12 @@ def radar_analyze(item_id):
             return jsonify(error="Ролик не найден"), 404
 
         row = dict(row)
-        if not bool(row.get("ai_match")) or not top_eligible(row):
-            return jsonify(error="Этот ролик не прошёл финальный фильтр короткой повторяемой сценки."), 400
+        if (
+            not bool(row.get("ai_match"))
+            or str(row.get("screening_profile") or "") != PROFILE_VERSION
+            or not top_eligible(row)
+        ):
+            return jsonify(error="Этот ролик не прошёл текущий финальный фильтр короткой повторяемой сценки."), 400
 
         tmp = None
         add_radar_log(
@@ -379,6 +392,7 @@ def health():
         radar_model=RADAR_MODEL,
         radar_runtime=RADAR_RUNTIME,
         radar_profile=PROFILE_VERSION,
+        edge_profile=EDGE_PROFILE,
         production_profile=PRODUCTION_PROFILE_VERSION,
         radar_keep_limit=KEEP_LIMIT,
         radar_budget=BUDGET_INFO,
@@ -389,13 +403,14 @@ def health():
 
 
 add_radar_log(
-    f"Сервис запущен. Radar runtime: {RADAR_RUNTIME}. Profile: {PROFILE_VERSION}. Production: {PRODUCTION_PROFILE_VERSION}. Startup без внешних API-вызовов.",
+    f"Сервис запущен. Radar runtime: {RADAR_RUNTIME}. Profile: {PROFILE_VERSION}. Edge: {EDGE_PROFILE}. Production: {PRODUCTION_PROFILE_VERSION}. Startup без внешних API-вызовов.",
     stage="startup",
     details={
         "python": sys.version.split()[0],
         "analysis_model": ANALYSIS_MODEL,
         "radar_model": RADAR_MODEL,
         "radar_profile": PROFILE_VERSION,
+        "edge_profile": EDGE_PROFILE,
         "production_profile": PRODUCTION_PROFILE_VERSION,
         "radar_keep_limit": KEEP_LIMIT,
         "radar_duration_min": RADAR_MIN_DURATION_SEC,
