@@ -1,0 +1,99 @@
+name: V27 Single Runtime Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'app.py'
+      - 'radar_runtime_v27.py'
+      - 'radar_logs.py'
+      - 'radar_strict_scope_v27.py'
+      - 'radar_edge_v19.py'
+      - '.github/workflows/v27-single-runtime-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'app.py'
+      - 'radar_runtime_v27.py'
+      - 'radar_logs.py'
+      - 'radar_strict_scope_v27.py'
+      - 'radar_edge_v19.py'
+      - '.github/workflows/v27-single-runtime-smoke.yml'
+
+jobs:
+  single-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile runtime
+        run: python -m compileall -q app.py radar_runtime_v27.py radar_logs.py radar_strict_scope_v27.py
+      - name: Verify one authoritative V27 bootstrap
+        env:
+          SECRET_KEY: smoke-test
+        run: |
+          python - <<'PY'
+          import contextlib
+          import io
+
+          stdout = io.StringIO()
+          with contextlib.redirect_stdout(stdout):
+              import app as app_module
+
+          startup = stdout.getvalue()
+          startup_lines = [line for line in startup.splitlines() if '[startup]' in line]
+          assert len(startup_lines) == 1, startup
+          assert 'V27 RUNTIME READY' in startup_lines[0], startup
+
+          banned = (
+              'GLOBAL AI v9',
+              'BUDGET AI v11',
+              'HIGH-FREQ AI v13',
+              'DIALOGUE-ONLY v15',
+              'DIALOGUE MOTION v16',
+              'V17 READY',
+              'V19 HARDENING READY',
+              'SOURCE AGGREGATION v20 READY',
+              'OMNI/VEO V21 READY',
+              'OMNI/VEO V22 READY',
+              'V24 READY',
+              'V25 READY',
+              'FRESH RUN V23 READY',
+              'V20 EDGE GUARDS READY',
+          )
+          for marker in banned:
+              assert marker not in startup, (marker, startup)
+
+          import radar_request_job as radar_job
+          import radar_runtime_v27 as runtime
+          import radar_strict_scope_v27 as v27
+
+          assert runtime._APPLIED is True
+          assert v27._APPLIED is True
+          assert app_module.RADAR_RUNTIME == v27.MODE_VERSION
+          assert app_module.EDGE_PROFILE == v27.MODE_VERSION
+          assert app_module.RADAR_MAX_DURATION_SEC == 15.05
+          assert app_module.KEEP_LIMIT == 180
+
+          status = app_module.app.test_client().get('/api/status').get_json()
+          assert status['radar_runtime'] == v27.MODE_VERSION, status
+          assert status['radar_profile'] == v27.MODE_VERSION, status
+          assert status['edge_profile'] == v27.MODE_VERSION, status
+          assert status['radar_mode'] == v27.MODE_VERSION, status
+          assert status['radar_hashtags'] == ['omni', 'veo', 'veo3'], status
+          assert status['radar_source_max_duration_sec'] == 15.05, status
+          assert status['radar_compressed_target_sec'] == 10.0, status
+          assert status['runtime_info']['legacy_startup_banners_suppressed'] is True, status
+
+          sources = radar_job._build_sources()
+          assert set(sources) == {'hashtag_omni', 'hashtag_veo', 'hashtag_veo3'}, sources
+          assert all(
+              source.get('strict_scope_marker') == v27.STRICT_SOURCE_MARKER
+              for source in sources.values()
+          ), sources
+
+          print('V27 SINGLE RUNTIME OK')
+          PY
