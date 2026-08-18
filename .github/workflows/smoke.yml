@@ -1,7 +1,7 @@
 name: Smoke Check
 on:
   push:
-    branches: [main, fix/radar-request-state-machine, fix/more-10s-ai-reels, fix-apify-quota-v10]
+    branches: [main, fix/radar-request-state-machine, fix/more-10s-ai-reels, fix-apify-quota-v10, fix-total-budget-v10]
   workflow_dispatch:
 jobs:
   smoke:
@@ -23,7 +23,7 @@ jobs:
           import app as app_module
           import radar_request_job as radar_job
           import radar_service, gemini_service, cloud_state
-          from radar_budget_v10 import budget_breakdown, PROFILE_VERSION, ACTOR_CAPS_USD
+          from radar_budget_v10 import budget_breakdown, PROFILE_VERSION, ACTOR_CAPS_USD, MAX_GEMINI_OUTPUT_TOKENS, classify_budget_video
           from progress import set_radar_status
           from models import RadarAssessment
 
@@ -36,12 +36,15 @@ jobs:
           assert status['radar_keep_limit']==60
           assert status['radar_duration_min']==1.0 and status['radar_duration_max']==10.05
           assert radar_job.RADAR_AI_ANALYZE_LIMIT==320
+          assert MAX_GEMINI_OUTPUT_TOKENS==512
+          assert gemini_service.classify_radar_video is classify_budget_video
 
           budget=budget_breakdown()
           assert budget['guarded_apify_usd'] <= 4.00, budget
           assert budget['hard_apify_actor_caps_usd'] <= 3.35, budget
           assert budget['designed_total_budget_usd'] <= 5.00, budget
           assert budget['hard_budget_usd'] == 5.0
+          assert budget['gemini_max_output_tokens_per_reel']==512
           assert round(sum(ACTOR_CAPS_USD.values()),2) <= 3.35
 
           sources=radar_job._build_sources()
@@ -49,14 +52,11 @@ jobs:
           assert sources['popular_ai']['input']['searchLimit']==16
           assert len(sources['ai_hashtags']['input']['hashtags'])==34
           assert len(sources['ai_keywords']['input']['hashtags'])==8
-          assert 'chatgpt' not in sources['ai_hashtags']['input']['hashtags']
-          assert 'openai' not in sources['ai_hashtags']['input']['hashtags']
-          assert 'gpt' not in sources['ai_hashtags']['input']['hashtags']
-          assert 'midjourney' not in sources['ai_hashtags']['input']['hashtags']
-          assert 'grokvideo' in sources['ai_hashtags']['input']['hashtags']
-          assert 'geminiomni' in sources['ai_hashtags']['input']['hashtags']
+          for noisy in ['chatgpt','openai','gpt','midjourney','recraftai','ideogramai']:
+              assert noisy not in sources['ai_hashtags']['input']['hashtags']
+          for useful in ['grokvideo','geminiomni','veo3video','klingvideo','seedancevideo','soravideo','minimaxvideo']:
+              assert useful in sources['ai_hashtags']['input']['hashtags']
 
-          # Verify actor.start receives real platform-side caps, not just estimates.
           calls=[]
           class FakeActor:
               def start(self, **kwargs):
@@ -65,8 +65,10 @@ jobs:
           class FakeClient:
               def actor(self, actor_id): return FakeActor()
           job={'run_id':'smoke','phase':'queued','profile':PROFILE_VERSION,'sources':sources,'candidates':[],'stats':{},'result':{},'error':''}
+          original_persist=radar_job._persist
           radar_job._persist=lambda j:j
           radar_job._start_one_source(FakeClient(),job)
+          radar_job._persist=original_persist
           assert calls, 'Actor was not started'
           assert calls[0]['max_total_charge_usd'] is not None
           assert float(calls[0]['max_total_charge_usd']) <= 1.35
@@ -77,7 +79,6 @@ jobs:
           assert radar_service.matches(foreign) is True
           assert 'RUSSIAN LOCALIZATION OVERRIDE' in gemini_service.production_system_prompt(False,8.0)
 
-          # Cloud state must survive a completely unavailable Apify KVS.
           original_store=cloud_state._store_client
           cloud_state._store_client=lambda: None
           probe={'phase':'queued','run_id':'local-fallback-smoke'}
@@ -96,7 +97,7 @@ jobs:
           assert c.post('/api/radar/sync').status_code==202
           assert c.post('/api/radar/tick').get_json()['phase']=='discovering'
           app_module.create_or_resume_job=rs; app_module.tick_job=rt
-          print('V10 BUDGET/QUOTA SMOKE OK',budget)
+          print('V10 TOTAL-BUDGET SMOKE OK',budget)
           PY
       - uses: actions/setup-node@v4
         with:
@@ -111,3 +112,4 @@ jobs:
           grep -q "/api/radar/tick" static/runtime.js
           grep -q "request_state_machine_v5" radar_request_job.py
           grep -q "mass_global_ai_v10_budget5" radar_budget_v10.py
+          grep -q "max_output_tokens=MAX_GEMINI_OUTPUT_TOKENS" radar_budget_v10.py
