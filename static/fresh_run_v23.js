@@ -1,11 +1,10 @@
 (() => {
-  const EMPTY_TOP = '<div class="empty">Новый поиск запущен. Старый TOP очищен — собираю свежие #omni и #veo.</div>';
-  const EMPTY_CANDIDATES = '<div class="empty">Новый поиск запущен. Старый пул очищен — жду свежие Reels из #omni и #veo.</div>';
+  const EMPTY_TOP = '<div class="empty">Новый поиск запущен. Старый TOP очищен — собираю свежие #omni, #veo и #veo3.</div>';
+  const EMPTY_CANDIDATES = '<div class="empty">Новый поиск запущен. Старый пул очищен — жду свежие Reels из #omni, #veo и #veo3.</div>';
   const EMPTY_META = '<div class="card"><div class="empty">Старая мета очищена. Новая появится после завершения текущего поиска.</div></div>';
 
   let initialized = false;
   let lastRunId = '';
-  let lastResetMarker = '';
 
   function clearOldRadarDom() {
     const top = document.getElementById('radarRows');
@@ -23,20 +22,15 @@
       if (!response.ok) return;
       const job = await response.json();
       const runId = String(job?.run_id || '');
-      const reset = job?.result?.fresh_run_reset || job?.fresh_run_reset || '';
 
       if (!initialized) {
         initialized = true;
         lastRunId = runId;
-        lastResetMarker = String(reset || '');
         return;
       }
 
-      if (runId && runId !== lastRunId) {
-        clearOldRadarDom();
-      }
+      if (runId && runId !== lastRunId) clearOldRadarDom();
       lastRunId = runId;
-      lastResetMarker = String(reset || lastResetMarker || '');
     } catch (_) {
       // Existing runtime handles reconnects; this helper never owns transport UI.
     }
@@ -48,9 +42,7 @@
   const startButton = document.getElementById('syncRadar');
   if (startButton) {
     startButton.addEventListener('click', () => {
-      if (!startButton.disabled && startButton.textContent.includes('ЗАПУСТИТЬ')) {
-        clearOldRadarDom();
-      }
+      if (!startButton.disabled && startButton.textContent.includes('ЗАПУСТИТЬ')) clearOldRadarDom();
     }, {capture: true});
   }
 
