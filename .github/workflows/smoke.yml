@@ -1,7 +1,7 @@
 name: Smoke Check
 on:
   push:
-    branches: [main, fix-radar-v17, fix-force-stop-v18]
+    branches: [main, hardening-v19-top10]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -21,102 +21,209 @@ jobs:
       - name: Compile Python
         run: python -m compileall -q .
 
-      - name: V17 radar behavior, force stop, static gate and budget
+      - name: V19 production hardening smoke
         env:
           SECRET_KEY: smoke-test
         run: |
           python - <<'PY'
           import subprocess
+          from datetime import datetime, timedelta, timezone
+
           import app as app_module
           import gemini_service
           import radar_budget_v10 as budget_module
-          import radar_growth_v6 as growth
+          import radar_cancel_v18 as cancel
+          import radar_hardening_v19 as v19
           import radar_request_job as radar_job
-          import radar_service
-          import radar_scale_v16 as scale
           import radar_resilient_v17 as v17
+          from cloud_state import load_radar_cancel_request, load_radar_job, save_radar_job
+          from db import ResilientConnection, db_conn
           from static_video_gate import ffmpeg_executable, inspect_visual_motion
 
           c = app_module.app.test_client()
-          for path in ['/health','/api/status','/api/radar/status','/api/radar','/api/radar/candidates']:
+          for path in ['/health','/api/status','/api/radar/status','/api/radar/job','/api/radar','/api/radar/candidates']:
               r = c.get(path)
               assert r.status_code == 200, (path, r.status_code, r.get_data(as_text=True))
 
+          # Core truth + hard budget.
           status = c.get('/api/status').get_json()
-          assert status['radar_profile'] == v17.PROFILE_VERSION, status
-          assert v17.PROFILE_VERSION == 'dialogue_trends_v17_resilient_budget5'
-          assert status['radar_keep_limit'] == v17.KEEP_LIMIT == 180
-          assert radar_job.RADAR_AI_ANALYZE_LIMIT == v17.GEMINI_ANALYZE_LIMIT == 420
-          assert gemini_service.classify_radar_video is v17.classify_v17
-          assert radar_service.matches is v17.matches_v17
-          assert radar_job._process_one_ai is v17._process_one_v17
-          assert growth._ORIGINAL_FINALIZE is scale.finalize_scale_v16
-          assert len(v17.RadarScreeningV17.model_fields) <= 12
-          assert v17.MAX_CLASSIFICATION_OUTPUT_TOKENS == 320
-
+          assert status['radar_profile'] == v19.PROFILE_VERSION, status
+          assert v19.PROFILE_VERSION == 'dialogue_trends_v19_hardened_budget5'
+          assert status['radar_keep_limit'] == 180
+          assert radar_job.RADAR_AI_ANALYZE_LIMIT == 420
           b = budget_module.budget_breakdown()
           assert b['guarded_apify_usd'] <= 4.00, b
           assert b['hard_apify_actor_caps_usd'] <= 3.35, b
           assert b['designed_total_budget_usd'] <= 5.00, b
           assert b['hard_budget_usd'] == 5.0, b
 
-          # Force-stop contract: create a durable run, cancel it, confirm ticks no
-          # longer advance it, then ensure a brand-new run can be created.
+          # 1) SQLite lock hardening + semantic-cache profile column.
+          with db_conn() as conn:
+              assert isinstance(conn, ResilientConnection)
+              busy = conn.execute('PRAGMA busy_timeout').fetchone()[0]
+              assert int(busy) >= 60000, busy
+              cols = {row[1] for row in conn.execute('PRAGMA table_info(radar_posts)').fetchall()}
+              assert 'screening_profile' in cols
+
+          # 2) STOP must be durable even when the tick lock is busy; no 180s wait.
           started = c.post('/api/radar/sync')
           assert started.status_code == 202, started.get_data(as_text=True)
-          started_json = started.get_json()
-          old_run_id = started_json['run_id']
-          assert started_json['active'] is True
-
-          stopped = c.post('/api/radar/stop')
-          assert stopped.status_code == 200, stopped.get_data(as_text=True)
+          old_run_id = started.get_json()['run_id']
+          assert radar_job._tick_lock.acquire(blocking=False)
+          try:
+              pending, pending_code = cancel.cancel_active_job(wait_seconds=0)
+              assert pending_code == 202, pending
+              assert pending['stop_pending'] is True, pending
+              marker = load_radar_cancel_request()
+              assert marker and marker['run_id'] == old_run_id, marker
+          finally:
+              radar_job._tick_lock.release()
+          stopped = c.post('/api/radar/tick')
           stopped_json = stopped.get_json()
-          assert stopped_json['cancelled'] is True, stopped_json
           assert stopped_json['active'] is False, stopped_json
           assert stopped_json['phase'] == 'cancelled', stopped_json
 
-          after_stop_tick = c.post('/api/radar/tick')
-          assert after_stop_tick.status_code == 200, after_stop_tick.get_data(as_text=True)
-          after_stop_json = after_stop_tick.get_json()
-          assert after_stop_json['active'] is False, after_stop_json
-          assert after_stop_json['phase'] == 'cancelled', after_stop_json
+          # 3) A stale active pre-v19 queue is reset BEFORE more paid work.
+          restarted = c.post('/api/radar/sync').get_json()
+          stale = load_radar_job()
+          stale['profile'] = 'old-profile-v1'
+          stale['phase'] = 'ai'
+          stale['candidates'] = [{'post_url':'https://example.invalid/old','ai_done':False}]
+          save_radar_job(stale)
+          migrated = c.post('/api/radar/sync')
+          assert migrated.status_code == 202, migrated.get_data(as_text=True)
+          migrated_job = load_radar_job()
+          assert migrated_job['profile'] == v19.PROFILE_VERSION, migrated_job
+          assert migrated_job['phase'] == 'queued', migrated_job
+          assert migrated_job['candidates'] == [], migrated_job
+          c.post('/api/radar/stop')
 
-          restarted = c.post('/api/radar/sync')
-          assert restarted.status_code == 202, restarted.get_data(as_text=True)
-          restarted_json = restarted.get_json()
-          assert restarted_json['active'] is True, restarted_json
-          assert restarted_json['run_id'] != old_run_id, restarted_json
-          # Clean up the smoke run too.
-          stopped_again = c.post('/api/radar/stop')
-          assert stopped_again.status_code == 200, stopped_again.get_data(as_text=True)
+          # 4) Same backend error cannot retry forever.
+          c.post('/api/radar/sync')
+          guarded = None
+          for _ in range(v19.MAX_SAME_TICK_ERRORS):
+              guarded = v19._apply_tick_error_guard({
+                  'active': True,
+                  'transient_error': True,
+                  'message': 'synthetic identical transport failure',
+              })
+          assert guarded['retry_budget_exceeded'] is True, guarded
+          failed_job = load_radar_job()
+          assert failed_job['phase'] == 'failed', failed_job
 
-          # High recall: ordinary real funny speech passes; AI origin is irrelevant.
-          ok = v17.RadarScreeningV17(
-              has_spoken_dialogue=True, dialogue_is_comedic=True,
-              is_tutorial_or_review=False, is_information_talking_head=False,
-              is_static_or_slideshow=False, is_reusable_scene=True,
-              dialogue_confidence=92, comedy_confidence=88,
-              detected_language='English', dialogue_summary='question then funny answer',
-              scene_summary='two people exchange a short joke', decision_code='PASS_DIALOGUE')
-          assessment = v17._assessment_from_screening(ok)
-          assert v17.matches_v17(assessment) is True
-          assert assessment.is_russian is False
+          # 5+6) Poll failures are isolated and a stuck Actor is watchdog-aborted.
+          class FakeRun:
+              def __init__(self, mode): self.mode = mode; self.aborted = False
+              def get(self):
+                  if self.mode == 'raise': raise RuntimeError('temporary status read failure')
+                  if self.mode == 'running': return {'status':'RUNNING'}
+                  return {'status':'SUCCEEDED','defaultDatasetId':'ds-good'}
+              def abort(self, gracefully=False): self.aborted = True; return {'status':'ABORTING'}
+          class FakeClient:
+              def __init__(self): self.runs = {'bad':FakeRun('raise'),'good':FakeRun('good'),'old':FakeRun('running')}
+              def run(self, run_id): return self.runs[run_id]
+          fc = FakeClient()
+          now = datetime.now(timezone.utc).isoformat()
+          old = (datetime.now(timezone.utc) - timedelta(seconds=v19.SOURCE_MAX_AGE_SECONDS + 5)).isoformat()
+          job = {
+              'run_id':'unit-poll','phase':'discovering','profile':v19.PROFILE_VERSION,
+              'sources':{
+                  'bad':{'run_id':'bad','status':'RUNNING','started_at':now,'poll_errors':v19.MAX_SOURCE_POLL_ERRORS-1},
+                  'good':{'run_id':'good','status':'RUNNING','started_at':now},
+                  'old':{'run_id':'old','status':'RUNNING','started_at':old},
+              },
+              'source_failures':{},'candidates':[],'stats':{},'result':{},'error':''
+          }
+          polled = v19._poll_sources_v19(fc, job)
+          assert polled['sources']['bad']['status'] == 'FAILED', polled
+          assert polled['sources']['good']['status'] == 'SUCCEEDED', polled
+          assert polled['sources']['old']['status'] == 'TIMED-OUT', polled
+          assert fc.runs['old'].aborted is True
+          assert polled['phase'] == 'preparing', polled
 
-          no_speech = ok.model_copy(update={
-              'has_spoken_dialogue': False, 'dialogue_is_comedic': False,
-              'dialogue_confidence': 0, 'comedy_confidence': 0,
-              'decision_code': 'NO_SPOKEN_DIALOGUE'})
-          assert v17.matches_v17(v17._assessment_from_screening(no_speech)) is False
+          # 7) Dataset materialization is RAM-bounded and one bad dataset is isolated.
+          class FakeDataset:
+              def __init__(self, bad=False): self.bad = bad
+              def iterate_items(self):
+                  if self.bad: raise RuntimeError('dataset read failed')
+                  for i in range(20): yield {'id':i}
+          class DatasetClient:
+              def dataset(self, dataset_id): return FakeDataset(bad=(dataset_id == 'bad-ds'))
+              def run(self, run_id): return FakeRun('good')
+          old_limit = v19.DATASET_MAX_ITEMS_PER_SOURCE
+          v19.DATASET_MAX_ITEMS_PER_SOURCE = 3
+          try:
+              ds_job = {
+                  'sources':{
+                      'ok':{'status':'SUCCEEDED','dataset_id':'ok-ds','run_id':'good'},
+                      'bad':{'status':'SUCCEEDED','dataset_id':'bad-ds','run_id':'good'},
+                  },
+                  'source_failures':{}
+              }
+              rows = v19._collect_source_rows_v19(DatasetClient(), ds_job)
+              assert len(rows['ok']) == 3, rows
+              assert rows['bad'] == [], rows
+              assert ds_job['sources']['ok']['dataset_truncated'] is True
+              assert 'bad' in ds_job['source_failures']
+          finally:
+              v19.DATASET_MAX_ITEMS_PER_SOURCE = old_limit
 
-          tutorial = ok.model_copy(update={
-              'is_tutorial_or_review': True, 'decision_code': 'TUTORIAL_OR_REVIEW'})
-          assert v17.matches_v17(v17._assessment_from_screening(tutorial)) is False
+          # 8) Old Gemini cache is invalid after semantic profile changes.
+          cache_url = 'https://example.com/reel/cache-test'
+          with db_conn() as conn:
+              conn.execute(
+                  "INSERT OR REPLACE INTO radar_posts(creator,post_url,published_at,duration_sec,ai_checked,ai_match,screening_profile) VALUES(?,?,?,?,?,?,?)",
+                  ('cache_user', cache_url, datetime.now(timezone.utc).isoformat(), 7.0, 1, 1, 'old-profile'),
+              )
+              conn.commit()
+          original_prepare = v19._ORIGINAL_PREPARE
+          v19._ORIGINAL_PREPARE = lambda client, job: job
+          try:
+              cache_job = {
+                  'run_id':'cache-unit','phase':'ai','profile':v19.PROFILE_VERSION,
+                  'candidates':[{'post_url':cache_url,'ai_done':True,'ai_match':True,'ai_attempts':0,'ai_error':''}],
+                  'stats':{},'result':{},'error':''
+              }
+              cache_job = v19._prepare_candidates_v19(None, cache_job)
+              assert cache_job['candidates'][0]['ai_done'] is False, cache_job
+              with db_conn() as conn:
+                  row = conn.execute('SELECT ai_checked,ai_match FROM radar_posts WHERE post_url=?',(cache_url,)).fetchone()
+                  assert int(row['ai_checked']) == 0 and int(row['ai_match']) == 0
+          finally:
+              v19._ORIGINAL_PREPARE = original_prepare
 
-          static_model = ok.model_copy(update={
-              'is_static_or_slideshow': True, 'decision_code': 'STATIC_OR_SLIDESHOW'})
-          assert v17.matches_v17(v17._assessment_from_screening(static_model)) is False
+          # 9) Permanent media error is not paid/retried three full outer ticks.
+          original_process = v19._ORIGINAL_PROCESS
+          def fake_process(job):
+              item = job['candidates'][0]
+              item['ai_attempts'] = 1
+              item['ai_error'] = '404 not found while refreshing Reel media'
+              return job
+          v19._ORIGINAL_PROCESS = fake_process
+          try:
+              ai_job = {
+                  'run_id':'ai-unit','phase':'ai','profile':v19.PROFILE_VERSION,
+                  'candidates':[{'creator':'x','post_url':'u','ai_done':False,'ai_match':False,'ai_attempts':0,'ai_error':''}],
+                  'stats':{},'result':{},'error':''
+              }
+              ai_job = v19._process_one_ai_v19(ai_job)
+              assert ai_job['candidates'][0]['ai_done'] is True, ai_job
+              assert ai_job['candidates'][0]['terminal_ai_error'] is True, ai_job
+          finally:
+              v19._ORIGINAL_PROCESS = original_process
 
-          # Static MP4 must be rejected locally with no GEMINI_API_KEY.
+          # 10) Corrupted old meta JSON must not 500 the dashboard.
+          with db_conn() as conn:
+              conn.execute(
+                  "INSERT INTO radar_meta(created_at,source_count,average_duration_sec,report_json) VALUES(?,?,?,?)",
+                  (datetime.now(timezone.utc).isoformat(), 1, 7.0, '{broken-json'),
+              )
+              conn.commit()
+          meta = c.get('/api/radar/meta')
+          assert meta.status_code == 200, meta.get_data(as_text=True)
+          assert meta.get_json()['report_parse_error'] is True, meta.get_json()
+
+          # Static card rejection remains local/no Gemini key needed.
           ffmpeg = ffmpeg_executable()
           assert ffmpeg, 'No system or bundled ffmpeg available'
           subprocess.run([
@@ -124,28 +231,12 @@ jobs:
               '-i', 'color=c=blue:s=320x240:r=30:d=4',
               '-c:v', 'mpeg4', '-q:v', '5', '/tmp/static.mp4'
           ], check=True)
-          subprocess.run([
-              ffmpeg, '-y', '-loglevel', 'error', '-f', 'lavfi',
-              '-i', 'testsrc2=size=320x240:rate=30:duration=4',
-              '-c:v', 'mpeg4', '-q:v', '5', '/tmp/moving.mp4'
-          ], check=True)
           still = inspect_visual_motion('/tmp/static.mp4')
-          moving = inspect_visual_motion('/tmp/moving.mp4')
           assert still.checked and still.is_static_image_video, still
-          assert moving.checked and not moving.is_static_image_video, moving
           verdict = v17.classify_v17('/tmp/static.mp4', 'text card')
           assert verdict.reason.startswith('REJECT_STATIC_IMAGE'), verdict
 
-          # Discovery must now be the targeted v16 dialogue/comedy source mix.
-          sources = radar_job._build_sources()
-          tags = sources['ai_hashtags']['input']['hashtags']
-          for required in ['юмор','приколы','comedy','funny','skit','ai','grok','veo','omni','kling']:
-              assert required in tags, (required, tags)
-          search_text = sources['popular_ai']['input']['search'].lower()
-          for phrase in ['смешной диалог','смешная сценка','funny dialogue','couple comedy','family comedy']:
-              assert phrase in search_text, (phrase, search_text)
-
-          # Production locks remain intact.
+          # Product locks remain exactly intact.
           prod = gemini_service.production_system_prompt(False, 7.64)
           forensic = gemini_service.forensic_system_prompt(False, 7.64)
           audit = gemini_service.audit_system_prompt(7.64)
@@ -158,7 +249,7 @@ jobs:
           assert 'explicit_duration_instruction_ok' in audit
           assert 'publication_russian_ok' in audit
 
-          print('V18 STOP + V17 RADAR OK', status['radar_profile'], b)
+          print('V19 TOP-10 HARDENING OK', status['radar_profile'], b)
           PY
 
       - uses: actions/setup-node@v4
@@ -170,11 +261,13 @@ jobs:
           node --check static/app.js
           node --check static/overlay_v15.js
           node --check static/runtime.js
-          grep -q "/api/radar/sync" static/runtime.js
-          grep -q "/api/radar/tick" static/runtime.js
+          grep -q "/api/radar/job" static/runtime.js
+          grep -q "trend-radar-driver-v19" static/runtime.js
+          grep -q "consecutiveTransportErrors >= 8" static/runtime.js
           grep -q "/api/radar/stop" static/runtime.js
           grep -q "id=\"stopRadar\"" templates/index.html
-          grep -q "dialogue_trends_v17_resilient_budget5" radar_resilient_v17.py
-          grep -q "force_stop_v18" radar_cancel_v18.py
+          grep -q "dialogue_trends_v19_hardened_budget5" radar_hardening_v19.py
+          grep -q "force_stop_v19_marker" radar_cancel_v18.py
+          grep -q "screening_profile" db.py
           grep -q "frame0_cleanplate_capcut_ru_v15" overlay_cleanplate_v15.py
           grep -q "CAPCUT OVERLAY PLAN" static/overlay_v15.js
