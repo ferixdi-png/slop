@@ -35,16 +35,22 @@ from radar_growth_v6 import apply_growth_overrides, top_eligible_v6
 apply_growth_overrides()
 top_eligible = top_eligible_v6
 
-# Final production profile: curated high-yield discovery with a hard <$5
-# conservative Apify budget guard and clean handling of exhausted monthly quota.
+# Production budget guard: real Apify dollar caps + bounded Gemini classifier.
 from radar_budget_v10 import (
-    PROFILE_VERSION,
     KEEP_LIMIT,
     apply_budget_overrides,
     budget_breakdown,
     wrap_tick_job,
 )
 BUDGET_INFO = apply_budget_overrides()
+
+# Final source profile: fewer, much larger hashtags. Low-frequency tails are
+# removed while the same <$5 hard budget remains in force.
+from radar_highfreq_v12 import (
+    PROFILE_VERSION,
+    apply_highfreq_overrides,
+)
+BUDGET_INFO = apply_highfreq_overrides()
 tick_job = wrap_tick_job(tick_job)
 
 
