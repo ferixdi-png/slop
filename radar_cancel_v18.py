@@ -1,12 +1,10 @@
-"""User-triggered hard stop for the durable radar job.
+"""Immediate cooperative hard-stop for the durable radar job.
 
-The radar is request-driven, so stopping means two things:
-1) atomically mark the durable KVS job as terminal so no later tick can resume it;
-2) best-effort abort any still-running Apify Actor runs to stop unnecessary spend.
-
-The same process lock used by radar ticks is reused here. If one atomic tick is in
-flight, the stop waits for that tick to finish and then cancels the job before any
-next tick can start.
+A stop request must never sit behind a long Gemini/Apify tick for minutes. The
+endpoint first writes a durable out-of-band cancel marker, then best-effort aborts
+remote Actor runs. If the tick lock is free we finalize cancellation immediately;
+otherwise the in-flight v19 tick observes the marker before returning and makes
+the job terminal. This keeps the STOP HTTP request short and restart-safe.
 """
 
 from __future__ import annotations
@@ -15,11 +13,15 @@ import os
 from datetime import datetime, timezone
 
 import radar_request_job as radar_job
-from cloud_state import load_radar_job
+from cloud_state import (
+    clear_radar_cancel_request,
+    load_radar_job,
+    request_radar_cancel,
+)
 from progress import set_radar_status
 from radar_logs import add_radar_log, reset_radar_run_id, set_radar_run_id
 
-CANCEL_PROFILE_VERSION = "force_stop_v18"
+CANCEL_PROFILE_VERSION = "force_stop_v19_marker"
 _ABORTABLE_STATUSES = {"READY", "RUNNING", "ABORTING"}
 
 
@@ -28,7 +30,6 @@ def _now_iso() -> str:
 
 
 def _abort_apify_runs(sources: dict) -> dict:
-    """Best-effort remote cancellation. Durable local cancellation never depends on it."""
     run_ids = []
     for name, source in (sources or {}).items():
         run_id = str((source or {}).get("run_id") or "").strip()
@@ -44,7 +45,7 @@ def _abort_apify_runs(sources: dict) -> dict:
         client = radar_job._client()
     except Exception as exc:
         add_radar_log(
-            f"Force-stop: durable job уже остановлен, но Apify client недоступен: {exc}",
+            f"Force-stop marker сохранён, но Apify client недоступен: {exc}",
             level="WARN",
             stage="stop",
         )
@@ -56,7 +57,6 @@ def _abort_apify_runs(sources: dict) -> dict:
             info = run_client.get() or {}
             status = str(info.get("status") or "").upper()
             if status in _ABORTABLE_STATUSES:
-                # Immediate abort: this is a user-requested hard stop, not a resumable pause.
                 run_client.abort(gracefully=False)
                 aborted += 1
                 add_radar_log(
@@ -72,17 +72,50 @@ def _abort_apify_runs(sources: dict) -> dict:
                 stage="stop",
                 details={"source": name, "run_id": run_id},
             )
-
     return {"requested": len(run_ids), "aborted": aborted, "errors": errors}
 
 
-def cancel_active_job(wait_seconds: float = 180.0):
-    """Atomically cancel the current radar job and abort its remote source runs.
+def _finalize_now(job):
+    if not job or not radar_job._is_active(job):
+        clear_radar_cancel_request()
+        return job or {}
+    job["phase"] = "cancelled"
+    job["cancelled_at"] = _now_iso()
+    job["cancelled_by_user"] = True
+    job["cancel_profile"] = CANCEL_PROFILE_VERSION
+    job["current_source"] = ""
+    job["current_ai_index"] = None
+    job["current_ai_post_url"] = ""
+    job["error"] = ""
+    job["result"] = {
+        **dict(job.get("result") or {}),
+        "cancelled": True,
+        "cancelled_at": job["cancelled_at"],
+    }
+    radar_job._persist(job)
+    clear_radar_cancel_request()
+    set_radar_status(
+        "cancelled",
+        "Поиск остановлен",
+        0,
+        0,
+        "Текущий run принудительно остановлен. Можно сразу запускать новый поиск.",
+        warning="",
+        details={
+            "run_id": job.get("run_id"),
+            "force_stopped": True,
+            "cancelled_at": job["cancelled_at"],
+            "cancel_profile": CANCEL_PROFILE_VERSION,
+        },
+    )
+    return job
 
-    Returns ``(payload, status_code)`` for direct Flask use.
-    """
+
+def cancel_active_job(wait_seconds: float = 1.5):
+    """Request stop immediately; never block the HTTP edge on a long tick."""
     existing = load_radar_job() or {}
     if not radar_job._is_active(existing):
+        clear_radar_cancel_request()
         return {
             **radar_job.public_job(existing),
             "cancelled": False,
@@ -93,110 +126,63 @@ def cancel_active_job(wait_seconds: float = 180.0):
 
     requested_run_id = str(existing.get("run_id") or "")
     token = set_radar_run_id(requested_run_id or None)
-    add_radar_log(
-        "FORCE STOP: пользователь запросил принудительную остановку текущего поиска.",
-        level="WARN",
-        stage="stop",
-        details={"run_id": requested_run_id, "phase": existing.get("phase")},
-    )
     try:
-        set_radar_status(
-            "running",
-            "Останавливаю поиск",
-            int((existing.get("progress") or 0) if isinstance(existing.get("progress"), (int, float)) else 0),
-            30,
-            "Жду завершения текущего атомарного шага, затем блокирую все следующие ticks и останавливаю активные источники.",
-            warning="Принудительная остановка запрошена пользователем.",
-            details={"run_id": requested_run_id, "force_stop_requested": True},
-        )
-    except Exception:
-        pass
-
-    acquired = radar_job._tick_lock.acquire(timeout=max(0.0, float(wait_seconds)))
-    if not acquired:
+        if not request_radar_cancel(requested_run_id):
+            raise RuntimeError("не удалось сохранить durable stop-marker")
         add_radar_log(
-            "FORCE STOP: не удалось дождаться текущего tick в пределах timeout; кнопку можно нажать повторно.",
-            level="ERROR",
+            "FORCE STOP MARKER: stop сохранён вне очереди текущего tick.",
+            level="WARN",
             stage="stop",
-            details={"run_id": requested_run_id, "wait_seconds": wait_seconds},
+            details={"run_id": requested_run_id, "phase": existing.get("phase")},
         )
+        try:
+            set_radar_status(
+                "running",
+                "Остановка запрошена",
+                0,
+                15,
+                "Stop-marker сохранён. Новые шаги заблокированы; завершается только уже начатый атомарный шаг.",
+                warning="Принудительная остановка подтверждена сервером.",
+                details={"run_id": requested_run_id, "force_stop_requested": True},
+            )
+        except Exception:
+            pass
+
+        # Abort remote source runs without waiting for the local tick lock.
+        abort_stats = _abort_apify_runs(dict(existing.get("sources") or {}))
+
+        acquired = radar_job._tick_lock.acquire(timeout=max(0.0, min(float(wait_seconds), 2.0)))
+        if acquired:
+            try:
+                job = load_radar_job() or existing
+                if requested_run_id and str(job.get("run_id") or "") == requested_run_id:
+                    job = _finalize_now(job)
+                    add_radar_log(
+                        "FORCE STOP DONE immediately: tick lock был свободен.",
+                        level="WARN",
+                        stage="stop",
+                        details={"run_id": requested_run_id},
+                    )
+                    return {
+                        **radar_job.public_job(job),
+                        "cancelled": True,
+                        "stop_pending": False,
+                        "message": "Поиск принудительно остановлен. Можно запускать новый run.",
+                        "apify_abort": abort_stats,
+                        "cancel_profile": CANCEL_PROFILE_VERSION,
+                    }, 200
+            finally:
+                radar_job._tick_lock.release()
+
+        # An atomic tick is in flight. v19 checks the marker after that tick and
+        # finalizes cancellation before it can schedule/accept another useful step.
         return {
             **radar_job.public_job(load_radar_job() or existing),
             "cancelled": False,
             "stop_pending": True,
-            "message": "Текущий шаг ещё не завершился. Повтори остановку через несколько секунд.",
+            "message": "Остановка подтверждена. Текущий атомарный шаг заканчивается, после него run автоматически станет cancelled.",
+            "apify_abort": abort_stats,
             "cancel_profile": CANCEL_PROFILE_VERSION,
         }, 202
-
-    sources = {}
-    try:
-        job = load_radar_job() or existing
-        # A new run may have been started elsewhere while this request waited.
-        # Never cancel a different run than the one the user explicitly stopped.
-        if requested_run_id and str(job.get("run_id") or "") != requested_run_id:
-            return {
-                **radar_job.public_job(job),
-                "cancelled": False,
-                "run_changed": True,
-                "message": "Старый run уже сменился новым; новый поиск не остановлен.",
-                "cancel_profile": CANCEL_PROFILE_VERSION,
-            }, 409
-
-        if not radar_job._is_active(job):
-            return {
-                **radar_job.public_job(job),
-                "cancelled": False,
-                "already_stopped": True,
-                "message": "Поиск успел завершиться до команды остановки.",
-                "cancel_profile": CANCEL_PROFILE_VERSION,
-            }, 200
-
-        sources = dict(job.get("sources") or {})
-        job["phase"] = "cancelled"
-        job["cancelled_at"] = _now_iso()
-        job["cancelled_by_user"] = True
-        job["cancel_profile"] = CANCEL_PROFILE_VERSION
-        job["current_source"] = ""
-        job["current_ai_index"] = None
-        job["current_ai_post_url"] = ""
-        job["error"] = ""
-        job["result"] = {
-            **dict(job.get("result") or {}),
-            "cancelled": True,
-            "cancelled_at": job["cancelled_at"],
-        }
-        radar_job._persist(job)
-
-        set_radar_status(
-            "cancelled",
-            "Поиск остановлен",
-            0,
-            0,
-            "Текущий run принудительно остановлен. Можно сразу запускать новый поиск.",
-            warning="",
-            details={
-                "run_id": requested_run_id,
-                "force_stopped": True,
-                "cancelled_at": job["cancelled_at"],
-                "cancel_profile": CANCEL_PROFILE_VERSION,
-            },
-        )
-        add_radar_log(
-            "FORCE STOP DONE: durable job переведён в cancelled; следующие ticks его не продолжат.",
-            level="WARN",
-            stage="stop",
-            details={"run_id": requested_run_id, "cancelled_at": job["cancelled_at"]},
-        )
     finally:
-        radar_job._tick_lock.release()
         reset_radar_run_id(token)
-
-    abort_stats = _abort_apify_runs(sources)
-    final_job = load_radar_job() or {}
-    return {
-        **radar_job.public_job(final_job),
-        "cancelled": True,
-        "message": "Поиск принудительно остановлен. Можно запускать новый run.",
-        "apify_abort": abort_stats,
-        "cancel_profile": CANCEL_PROFILE_VERSION,
-    }, 200
