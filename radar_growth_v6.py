@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 from google.genai import types
 
@@ -11,7 +12,7 @@ from media_duration import measure_video_duration
 from models import RadarAssessment
 from radar_logs import add_radar_log
 
-PROFILE_VERSION="mass_global_ai_v8_brands"
+PROFILE_VERSION="mass_global_ai_v9_searchsafe"
 TARGET_MATCHES=75
 MIN_AI_CHECKS_BEFORE_EARLY_STOP=120
 AI_ANALYZE_LIMIT=420
@@ -19,7 +20,36 @@ KEEP_LIMIT=60
 SEARCH_LIMIT=64
 HASHTAG_LIMIT=20
 
-SEARCH_QUERY=(
+_APIFY_FORBIDDEN_SEARCH_CHARS=re.compile(r"[!?.,:;\-+=*&%$#@/\\~^|<>()\[\]{}\"'`]")
+
+def _sanitize_search_term(term):
+    value=str(term or "").strip()
+    # Apify forbids punctuation inside every comma-separated search term.
+    # Preserve version intent: "3.1" -> "31" instead of failing the whole Actor input.
+    value=re.sub(r"(?<=\d)\.(?=\d)","",value)
+    value=_APIFY_FORBIDDEN_SEARCH_CHARS.sub(" ",value)
+    return " ".join(value.split()).strip()
+
+def _sanitize_search_csv(raw_csv):
+    safe=[]; seen=set()
+    for raw in str(raw_csv or "").split(","):
+        term=_sanitize_search_term(raw)
+        key=term.casefold()
+        if term and key not in seen:
+            seen.add(key); safe.append(term)
+    if not safe:
+        raise RuntimeError("После sanitization не осталось ни одного Apify search term")
+    return ",".join(safe)
+
+def _sanitize_keyword_terms(terms):
+    safe=[]; seen=set()
+    for raw in terms:
+        term=_sanitize_search_term(raw); key=term.casefold()
+        if term and key not in seen:
+            seen.add(key); safe.append(term)
+    return safe
+
+RAW_SEARCH_QUERY=(
 "AI, ИИ, искусственный интеллект, нейросеть, нейронка, generative AI, GenAI, AI video, AI generated video, "
 "нейроюмор, ии юмор, AI юмор, нейросеть прикол, AI прикол, нейровидео юмор, ии видео юмор, "
 "AI бабушка юмор, нейросеть бабушка, AI дед юмор, нейросеть дед, AI деревня юмор, нейросеть деревня, "
@@ -35,6 +65,8 @@ SEARCH_QUERY=(
 "Midjourney AI video, Luma AI video, Dream Machine AI, Pika AI video, Higgsfield AI video, HeyGen AI video, "
 "Nano Banana AI, Nano Banana video"
 )
+SEARCH_QUERY=_sanitize_search_csv(RAW_SEARCH_QUERY)
+
 HASHTAGS_V7=[
 "ai","ии","искусственныйинтеллект","нейронка","нейронки","нейросеть","нейросети","genai","generativeai",
 "нейроюмор","ииюмор","аиюмор","нейровидео","иивидео","аивидео","нейроконтент","нейромем",
@@ -56,7 +88,8 @@ HASHTAGS_V7=[
 "higgsfield","higgsfieldai","heygen","heygenai","hedra","hedraai",
 "nanobanana","nanobananaai","recraftai","ideogramai"
 ]
-KEYWORD_TERMS=[
+
+RAW_KEYWORD_TERMS=[
 "AI","ИИ","искусственный интеллект","нейросеть","generative AI","GenAI","AI video","AI generated video",
 "AI comedy","AI funny","AI generated video","AI slop","AI meme","AI skit","AI absurd","AI viral",
 "AI grandma","AI grandpa","AI family","AI couple","AI baby","AI animals","AI dog","AI cat","AI village",
@@ -68,12 +101,14 @@ KEYWORD_TERMS=[
 "Higgsfield AI","HeyGen AI","Nano Banana AI",
 "нейроюмор","ии юмор","нейровидео","нейросеть прикол","AI бабушка","AI дед","AI деревня","AI животные"
 ]
+KEYWORD_TERMS=_sanitize_keyword_terms(RAW_KEYWORD_TERMS)
 
 _ORIGINAL_SAVE_POST=radar_quality._legacy_save_post
 _ORIGINAL_PREPARE=radar_job._prepare_candidates
 _ORIGINAL_PROCESS_AI=radar_job._process_one_ai
 _ORIGINAL_FINALIZE=radar_job._finalize
 _ORIGINAL_SNAPSHOT=radar_job.save_radar_snapshot
+_ORIGINAL_START_ONE_SOURCE=radar_job._start_one_source
 _ORIGINAL_FORENSIC_PROMPT=gemini_service.forensic_system_prompt
 _ORIGINAL_PRODUCTION_PROMPT=gemini_service.production_system_prompt
 _ORIGINAL_AUDIT_PROMPT=gemini_service.audit_system_prompt
@@ -116,15 +151,20 @@ def _build_mass_sources():
     for source in sources.values(): source.update(run_id="",status="NOT_STARTED",dataset_id="",status_message="",started_at="")
     return sources
 
-def _is_v7_source_set(job):
+def _is_current_source_set(job):
     sources=job.get("sources") or {}; popular=sources.get("popular_ai") or {}
-    return (popular.get("input") or {}).get("search")==SEARCH_QUERY
+    return job.get("profile")==PROFILE_VERSION and (popular.get("input") or {}).get("search")==SEARCH_QUERY
 
-def _reset_stale_job_to_v7(job,stage):
+def _reset_stale_job(job,stage):
     job["profile"]=PROFILE_VERSION; job["phase"]="queued"; job["sources"]=_build_mass_sources(); job["candidates"]=[]; job["stats"]={}; job["result"]={}; job["error"]=""; job["current_ai_index"]=None; job["current_ai_post_url"]=""
     radar_job._persist(job)
-    add_radar_log("Старый незавершённый radar job автоматически сброшен: начинаю новый GLOBAL AI v8 brand discovery вместо продолжения старой выборки.",stage=stage,details={"profile":PROFILE_VERSION,"sources":list(job["sources"].keys())})
+    add_radar_log("Старый или schema-invalid radar job автоматически сброшен: начинаю новый GLOBAL AI v9 search-safe discovery.",stage=stage,details={"profile":PROFILE_VERSION,"sources":list(job["sources"].keys()),"search_terms":len(SEARCH_QUERY.split(","))})
     return job
+
+def _start_one_source_v9(client,job):
+    if not _is_current_source_set(job):
+        job=_reset_stale_job(job,"migration")
+    return _ORIGINAL_START_ONE_SOURCE(client,job)
 
 def matches_v6(a):
     humor_ok=bool(a.is_comedy_scene or a.one_clear_joke_or_twist or (a.simple_situation and a.strong_first_frame))
@@ -162,7 +202,7 @@ def _save_post_and_learn_ai_creator(conn,item,assessment):
     conn.execute("""INSERT INTO tracked_creators(username,first_seen_at,last_seen_at,best_views_per_hour,matching_reels,followers_count,usual_views,sample_size) VALUES(?,?,?,?,0,?,?,0) ON CONFLICT(username) DO UPDATE SET last_seen_at=excluded.last_seen_at,best_views_per_hour=MAX(tracked_creators.best_views_per_hour,excluded.best_views_per_hour),followers_count=CASE WHEN excluded.followers_count>0 THEN excluded.followers_count ELSE tracked_creators.followers_count END,usual_views=CASE WHEN excluded.usual_views>0 THEN excluded.usual_views ELSE tracked_creators.usual_views END""",(item.get("creator",""),now,now,float(item.get("views_per_hour") or 0),int(item.get("followers_count") or 0),float(item.get("creator_usual_views") or 0)))
 
 def _prepare_candidates_v6(client,job):
-    if job.get("profile")!=PROFILE_VERSION and not _is_v7_source_set(job): return _reset_stale_job_to_v7(job,"migration")
+    if not _is_current_source_set(job): return _reset_stale_job(job,"migration")
     job=_ORIGINAL_PREPARE(client,job); job["profile"]=PROFILE_VERSION; candidates=job.get("candidates") or []
     for item in candidates: item["ai_done"]=False; item["ai_match"]=False; item["ai_attempts"]=0; item["ai_error"]=""; item.pop("assessment",None)
     job.setdefault("stats",{})["ai_total"]=len(candidates); radar_job._persist(job)
@@ -176,7 +216,7 @@ def _snapshot_throttled():
     return True
 
 def _process_one_ai_v6(job):
-    if job.get("profile")!=PROFILE_VERSION: return _reset_stale_job_to_v7(job,"migration")
+    if job.get("profile")!=PROFILE_VERSION: return _reset_stale_job(job,"migration")
     job=_ORIGINAL_PROCESS_AI(job); candidates=job.get("candidates") or []; done=sum(1 for x in candidates if x.get("ai_done")); matched=sum(1 for x in candidates if x.get("ai_done") and x.get("ai_match"))
     if job.get("phase")=="ai" and done>=MIN_AI_CHECKS_BEFORE_EARLY_STOP and matched>=TARGET_MATCHES:
         job["phase"]="finalizing"; job.setdefault("stats",{})["early_stop_after_ai"]=done; job["stats"]["early_stop_matches"]=matched; radar_job._persist(job)
@@ -205,8 +245,8 @@ def apply_growth_overrides():
     if _APPLIED: return
     _APPLIED=True
     radar_job.RADAR_AI_ANALYZE_LIMIT=AI_ANALYZE_LIMIT; radar_job.RADAR_KEEP_LIMIT=KEEP_LIMIT; radar_service.RADAR_KEEP_LIMIT=KEEP_LIMIT
-    radar_job._build_sources=_build_mass_sources; gemini_service.classify_radar_video=classify_radar_video_v6; radar_job.matches=matches_v6; radar_service.matches=matches_v6
+    radar_job._build_sources=_build_mass_sources; radar_job._start_one_source=_start_one_source_v9; gemini_service.classify_radar_video=classify_radar_video_v6; radar_job.matches=matches_v6; radar_service.matches=matches_v6
     radar_quality.top_eligible=top_eligible_v6; radar_job.top_eligible=top_eligible_v6; radar_quality._legacy_save_post=_save_post_and_learn_ai_creator
     radar_job._prepare_candidates=_prepare_candidates_v6; radar_job._process_one_ai=_process_one_ai_v6; radar_job._finalize=_finalize_v6; radar_job.save_radar_snapshot=_snapshot_throttled
     gemini_service.forensic_system_prompt=forensic_system_prompt_v7; gemini_service.production_system_prompt=production_system_prompt_v7; gemini_service.audit_system_prompt=audit_system_prompt_v7
-    add_radar_log("GLOBAL AI v8 включён: международный AI discovery + крупнейшие AI-бренды/модели, нерусские ролики допустимы, production всегда локализует речь на русский, до 420 Gemini-проверок.",stage="startup",details={"profile":PROFILE_VERSION,"duration_min":RADAR_MIN_DURATION_SEC,"duration_max":RADAR_MAX_DURATION_SEC,"search_terms":SEARCH_QUERY.count(",")+1,"hashtags":len(HASHTAGS_V7),"keyword_terms":len(KEYWORD_TERMS),"search_limit_per_term":SEARCH_LIMIT,"hashtag_limit_per_tag":HASHTAG_LIMIT,"ai_analyze_limit":AI_ANALYZE_LIMIT,"keep_limit":KEEP_LIMIT,"target_matches":TARGET_MATCHES})
+    add_radar_log("GLOBAL AI v9 включён: schema-safe Apify search + международный AI discovery + крупнейшие AI-бренды/модели; нерусские ролики допустимы.",stage="startup",details={"profile":PROFILE_VERSION,"duration_min":RADAR_MIN_DURATION_SEC,"duration_max":RADAR_MAX_DURATION_SEC,"search_terms":len(SEARCH_QUERY.split(",")),"search_sanitized":RAW_SEARCH_QUERY!=SEARCH_QUERY,"hashtags":len(HASHTAGS_V7),"keyword_terms":len(KEYWORD_TERMS),"search_limit_per_term":SEARCH_LIMIT,"hashtag_limit_per_tag":HASHTAG_LIMIT,"ai_analyze_limit":AI_ANALYZE_LIMIT,"keep_limit":KEEP_LIMIT,"target_matches":TARGET_MATCHES})
