@@ -3,35 +3,35 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>ПОИСК ТРЕНДОВ — #OMNI + #VEO</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260818-1048" />
-  <link rel="stylesheet" href="/static/upgrade.css?v=20260818-1048" />
+  <title>ПОИСК ТРЕНДОВ — #OMNI + #VEO + #VEO3</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260818-1637" />
+  <link rel="stylesheet" href="/static/upgrade.css?v=20260818-1637" />
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark">ПТ</div>
-        <div><strong>ПОИСК ТРЕНДОВ</strong><small>радар #omni + #veo</small></div>
+        <div><strong>ПОИСК ТРЕНДОВ</strong><small>радар #omni + #veo + #veo3</small></div>
       </div>
       <div class="side-note">
-        1. Запусти радар. 2. Выбери быстро растущий Reel. 3. Нажми «Получить ультра-промпты». 4. Сгенерируй CLEAN PHOTO + CLEAN VIDEO без монтажных фото/скринов/PIP. 5. Если в оригинале были наложения, добавь их после генерации по отдельному CAPCUT OVERLAY PLAN. 6. Речь и весь блок публикации автоматически адаптируются на естественный русский.
+        1. Запусти новый поиск — предыдущий TOP и старая мета очищаются автоматически. 2. Система собирает только #omni, #veo и #veo3. 3. Выбери Reel, который быстрее всего набирает просмотры. 4. Нажми «Получить ультра-промпты». 5. Production-анализ выбранного ролика остаётся отдельным и не стирается вместе с радаром.
       </div>
     </aside>
 
     <main>
       <header>
         <div>
-          <div class="eyebrow">OMNI / VEO RADAR</div>
-          <h1>Что набирает обороты прямо сейчас.<br><span>#omni + #veo.</span></h1>
+          <div class="eyebrow">OMNI / VEO / VEO3 RADAR</div>
+          <h1>Что набирает обороты прямо сейчас.<br><span>#omni + #veo + #veo3.</span></h1>
         </div>
         <div class="status" id="serviceStatus"><i></i> проверяю сервис…</div>
       </header>
 
       <section id="radar" class="screen active">
         <div class="section-title">
-          <div><span class="step">2 ХЕШТЕГА</span><h2>#omni + #veo · Reels до 10 секунд · самые быстро растущие</h2></div>
-          <span class="muted">до 250 Reels на каждый тег</span>
+          <div><span class="step">3 ХЕШТЕГА</span><h2>#omni + #veo + #veo3 · Reels до 10 секунд · самые быстро растущие</h2></div>
+          <span class="muted">до 250 Reels на каждый тег · до 750 raw</span>
         </div>
 
         <div class="api-grid">
@@ -43,15 +43,15 @@
           <div class="card api-card" id="apifyApiCard">
             <div><span class="api-dot"></span><b>Apify</b></div>
             <strong id="apifyApiStatus">Проверяю ключ…</strong>
-            <small id="apifyApiMeta">Глубокий сбор Reels только по #omni и #veo</small>
+            <small id="apifyApiMeta">Глубокий сбор только по #omni, #veo и #veo3</small>
           </div>
           <button id="checkApis" class="secondary api-check-btn">ПРОВЕРИТЬ API</button>
         </div>
 
         <div class="card radar-intro">
           <div>
-            <b>Только #omni и #veo. Максимум кандидатов, минимум лишних фильтров</b>
-            <span>Два отдельных Apify-источника собирают до 250 Reels по #omni и до 250 по #veo → остаются публикации последних 7 дней → до 420 сильнейших кандидатов за run проверяются по реальному MP4: фактическая длительность должна быть ≤10 сек, статичные карточки и image-video отбрасываются → никакого обязательного фильтра «только диалог» или «только комедия» → momentum-score ставит наверх ролики, которые прямо сейчас быстрее всего набирают просмотры: 72% скорость просмотров/час, 16% свежесть, 9% подтверждённый объём, 3% дополнительный score → финальный production-safe TOP может содержать до 180 роликов, общий raw-пул — до 500. Keyword search, popular search, другие хештеги и tracked creators в discovery не используются. Полный Gemini production-анализ запускается только для выбранного тобой Reel.</span>
+            <b>Только #omni, #veo и #veo3. Каждый новый запуск — чистая выдача</b>
+            <span>Три независимых Apify-источника собирают до 250 Reels на каждый хештег — до 750 raw-кандидатов. Остаются публикации последних 7 дней и ролики фактической длительностью до 10 секунд; статичные карточки и image-video отбрасываются локально. До 420 сильнейших MP4 проверяются за run, итоговый TOP — до 180. При первом замере рейтинг использует просмотры/час + свежесть + объём просмотров. На следующих запусках система сохраняет только скрытый технический замер и умеет считать реальный прирост просмотров между поисками и ускорение. Старые карточки TOP, пул кандидатов и старая мета при новом run удаляются автоматически и не восстанавливаются из старого snapshot после рестарта Render.</span>
           </div>
           <div class="radar-controls">
             <button id="syncRadar" class="secondary">ЗАПУСТИТЬ ПОИСК</button>
@@ -85,11 +85,11 @@
         <div id="analysisResult" class="result hidden"></div>
 
         <div id="radarMeta" class="meta-wrap">
-          <div class="card"><div class="empty">После первого завершённого поиска здесь появится мета TOP.</div></div>
+          <div class="card"><div class="empty">После первого завершённого поиска здесь появится мета текущего TOP.</div></div>
         </div>
 
         <div class="section-mini-title">
-          <div><b>TOP НАБИРАЮЩИХ ОБОРОТЫ</b><span>#omni + #veo · ≤10 сек · последние 7 дней · приоритет просмотрам/час · до 180 Reels</span></div>
+          <div><b>TOP НАБИРАЮЩИХ ОБОРОТЫ</b><span>#omni + #veo + #veo3 · ≤10 сек · последние 7 дней · скорость + ускорение · до 180 Reels</span></div>
         </div>
         <div class="card">
           <div id="radarRows" class="radar-table">
@@ -98,20 +98,22 @@
         </div>
 
         <div class="section-mini-title candidates-title">
-          <div><b>Пул #omni + #veo</b><span>до 500 найденных Reels; до 420 проходят фактическую MP4-проверку за run</span></div>
+          <div><b>Пул #omni + #veo + #veo3</b><span>до 750 найденных Reels; до 420 проходят фактическую MP4-проверку за run</span></div>
         </div>
         <div class="card">
           <div id="candidateRows" class="candidate-table">
-            <div class="empty">После получения данных здесь появятся кандидаты только из #omni и #veo.</div>
+            <div class="empty">После получения данных здесь появятся кандидаты только из #omni, #veo и #veo3.</div>
           </div>
         </div>
       </section>
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260818-1048"></script>
-  <script src="/static/v17_ui.js?v=20260818-1048"></script>
-  <script src="/static/overlay_v15.js?v=20260818-1048"></script>
-  <script src="/static/runtime.js?v=20260818-1048"></script>
+  <script src="/static/app.js?v=20260818-1637"></script>
+  <script src="/static/v17_ui.js?v=20260818-1637"></script>
+  <script src="/static/overlay_v15.js?v=20260818-1637"></script>
+  <script src="/static/runtime.js?v=20260818-1637"></script>
+  <script src="/static/fresh_run_v23.js?v=20260818-1637"></script>
+  <script src="/static/scope_v24.js?v=20260818-1637"></script>
 </body>
 </html>
