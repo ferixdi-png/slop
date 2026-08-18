@@ -1,7 +1,7 @@
 name: Smoke Check
 on:
   push:
-    branches: [main, fix/radar-request-state-machine, fix/more-10s-ai-reels, fix-apify-quota-v10, fix-highfreq-v13-kling]
+    branches: [main, fix/radar-request-state-machine, fix/more-10s-ai-reels, fix-apify-quota-v10, fix-highfreq-v13-kling, fix-dialogue-first-v14]
   workflow_dispatch:
 jobs:
   smoke:
@@ -15,7 +15,7 @@ jobs:
         run: pip install -r requirements.txt
       - name: Compile Python
         run: python -m compileall -q .
-      - name: Flask, budget and quota-fallback smoke
+      - name: Dialogue-first radar, budget and quota-fallback smoke
         env:
           SECRET_KEY: smoke-test
         run: |
@@ -24,7 +24,7 @@ jobs:
           import radar_request_job as radar_job
           import radar_service, gemini_service, cloud_state
           from radar_budget_v10 import budget_breakdown, ACTOR_CAPS_USD
-          from radar_highfreq_v12 import PROFILE_VERSION
+          from radar_dialogue_v14 import PROFILE_VERSION, matches_dialogue_first, top_eligible_dialogue
           from progress import set_radar_status
           from models import RadarAssessment
 
@@ -36,7 +36,7 @@ jobs:
           assert status['radar_profile']==PROFILE_VERSION
           assert status['radar_keep_limit']==60
           assert status['radar_duration_min']==1.0 and status['radar_duration_max']==10.05
-          assert radar_job.RADAR_AI_ANALYZE_LIMIT==360
+          assert radar_job.RADAR_AI_ANALYZE_LIMIT==420
 
           budget=budget_breakdown()
           assert budget['guarded_apify_usd'] <= 4.00, budget
@@ -49,18 +49,52 @@ jobs:
           assert {'popular_ai','ai_hashtags','ai_keywords'}<=set(sources)
           assert sources['popular_ai']['input']['searchLimit']==20
           tags=sources['ai_hashtags']['input']['hashtags']
-          assert len(tags)==15, tags
-          for required in ['ai','ии','grok','veo','omni','kling','klingai','seedance']:
+          for required in ['ai','ии','grok','veo','omni','kling','seedance','юмор','приколы','скетч','comedy','funny']:
               assert required in tags, (required,tags)
-          for removed in ['chatgpt','openai','sora','gemini','geminiomni','googleflowai','нейросетьприкол','midjourney','recraft','ideogram']:
-              assert removed not in tags, (removed,tags)
-
           search_text=sources['popular_ai']['input']['search'].lower()
-          assert 'chatgpt' not in search_text
-          assert 'openai' not in search_text
-          assert 'gemini' not in search_text
-          assert 'sora' not in search_text
-          assert 'kling' in search_text
+          for phrase in ['смешной диалог','короткий скетч','funny dialogue','comedy skit','kling']:
+              assert phrase in search_text, (phrase,search_text)
+
+          # Ordinary REAL comedy dialogue must PASS even when is_ai_video=False.
+          real_dialogue=RadarAssessment(
+              is_russian=True,is_ai_video=False,is_comedy_scene=True,
+              is_tutorial_or_review=False,is_talking_head=False,simple_situation=True,
+              strong_first_frame=True,one_clear_joke_or_twist=True,characters_count=2,
+              scene_description='husband wife joke',characters=['man','woman'],joke='funny answer',
+              hook='question',ending='punchline',reproducible_format=True,reason='reusable dialogue',
+              has_spoken_dialogue=True,dialogue_is_comedic=True,dialogue_summary='question and punchline',
+              detected_language='Russian')
+          assert matches_dialogue_first(real_dialogue) is True
+          assert radar_service.matches(real_dialogue) is True
+
+          # Foreign funny dialogue also PASS because production localizes it to Russian.
+          foreign_dialogue=real_dialogue.model_copy(update={'is_russian':False,'detected_language':'English'})
+          assert matches_dialogue_first(foreign_dialogue) is True
+
+          # Informational real talking head with no comedic dialogue must REJECT.
+          info_head=RadarAssessment(
+              is_russian=True,is_ai_video=False,is_comedy_scene=False,
+              is_tutorial_or_review=True,is_talking_head=True,simple_situation=True,
+              strong_first_frame=False,one_clear_joke_or_twist=False,characters_count=1,
+              scene_description='expert explains app',characters=['expert'],joke='',hook='',ending='',
+              reproducible_format=True,reason='tutorial',has_spoken_dialogue=True,
+              dialogue_is_comedic=False,dialogue_summary='explanation',detected_language='Russian')
+          assert matches_dialogue_first(info_head) is False
+
+          # AI visual gag remains valid as secondary discovery even without dialogue.
+          ai_gag=RadarAssessment(
+              is_russian=False,is_ai_video=True,is_comedy_scene=True,
+              is_tutorial_or_review=False,is_talking_head=False,simple_situation=True,
+              strong_first_frame=True,one_clear_joke_or_twist=True,characters_count=1,
+              scene_description='AI gag',characters=['AI character'],joke='gag',hook='hook',ending='reaction',
+              reproducible_format=True,reason='adaptable',has_spoken_dialogue=False,
+              dialogue_is_comedic=False,dialogue_summary='',detected_language='none')
+          assert matches_dialogue_first(ai_gag) is True
+
+          # Gemini PASS should stay visible even with weak metrics; metrics only rank S/A/B/C.
+          assert top_eligible_dialogue({'duration_sec':7.4,'views':120,'likes':1,'viral_score_v2':3}) is True
+          assert top_eligible_dialogue({'duration_sec':10.2,'views':1000000,'likes':10000,'viral_score_v2':99}) is False
+          assert 'RUSSIAN LOCALIZATION OVERRIDE' in gemini_service.production_system_prompt(False,8.0)
 
           calls=[]
           class FakeActor:
@@ -77,10 +111,6 @@ jobs:
           assert float(calls[0]['max_total_charge_usd']) <= 1.35
           assert calls[0]['max_items'] > 0
           assert calls[0]['restart_on_error'] is False
-
-          foreign=RadarAssessment(is_russian=False,is_ai_video=True,is_comedy_scene=True,is_tutorial_or_review=False,is_talking_head=False,simple_situation=True,strong_first_frame=True,one_clear_joke_or_twist=True,characters_count=1,scene_description='AI gag',characters=['AI character'],joke='gag',hook='hook',ending='reaction',reproducible_format=True,reason='adaptable')
-          assert radar_service.matches(foreign) is True
-          assert 'RUSSIAN LOCALIZATION OVERRIDE' in gemini_service.production_system_prompt(False,8.0)
 
           original_store=cloud_state._store_client
           cloud_state._store_client=lambda: None
@@ -100,7 +130,7 @@ jobs:
           assert c.post('/api/radar/sync').status_code==202
           assert c.post('/api/radar/tick').get_json()['phase']=='discovering'
           app_module.create_or_resume_job=rs; app_module.tick_job=rt
-          print('V13 CORE HIGH-FREQUENCY KLING BUDGET SMOKE OK',budget)
+          print('DIALOGUE-FIRST V14 BUDGET SMOKE OK',budget)
           PY
       - uses: actions/setup-node@v4
         with:
@@ -114,4 +144,4 @@ jobs:
           grep -q "/api/radar/sync" static/runtime.js
           grep -q "/api/radar/tick" static/runtime.js
           grep -q "request_state_machine_v5" radar_request_job.py
-          grep -q "mass_global_ai_v13_core5" radar_highfreq_v12.py
+          grep -q "dialogue_first_v14_core5" radar_dialogue_v14.py
