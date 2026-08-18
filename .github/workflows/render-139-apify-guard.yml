@@ -1,0 +1,62 @@
+name: Render 139 Apify Guard
+
+on:
+  pull_request:
+    paths:
+      - 'requirements.txt'
+      - 'cloud_state.py'
+      - 'radar_request_job.py'
+      - '.github/workflows/render-139-apify-guard.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'requirements.txt'
+      - 'cloud_state.py'
+      - 'radar_request_job.py'
+      - '.github/workflows/render-139-apify-guard.yml'
+
+jobs:
+  apify-transport:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.5'
+      - name: Install production dependencies
+        run: pip install -r requirements.txt
+      - name: Verify no native Impit transport is installed
+        run: |
+          python - <<'PY'
+          import importlib.metadata
+          import importlib.util
+          from apify_client import ApifyClient
+
+          version = importlib.metadata.version('apify-client')
+          assert version == '1.12.1', version
+          assert importlib.util.find_spec('impit') is None, 'impit must not be installed in production'
+
+          client = ApifyClient('synthetic-token')
+          for name in ('actor', 'run', 'dataset', 'key_value_store', 'key_value_stores'):
+              assert hasattr(client, name), name
+
+          http_client = getattr(client, 'http_client', None) or getattr(client, '_http_client', None)
+          module = type(http_client).__module__ if http_client is not None else ''
+          name = type(http_client).__name__ if http_client is not None else ''
+          assert 'impit' not in (module + name).lower(), (module, name)
+          print('APIFY 1.x HTTPX TRANSPORT GUARD OK', version, module, name)
+          PY
+      - name: Verify V27 sync endpoint survives local fallback
+        env:
+          SECRET_KEY: smoke-test
+          APIFY_API_TOKEN: ''
+        run: |
+          python - <<'PY'
+          import app
+          c = app.app.test_client()
+          r = c.post('/api/radar/sync')
+          assert r.status_code == 202, (r.status_code, r.get_data(as_text=True))
+          data = r.get_json()
+          assert data.get('accepted') is True, data
+          print('RADAR SYNC ENDPOINT OK')
+          PY
