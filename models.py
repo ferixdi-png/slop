@@ -109,12 +109,6 @@ class ProductionPackage(BaseModel):
     block_5_publication: PublicationBlock
 
 
-# ─────────────────────────────────────────────────────────────
-# INTERNAL FORENSIC SOURCE MAP
-# Used before the public 0–5 package is created.
-# ─────────────────────────────────────────────────────────────
-
-
 class ForensicCharacter(BaseModel):
     stable_visual_binding: str
     full_visual_description: str
@@ -230,6 +224,11 @@ class RadarAssessment(BaseModel):
     ending: str
     reproducible_format: bool
     reason: str
+    # Dialogue-first radar signals. Defaults keep old stored assessments compatible.
+    has_spoken_dialogue: bool = False
+    dialogue_is_comedic: bool = False
+    dialogue_summary: str = ""
+    detected_language: str = ""
 
 
 class TrendCluster(BaseModel):
