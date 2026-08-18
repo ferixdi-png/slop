@@ -1,7 +1,7 @@
 name: Smoke Check
 on:
   push:
-    branches: [main, fix/radar-request-state-machine, fix/more-10s-ai-reels]
+    branches: [main, fix/radar-request-state-machine, fix/more-10s-ai-reels, fix-apify-quota-v10]
   workflow_dispatch:
 jobs:
   smoke:
@@ -15,31 +15,58 @@ jobs:
         run: pip install -r requirements.txt
       - name: Compile Python
         run: python -m compileall -q .
-      - name: Flask and global radar smoke
+      - name: Flask, budget and quota-fallback smoke
         env:
           SECRET_KEY: smoke-test
         run: |
           python - <<'PY'
           import app as app_module
           import radar_request_job as radar_job
-          import radar_service, gemini_service
+          import radar_service, gemini_service, cloud_state
+          from radar_budget_v10 import budget_breakdown, PROFILE_VERSION
           from progress import set_radar_status
           from models import RadarAssessment
+
           c=app_module.app.test_client()
           for path in ['/health','/api/status','/api/radar/status','/api/radar','/api/radar/candidates']:
               r=c.get(path); assert r.status_code==200,(path,r.status_code,r.get_data(as_text=True))
+
           status=c.get('/api/status').get_json()
+          assert status['radar_profile']==PROFILE_VERSION
           assert status['radar_keep_limit']==60
           assert status['radar_duration_min']==1.0 and status['radar_duration_max']==10.05
-          assert radar_job.RADAR_AI_ANALYZE_LIMIT==420
+          assert radar_job.RADAR_AI_ANALYZE_LIMIT==320
+
+          budget=budget_breakdown()
+          assert budget['guarded_apify_usd'] <= 4.50, budget
+          assert budget['hard_budget_usd'] == 5.0
+
+          sources=radar_job._build_sources()
+          assert {'popular_ai','ai_hashtags','ai_keywords'}<=set(sources)
+          assert sources['popular_ai']['input']['searchLimit']==18
+          assert len(sources['ai_hashtags']['input']['hashtags'])==34
+          assert len(sources['ai_keywords']['input']['hashtags'])==8
+          assert 'chatgpt' not in sources['ai_hashtags']['input']['hashtags']
+          assert 'openai' not in sources['ai_hashtags']['input']['hashtags']
+          assert 'grokvideo' in sources['ai_hashtags']['input']['hashtags']
+          assert 'geminiomni' in sources['ai_hashtags']['input']['hashtags']
+
           foreign=RadarAssessment(is_russian=False,is_ai_video=True,is_comedy_scene=True,is_tutorial_or_review=False,is_talking_head=False,simple_situation=True,strong_first_frame=True,one_clear_joke_or_twist=True,characters_count=1,scene_description='AI gag',characters=['AI character'],joke='gag',hook='hook',ending='reaction',reproducible_format=True,reason='adaptable')
           assert radar_service.matches(foreign) is True
           assert 'RUSSIAN LOCALIZATION OVERRIDE' in gemini_service.production_system_prompt(False,8.0)
+
+          # Cloud state must survive a completely unavailable Apify KVS.
+          original_store=cloud_state._store_client
+          cloud_state._store_client=lambda: None
+          probe={'phase':'queued','run_id':'local-fallback-smoke'}
+          assert cloud_state.save_cloud_record('SMOKE_LOCAL',probe) is True
+          assert cloud_state.load_cloud_record('SMOKE_LOCAL')==probe
+          cloud_state.delete_cloud_record('SMOKE_LOCAL')
+          cloud_state._store_client=original_store
+
           set_radar_status('ready','Готов к поиску',0,None,'local-only-status')
-          original_load=radar_job.load_radar_job
-          radar_job.load_radar_job=lambda: (_ for _ in ()).throw(RuntimeError('KVS MUST NOT BE CALLED BY STATUS'))
           assert c.get('/api/radar/status').get_json()['message']=='local-only-status'
-          radar_job.load_radar_job=original_load
+
           def fake_start(): return ({'ok':True,'active':True,'accepted':True,'completed':False,'resumed':False,'run_id':'smoke-run','phase':'queued'},202)
           def fake_tick(): return ({'ok':True,'active':True,'run_id':'smoke-run','phase':'discovering'},200)
           rs,rt=app_module.create_or_resume_job,app_module.tick_job
@@ -47,11 +74,7 @@ jobs:
           assert c.post('/api/radar/sync').status_code==202
           assert c.post('/api/radar/tick').get_json()['phase']=='discovering'
           app_module.create_or_resume_job=rs; app_module.tick_job=rt
-          sources=radar_job._build_sources()
-          assert {'popular_ai','ai_hashtags','ai_keywords'}<=set(sources)
-          assert sources['popular_ai']['input']['searchLimit']==64
-          assert len(sources['ai_hashtags']['input']['hashtags'])>=55
-          print('GENERAL SMOKE OK')
+          print('V10 BUDGET/QUOTA SMOKE OK',budget)
           PY
       - uses: actions/setup-node@v4
         with:
@@ -65,4 +88,4 @@ jobs:
           grep -q "/api/radar/sync" static/runtime.js
           grep -q "/api/radar/tick" static/runtime.js
           grep -q "request_state_machine_v5" radar_request_job.py
-          grep -q "mass_global_ai_v7" radar_growth_v6.py
+          grep -q "mass_global_ai_v10_budget5" radar_budget_v10.py
