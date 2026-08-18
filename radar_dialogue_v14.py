@@ -6,7 +6,6 @@ allowed because the production pipeline localizes it to Russian while preserving
 speaker ownership, joke, order and timing.
 """
 
-from datetime import datetime, timezone
 from google.genai import types
 
 import gemini_service
@@ -97,7 +96,6 @@ def matches_dialogue_first(a: RadarAssessment) -> bool:
     """Accept a reusable funny dialogue OR a strong reusable AI gag."""
     if a.is_tutorial_or_review:
         return False
-
     dialogue_hit = bool(a.has_spoken_dialogue and a.dialogue_is_comedic)
     ai_gag_hit = bool(
         a.is_ai_video
@@ -134,29 +132,6 @@ def normalize_dialogue_candidate(raw, source, creator_stats=None):
     item["dialogue_discovery_hint"] = dialogue_hint
     item["viral_score_v2"] = round(min(100.0, score), 1)
     return item
-
-
-def _save_post_and_learn_dialogue_creator(conn, item, assessment):
-    """Preserve old AI learning and also remember creators of matched dialogue scenes."""
-    growth._save_post_and_learn_ai_creator(conn, item, assessment)
-    if not assessment or not matches_dialogue_first(assessment) or not item.get("creator"):
-        return
-    now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        """INSERT INTO tracked_creators(
-            username,first_seen_at,last_seen_at,best_views_per_hour,matching_reels,
-            followers_count,usual_views,sample_size
-        ) VALUES(?,?,?,?,1,?,?,0)
-        ON CONFLICT(username) DO UPDATE SET
-            last_seen_at=excluded.last_seen_at,
-            best_views_per_hour=MAX(tracked_creators.best_views_per_hour,excluded.best_views_per_hour),
-            matching_reels=tracked_creators.matching_reels+1,
-            followers_count=CASE WHEN excluded.followers_count>0 THEN excluded.followers_count ELSE tracked_creators.followers_count END""",
-        (
-            item.get("creator", ""), now, now, float(item.get("views_per_hour") or 0),
-            int(item.get("followers_count") or 0), float(item.get("creator_usual_views") or 0),
-        ),
-    )
 
 
 def _duration_reject(measured: float) -> RadarAssessment:
@@ -263,14 +238,12 @@ def apply_dialogue_first_overrides():
     radar_job.RADAR_KEEP_LIMIT = KEEP_LIMIT
     radar_service.RADAR_KEEP_LIMIT = KEEP_LIMIT
 
-    # The durable pipeline reads these symbols directly from radar_request_job.
     radar_job.normalize_reel = normalize_dialogue_candidate
     gemini_service.classify_radar_video = classify_dialogue_first
     radar_job.matches = matches_dialogue_first
     radar_service.matches = matches_dialogue_first
     radar_quality.top_eligible = top_eligible_dialogue
     radar_job.top_eligible = top_eligible_dialogue
-    radar_quality._legacy_save_post = _save_post_and_learn_dialogue_creator
 
     info = budget._assert_budget()
     add_radar_log(
