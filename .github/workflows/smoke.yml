@@ -23,7 +23,7 @@ jobs:
           import app as app_module
           import radar_request_job as radar_job
           import radar_service, gemini_service, cloud_state
-          from radar_budget_v10 import budget_breakdown, PROFILE_VERSION
+          from radar_budget_v10 import budget_breakdown, PROFILE_VERSION, ACTOR_CAPS_USD
           from progress import set_radar_status
           from models import RadarAssessment
 
@@ -38,18 +38,40 @@ jobs:
           assert radar_job.RADAR_AI_ANALYZE_LIMIT==320
 
           budget=budget_breakdown()
-          assert budget['guarded_apify_usd'] <= 4.50, budget
+          assert budget['guarded_apify_usd'] <= 4.00, budget
+          assert budget['hard_apify_actor_caps_usd'] <= 3.35, budget
+          assert budget['designed_total_budget_usd'] <= 5.00, budget
           assert budget['hard_budget_usd'] == 5.0
+          assert round(sum(ACTOR_CAPS_USD.values()),2) <= 3.35
 
           sources=radar_job._build_sources()
           assert {'popular_ai','ai_hashtags','ai_keywords'}<=set(sources)
-          assert sources['popular_ai']['input']['searchLimit']==18
+          assert sources['popular_ai']['input']['searchLimit']==16
           assert len(sources['ai_hashtags']['input']['hashtags'])==34
           assert len(sources['ai_keywords']['input']['hashtags'])==8
           assert 'chatgpt' not in sources['ai_hashtags']['input']['hashtags']
           assert 'openai' not in sources['ai_hashtags']['input']['hashtags']
+          assert 'gpt' not in sources['ai_hashtags']['input']['hashtags']
+          assert 'midjourney' not in sources['ai_hashtags']['input']['hashtags']
           assert 'grokvideo' in sources['ai_hashtags']['input']['hashtags']
           assert 'geminiomni' in sources['ai_hashtags']['input']['hashtags']
+
+          # Verify actor.start receives real platform-side caps, not just estimates.
+          calls=[]
+          class FakeActor:
+              def start(self, **kwargs):
+                  calls.append(kwargs)
+                  return {'id':'run-1','status':'READY','defaultDatasetId':'ds-1'}
+          class FakeClient:
+              def actor(self, actor_id): return FakeActor()
+          job={'run_id':'smoke','phase':'queued','profile':PROFILE_VERSION,'sources':sources,'candidates':[],'stats':{},'result':{},'error':''}
+          radar_job._persist=lambda j:j
+          radar_job._start_one_source(FakeClient(),job)
+          assert calls, 'Actor was not started'
+          assert calls[0]['max_total_charge_usd'] is not None
+          assert float(calls[0]['max_total_charge_usd']) <= 1.35
+          assert calls[0]['max_items'] > 0
+          assert calls[0]['restart_on_error'] is False
 
           foreign=RadarAssessment(is_russian=False,is_ai_video=True,is_comedy_scene=True,is_tutorial_or_review=False,is_talking_head=False,simple_situation=True,strong_first_frame=True,one_clear_joke_or_twist=True,characters_count=1,scene_description='AI gag',characters=['AI character'],joke='gag',hook='hook',ending='reaction',reproducible_format=True,reason='adaptable')
           assert radar_service.matches(foreign) is True
