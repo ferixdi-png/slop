@@ -1,7 +1,5 @@
 """Russian-only publication localization for the production package."""
 
-from pydantic import BaseModel
-
 import gemini_service
 from radar_logs import add_radar_log
 
@@ -15,7 +13,7 @@ _APPLIED = False
 
 
 class ReconstructionAuditRuV15(_ORIGINAL_AUDIT_SCHEMA):
-    publication_russian_ok: bool = True
+    publication_russian_ok: bool
 
 
 RUSSIAN_PUBLICATION_RULES = r"""
@@ -53,7 +51,7 @@ def audit_system_prompt_ru_v15(expected_duration=None):
 
 
 def audit_passes_ru_v15(audit):
-    return bool(_ORIGINAL_AUDIT_PASSES(audit) and getattr(audit, "publication_russian_ok", True))
+    return bool(_ORIGINAL_AUDIT_PASSES(audit) and getattr(audit, "publication_russian_ok", False))
 
 
 def apply_russian_publication_overrides():
