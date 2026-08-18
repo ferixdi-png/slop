@@ -10,6 +10,7 @@ from db import db_conn
 STORE_NAME = "slop-fabrika-state"
 RECORD_KEY = "RADAR_SNAPSHOT_V1"
 JOB_RECORD_KEY = "RADAR_JOB_V2"
+CANCEL_RECORD_KEY = "RADAR_CANCEL_V1"
 LOCAL_PREFIX = "cloud_state_fallback:"
 
 _APIFY_CIRCUIT_UNTIL = 0.0
@@ -52,6 +53,17 @@ def apify_cloud_blocked():
     if time.time() < _APIFY_CIRCUIT_UNTIL:
         return True, _APIFY_CIRCUIT_REASON
     return False, ""
+
+
+def cloud_state_diagnostics():
+    """Small status payload for UI/logs without performing a new API call."""
+    blocked, reason = apify_cloud_blocked()
+    return {
+        "cloud_mirror_blocked": bool(blocked),
+        "cloud_mirror_reason": str(reason or "")[:300],
+        "local_fallback_enabled": True,
+        "store_name": STORE_NAME,
+    }
 
 
 def _local_key(key):
@@ -187,6 +199,26 @@ def load_radar_job():
 
 def clear_radar_job():
     return delete_cloud_record(JOB_RECORD_KEY)
+
+
+def request_radar_cancel(run_id):
+    """Persist an out-of-band stop marker that survives Render instance swaps."""
+    payload = {
+        "run_id": str(run_id or ""),
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if not payload["run_id"]:
+        return False
+    return save_cloud_record(CANCEL_RECORD_KEY, payload)
+
+
+def load_radar_cancel_request():
+    value = load_cloud_record(CANCEL_RECORD_KEY)
+    return value if isinstance(value, dict) else None
+
+
+def clear_radar_cancel_request():
+    return delete_cloud_record(CANCEL_RECORD_KEY)
 
 
 def save_radar_snapshot():
