@@ -1,0 +1,59 @@
+name: V27 Volume Discovery Smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Verify V27 discovery and strict provenance
+        run: |
+          python - <<'PY'
+          import radar_discovery_v27 as discovery
+          import radar_strict_scope_v27 as strict
+
+          sources = discovery.build_v27_sources()
+          assert set(sources) == {"hashtag_omni", "hashtag_veo", "hashtag_veo3"}
+          assert discovery.is_current_v27_source_set({"sources": sources})
+
+          for tag in discovery.TARGET_TAGS:
+              source = sources[f"hashtag_{tag}"]
+              payload = source["input"]
+              assert source["actor_id"] == "apify/instagram-scraper"
+              assert payload["directUrls"] == [f"https://www.instagram.com/explore/tags/{tag}/"]
+              assert payload["resultsType"] == "reels"
+              assert payload["resultsLimit"] == 250
+              assert payload["onlyPostsNewerThan"] == "7 days"
+              assert payload["addParentData"] is True
+
+          # The source itself is never enough: post-level caption/hashtags must
+          # still prove one of the exact target tags.
+          assert strict._verified_target_tag(
+              {"caption": "generated clip #veo #funny"}, "hashtag: veo"
+          ) == "veo"
+          assert strict._verified_target_tag(
+              {"hashtags": ["omni", "aivideo"]}, "hashtag: omni"
+          ) == "omni"
+          assert strict._verified_target_tag(
+              {"caption": "#funny #over50 #over40"}, "hashtag: veo"
+          ) == ""
+
+          old_sources = {
+              f"hashtag_{tag}": {
+                  "actor_id": "apify/instagram-hashtag-scraper",
+                  "strict_scope_marker": "STRICT_ACTUAL_HASHTAG_V27",
+                  "input": {"hashtags": [tag], "resultsType": "reels", "resultsLimit": 250},
+              }
+              for tag in discovery.TARGET_TAGS
+          }
+          assert not discovery.is_current_v27_source_set({"sources": old_sources})
+          print("V27 volume discovery smoke OK")
+          PY
