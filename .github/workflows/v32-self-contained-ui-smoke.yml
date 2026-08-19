@@ -5,6 +5,7 @@ on:
     paths:
       - 'frontend_failopen_v33.py'
       - 'frontend_broad_v34.py'
+      - 'frontend_manual_start_v35.py'
       - 'youtube_genai_v34.py'
       - 'radar_runtime_v27.py'
       - '.github/workflows/v32-self-contained-ui-smoke.yml'
@@ -13,6 +14,7 @@ on:
     paths:
       - 'frontend_failopen_v33.py'
       - 'frontend_broad_v34.py'
+      - 'frontend_manual_start_v35.py'
       - 'youtube_genai_v34.py'
       - 'radar_runtime_v27.py'
       - '.github/workflows/v32-self-contained-ui-smoke.yml'
@@ -34,9 +36,9 @@ jobs:
         with:
           node-version: '22'
       - run: pip install -r requirements.txt playwright
-      - name: Compile and static fail-open contract
+      - name: Compile and static fail-open/manual-start contract
         run: |
-          python -m compileall -q app.py frontend_failopen_v33.py frontend_broad_v34.py radar_runtime_v27.py
+          python -m compileall -q app.py frontend_failopen_v33.py frontend_broad_v34.py frontend_manual_start_v35.py radar_runtime_v27.py
           python - <<'PY'
           import re
           import subprocess
@@ -61,6 +63,9 @@ jobs:
           assert 'setInterval(' not in html
           assert 'V34 BROAD TREND POOL' in html
           assert '50–100' in html
+          assert 'MANUAL START ONLY' in html
+          assert 'window.__V35_MANUAL_START__=true' in html
+          assert 'setTimeout(checkApis,600)' not in html
           assert 'id="appShell"' in html
 
           # Root remains fail-open and independent of SQLite.
@@ -97,18 +102,21 @@ jobs:
           assert runtime['legacy_client_scripts'] == 0, runtime
           assert runtime['mutation_observers'] == 0, runtime
           assert runtime['parallel_polling_layers'] == 0, runtime
+          assert runtime['manual_start_only'] is True, runtime
+          assert runtime['auto_resume_on_page_load'] is False, runtime
+          assert runtime['tick_requires_driver_token'] is True, runtime
 
           script = re.search(r'<script>\s*(.*?)\s*</script>', html, re.S)
           assert script, 'single JS block missing'
           with tempfile.TemporaryDirectory() as td:
-              js = Path(td) / 'frontend-v34.js'
+              js = Path(td) / 'frontend-v34-v35.js'
               js.write_text(script.group(1), encoding='utf-8')
               subprocess.run(['node', '--check', str(js)], check=True)
-          print('V34 STATIC FAIL-OPEN CONTRACT OK', payload)
+          print('V34/V35 STATIC FAIL-OPEN + MANUAL-START CONTRACT OK', payload)
           PY
       - name: Install Chromium
         run: python -m playwright install --with-deps chromium
-      - name: Real Chromium + Gunicorn stability
+      - name: Real Chromium + Gunicorn stability with zero POST on page open
         run: |
           set -euo pipefail
           gunicorn app:app --bind 0.0.0.0:10000 --workers 1 --threads 4 --timeout 900 >/tmp/v34-gunicorn.log 2>&1 &
@@ -123,16 +131,25 @@ jobs:
           from playwright.sync_api import sync_playwright
 
           api_requests = []
+          post_requests = []
           page_errors = []
           with sync_playwright() as p:
               browser = p.chromium.launch()
               context = browser.new_context(viewport={'width': 1440, 'height': 1000})
               page = context.new_page()
-              page.on('request', lambda r: api_requests.append(r.url) if '/api/' in r.url else None)
+
+              def on_request(r):
+                  if '/api/' in r.url:
+                      api_requests.append((r.method, r.url))
+                  if r.method.upper() == 'POST':
+                      post_requests.append(r.url)
+
+              page.on('request', on_request)
               page.on('pageerror', lambda e: page_errors.append(str(e)))
               response = page.goto('http://127.0.0.1:10000/', wait_until='domcontentloaded', timeout=30000)
               assert response and response.status == 200
               page.wait_for_function('window.__V34_LOADED__ === true', timeout=10000)
+              page.wait_for_function('window.__V35_MANUAL_START__ === true', timeout=10000)
               hero = page.locator('h1')
               shell = page.locator('#appShell')
               assert hero.is_visible(), 'hero not visible after boot'
@@ -144,6 +161,7 @@ jobs:
               assert hero.is_visible(), 'hero disappeared after polling'
               assert shell.is_visible(), 'shell disappeared after polling'
               assert len(api_requests) <= 20, f'excessive API polling: {len(api_requests)} {api_requests}'
+              assert not post_requests, f'page load/reload must send zero POSTs: {post_requests}'
               assert not page_errors, page_errors
 
               context.set_offline(True)
@@ -161,7 +179,7 @@ jobs:
               assert hero.is_visible(), 'hero disappeared after runtime exception'
               assert shell.is_visible(), 'shell disappeared after runtime exception'
               browser.close()
-          print('V34 CHROMIUM FAIL-OPEN OK; API requests:', len(api_requests))
+          print('V34/V35 CHROMIUM FAIL-OPEN + ZERO-POST OPEN OK; API requests:', len(api_requests))
           PY
           kill -0 $PID
           echo 'Gunicorn + real Chromium stayed healthy.'
