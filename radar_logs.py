@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
 
+# Verification-branch-only no-op marker: forces the path-filtered V28 runtime smoke.
 _RUN_ID = ContextVar("radar_run_id", default="-")
 _SUPPRESS_STARTUP_LOGS = ContextVar("suppress_radar_startup_logs", default=False)
 
@@ -93,9 +94,6 @@ def add_radar_log(message, level="INFO", stage="", details=None):
     level = str(level or "INFO").upper()[:16]
     stage = str(stage or "general")[:80]
 
-    # During final V27 bootstrap, old compatibility layers may still execute
-    # their setup functions. Hide only their noisy startup READY banners. Any
-    # operational warning/error from those layers remains visible.
     if stage == "startup" and _SUPPRESS_STARTUP_LOGS.get():
         return
 
