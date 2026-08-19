@@ -79,8 +79,6 @@ for old, new in _REPLACEMENTS:
     if old in HTML:
         HTML = HTML.replace(old, new)
 
-# Replace the exact static third badge in radarHtml if the template form differs
-# slightly from the explicit replacement above.
 HTML = HTML.replace(
     "`<span class=\"badge\">речь + тайминг OK</span>`",
     "`<span class=\"badge\">${esc(x.adaptation_label||'ТРЕНД-КАНДИДАТ')}</span>`",
@@ -115,7 +113,17 @@ def frontend_health_payload() -> dict:
     }
 
 
+def patch_v33_module() -> dict:
+    """Make the already-tested V33 installer serve the transformed V34 document."""
+    v33.PROFILE = PROFILE
+    v33.HTML = HTML
+    v33.HTML_BYTES = HTML_BYTES
+    v33.HTML_SHA256 = HTML_SHA256
+    return frontend_health_payload()
+
+
 def install_frontend_v34(app) -> dict:
+    patch_v33_module()
     if "/static/" in HTML:
         raise RuntimeError("V34 frontend must not depend on /static assets")
     if "MutationObserver" in HTML:
@@ -150,3 +158,9 @@ def install_frontend_v34(app) -> dict:
         )
 
     return frontend_health_payload()
+
+
+# Imported by the V34 runtime before V33's installer runs. Patching globals here
+# keeps one single browser runtime and lets V33's proven installer/health checks
+# remain the serving mechanism.
+patch_v33_module()
