@@ -1,0 +1,159 @@
+name: V41 Real Chrome Prompt Modal Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'product_finish_v41.py'
+      - 'gemini_overload_v40.py'
+      - 'frontend_failopen_v33.py'
+      - 'frontend_broad_v34.py'
+      - 'frontend_manual_start_v35.py'
+      - 'metrics_truth_v40.py'
+      - '.github/workflows/v41-prompt-modal-browser-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'product_finish_v41.py'
+      - 'gemini_overload_v40.py'
+      - '.github/workflows/v41-prompt-modal-browser-smoke.yml'
+
+jobs:
+  real-chrome-prompt-modal:
+    runs-on: ubuntu-latest
+    env:
+      DB_PATH: /tmp/slop-v41-browser.sqlite
+      SECRET_KEY: v41-browser-smoke
+      APIFY_API_TOKEN: ''
+      GEMINI_API_KEY: ''
+      PORT: '10000'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt playwright
+      - name: Verify system Chrome
+        run: google-chrome --version
+      - name: Seed two visible trends
+        run: |
+          rm -f /tmp/slop-v41-browser.sqlite /tmp/slop-v41-browser.sqlite-wal /tmp/slop-v41-browser.sqlite-shm
+          python - <<'PY'
+          from datetime import datetime, timezone
+          import app as app_module
+          from db import db_conn
+
+          now = datetime.now(timezone.utc).isoformat()
+          with db_conn() as conn:
+              for i in (1,2):
+                  conn.execute(
+                      '''INSERT INTO radar_posts(
+                         platform,creator,post_url,published_at,duration_sec,views,likes,comments,
+                         hours_since_publish,views_per_hour,viral_score_v2,search_term,
+                         ai_checked,ai_match,screening_profile,reason,hook,scene_description,caption
+                         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                      (
+                          'Instagram Reels',f'browser{i}',f'https://www.instagram.com/reel/V41BROWSER{i}/',
+                          now,8.0,300000-i*10000,5000,100,1.0,250000-i*10000,95-i,'ai',
+                          0,0,app_module.PROFILE_VERSION,'',f'Browser trend {i}',
+                          f'Visible synthetic browser trend {i}','synthetic browser #ai'
+                      ),
+                  )
+              conn.commit()
+          PY
+      - name: Click, copy, close and reopen modal in real Chrome
+        run: |
+          set -euo pipefail
+          gunicorn app:app --bind 0.0.0.0:10000 --workers 1 --threads 4 --timeout 900 >/tmp/v41-browser-gunicorn.log 2>&1 &
+          PID=$!
+          trap 'kill $PID >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:10000/healthz >/dev/null; then break; fi
+            sleep 0.5
+          done
+
+          python - <<'PY'
+          import json
+          from playwright.sync_api import sync_playwright
+
+          page_errors = []
+          api_posts = []
+          analyze_calls = {'n': 0}
+
+          def analyze_route(route):
+              analyze_calls['n'] += 1
+              n = analyze_calls['n']
+              photo = f'PHOTO PROMPT BROWSER {n}: ultra realistic vertical 9:16 Frame 0 ' + ('x' * 120)
+              video = f'VIDEO PROMPT BROWSER {n}: use Frame 0, exact action sequence. AUDIO / VOICE / RUSSIAN SPEECH: natural line ' + ('y' * 160)
+              route.fulfill(
+                  status=200,
+                  content_type='application/json',
+                  body=json.dumps({
+                      'id': 9000+n,
+                      'model': 'synthetic-browser',
+                      'source_mode': 'metadata_gemini',
+                      'creator': f'browser{n}',
+                      'platform': 'Instagram Reels',
+                      'trend_title': f'Browser modal trend {n}',
+                      'result': {'photo_prompt': photo, 'video_prompt': video},
+                  }, ensure_ascii=False),
+              )
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(channel='chrome')
+              context = browser.new_context(viewport={'width': 1440, 'height': 1000})
+              context.grant_permissions(['clipboard-read','clipboard-write'], origin='http://127.0.0.1:10000')
+              page = context.new_page()
+              page.on('pageerror', lambda e: page_errors.append(str(e)))
+              page.on('request', lambda r: api_posts.append(r.url) if r.method.upper()=='POST' and '/api/' in r.url else None)
+              page.route('**/api/radar/*/analyze', analyze_route)
+
+              response = page.goto('http://127.0.0.1:10000/', wait_until='domcontentloaded', timeout=30000)
+              assert response and response.status == 200
+              page.wait_for_function('window.__V35_MANUAL_START__ === true', timeout=10000)
+              page.locator('[data-analyze]').first.wait_for(state='visible', timeout=10000)
+              assert page.locator('[data-analyze]').count() >= 2
+              assert api_posts == [], api_posts
+              assert not page.locator('#promptModal').is_visible()
+
+              # Trend 1 -> modal -> exactly two cards -> clipboard works.
+              page.locator('[data-analyze]').nth(0).click()
+              page.locator('#promptModalContent').wait_for(state='visible', timeout=10000)
+              assert page.locator('#promptModal').is_visible()
+              assert page.locator('#promptModalContent .prompt-card').count() == 2
+              assert 'PHOTO PROMPT BROWSER 1' in page.locator('#promptModalContent .prompt-card').nth(0).inner_text()
+              assert 'VIDEO PROMPT BROWSER 1' in page.locator('#promptModalContent .prompt-card').nth(1).inner_text()
+              assert 'AUDIO / VOICE / RUSSIAN SPEECH' in page.locator('#promptModalContent .prompt-card').nth(1).inner_text()
+              copy = page.locator('#promptModalContent .prompt-card').nth(0).locator('[data-copy]')
+              copy.click()
+              page.wait_for_function("document.querySelector('#promptModalContent .prompt-card [data-copy]').textContent==='СКОПИРОВАНО'", timeout=5000)
+              clipboard = page.evaluate('navigator.clipboard.readText()')
+              assert 'PHOTO PROMPT BROWSER 1' in clipboard, clipboard
+
+              # Close by X, then open a different trend without navigation/scroll target.
+              page.locator('[data-prompt-close]').click()
+              assert not page.locator('#promptModal').is_visible()
+              page.locator('[data-analyze]').nth(1).click()
+              page.locator('#promptModalContent').wait_for(state='visible', timeout=10000)
+              assert 'Browser modal trend 2' in page.locator('#promptModalTitle').inner_text()
+              assert 'PHOTO PROMPT BROWSER 2' in page.locator('#promptModalContent').inner_text()
+
+              # Escape closes; third open can be closed by clicking backdrop.
+              page.keyboard.press('Escape')
+              assert not page.locator('#promptModal').is_visible()
+              page.locator('[data-analyze]').nth(0).click()
+              page.locator('#promptModalContent').wait_for(state='visible', timeout=10000)
+              page.locator('#promptModal').click(position={'x': 4, 'y': 4})
+              assert not page.locator('#promptModal').is_visible()
+
+              assert analyze_calls['n'] == 3, analyze_calls
+              assert len(api_posts) == 3, api_posts
+              assert not page_errors, page_errors
+              assert page.locator('#appShell').is_visible()
+              browser.close()
+
+          print('V41 REAL CHROME PROMPT MODAL OK')
+          PY
+
+          kill -0 $PID
+          echo '--- V41 GUNICORN TAIL ---'
+          tail -n 80 /tmp/v41-browser-gunicorn.log
