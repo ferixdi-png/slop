@@ -1,0 +1,136 @@
+name: MVP Final Contract Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'app.py'
+      - 'radar_runtime_v27.py'
+      - 'radar_broad_v34.py'
+      - 'radar_manual_start_v35.py'
+      - 'prompt_reliability_v36.py'
+      - 'radar_json_headroom_v38.py'
+      - 'mvp_passive_recovery_v39.py'
+      - 'render.yaml'
+      - 'requirements.txt'
+      - '.github/workflows/mvp-final-contract-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'app.py'
+      - 'radar_runtime_v27.py'
+      - 'radar_broad_v34.py'
+      - 'radar_manual_start_v35.py'
+      - 'prompt_reliability_v36.py'
+      - 'radar_json_headroom_v38.py'
+      - 'mvp_passive_recovery_v39.py'
+      - 'render.yaml'
+      - 'requirements.txt'
+      - '.github/workflows/mvp-final-contract-smoke.yml'
+
+jobs:
+  final-mvp-contract:
+    runs-on: ubuntu-latest
+    env:
+      DB_PATH: /tmp/slop-final-mvp.sqlite
+      SECRET_KEY: final-mvp-smoke
+      APIFY_API_TOKEN: ''
+      GEMINI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - name: Compile production surface
+        run: python -m compileall -q app.py radar_runtime_v27.py radar_broad_v34.py radar_manual_start_v35.py prompt_reliability_v36.py radar_json_headroom_v38.py mvp_passive_recovery_v39.py
+      - name: Assert final MVP product contract
+        run: |
+          rm -f /tmp/slop-final-mvp.sqlite /tmp/slop-final-mvp.sqlite-wal /tmp/slop-final-mvp.sqlite-shm
+          python - <<'PY'
+          from pathlib import Path
+
+          import app as app_module
+          import radar_json_headroom_v38 as v38
+
+          info = app_module.RUNTIME_INFO
+          assert info['platforms'] == ['Instagram Reels', 'TikTok', 'YouTube Shorts'], info
+          assert info['hashtags'] == ['omni', 'veo', 'veo3', 'ai', 'ии'], info
+          assert info['lookback_days'] == 14, info
+          assert info['results_per_tag_per_platform'] == 60, info
+          assert info['max_raw_requested'] == 900, info
+          assert info['keep_limit'] == 100, info
+          assert info['target_output_min'] == 50, info
+          assert info['target_output_max'] == 100, info
+          assert info['ai_enrich_limit'] == 20, info
+          assert info['ai_role'] == 'enrichment_only', info
+          assert info['speech_required'] is False, info
+          assert info['no_speech_policy'] == 'keep_and_add_russian_speech', info
+          assert info['timing_reject_policy'] == 'keep_and_rewrite_to_10s', info
+          assert info['strict_actual_hashtag'] is True, info
+          assert info['direct_max_duration_sec'] == 10.05, info
+          assert info['source_max_duration_sec'] == 15.05, info
+          assert info['compressed_target_sec'] == 10.0, info
+
+          assert float(info['hard_total_target_usd']) == 5.0, info
+          assert float(info['apify_discovery_hard_cap_usd']) == 2.8, info
+          assert float(info['budget_headroom_usd']) == 2.2, info
+          assert info['automatic_paid_refreshes'] is False, info
+          assert float(info['manual_refresh_cap_usd']) == 0.12, info
+
+          assert info['manual_start_only'] is True, info
+          assert info['auto_resume_on_page_load'] is False, info
+          assert info['tick_requires_driver_token'] is True, info
+          assert info['driver_token_persisted'] is False, info
+          assert info['deploy_resume_policy'] == 'paused_until_explicit_click', info
+
+          assert info['broad_candidate_prompt_access'] is True, info
+          assert info['analysis_cache_for_broad_candidates'] is True, info
+          assert info['apify_private_media_auth'] == 'bearer_header_only', info
+          assert info['apify_signed_record_fallback'] is True, info
+          assert info['prompt_token_in_url'] is False, info
+          assert info['redirect_token_forwarding'] is False, info
+          assert info['analysis_singleflight'] is True, info
+          assert info['safe_media_download'] is True, info
+          assert info['motion_gate_fail_closed'] is True, info
+
+          assert info['self_contained_frontend'] is True, info
+          assert info['external_static_dependencies'] == 0, info
+          assert info['fail_open_dom'] is True, info
+          assert info['single_js_runtime'] is True, info
+          assert info['mutation_observers'] == 0, info
+          assert info['parallel_polling_layers'] == 0, info
+
+          v38_info = v38.diagnostics()
+          assert v38_info['structured_output_max_tokens'] == 1024, v38_info
+          assert v38_info['automatic_retry_added'] is False, v38_info
+          assert v38_info['compact_output_contract'] is True, v38_info
+          recovery = v38_info['passive_recovery']
+          assert recovery['snapshot_writer'] == 'newest_first_v39', recovery
+          assert recovery['snapshot_lookback_days'] == 14, recovery
+          assert recovery['snapshot_post_limit'] == 1000, recovery
+          assert recovery['analysis_cache_limit'] == 30, recovery
+          assert recovery['paid_discovery_started'] is False, recovery
+          assert recovery['gemini_called'] is False, recovery
+          assert recovery['job_advanced'] is False, recovery
+
+          c = app_module.app.test_client()
+          health = c.get('/healthz')
+          assert health.status_code == 200, health.get_data(as_text=True)
+          hp = health.get_json()
+          assert hp['ok'] is True, hp
+          assert hp['control_mode'] == 'manual_start_only_v35', hp
+          assert hp['prompt_mode'] == 'production_prompts_v36_authenticated_media', hp
+          root = c.get('/')
+          assert root.status_code == 200
+          html = root.get_data(as_text=True)
+          assert 'window.__V35_MANUAL_START__=true' in html
+          assert '/static/' not in html
+
+          render = Path('render.yaml').read_text('utf-8')
+          assert 'healthCheckPath: /healthz' in render
+          requirements = Path('requirements.txt').read_text('utf-8')
+          assert 'apify-client==1.12.1' in requirements
+          assert 'google-genai<3.0,>=2.9' in requirements
+
+          print('FINAL MVP CONTRACT OK')
+          PY
