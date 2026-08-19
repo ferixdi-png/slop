@@ -6,7 +6,7 @@
 
   const originalRadarCard = window.radarCard;
   if (typeof originalRadarCard === 'function') {
-    window.radarCard = function v29RadarCard(row, index) {
+    window.radarCard = function v30RadarCard(row, index) {
       const copy = {...(row || {})};
       const measured = Number(copy.measured_growth_per_hour || 0);
       if (measured > 0) copy.views_per_hour = measured;
@@ -22,6 +22,7 @@
         badges.push(`<div class="anomaly hot">strict hashtag: <b>#${escapeHtml(tag)}</b></div>`);
       }
       badges.push('<div class="anomaly hot">Gemini: <b>речь + тайминг подтверждены</b></div>');
+      badges.push('<div class="anomaly">V30: <b>motion fail-closed · budget guarded</b></div>');
       if (measured > 0) {
         const acceleration = Number(copy.growth_acceleration || 0);
         badges.push(`<div class="anomaly hot">замер между поисками: <b>${Math.round(measured).toLocaleString('ru-RU')}/ч</b>${acceleration > 0 ? ` · ускорение ×${acceleration.toFixed(acceleration >= 10 ? 0 : 1)}` : ''}</div>`);
@@ -48,10 +49,10 @@
     if (brand) brand.textContent = 'Instagram · TikTok · YouTube';
 
     const sideNote = document.querySelector('.side-note');
-    if (sideNote) sideNote.textContent = '1. Новый поиск очищает предыдущий TOP и мету. 2. Ищем последние 14 дней только по реальным #omni, #veo, #veo3, #ai и #ии. 3. Каждый кандидат обязательно слушает Gemini: без слышимой речи — REJECT. 4. До 10.05 сек сохраняем исходный речевой тайминг; 10.05–15.05 сек проходит только если обязательные реплики и действия естественно укладываются ровно в 10 секунд. 5. Apify discovery физически ограничен $2.80, общий целевой бюджет полного поиска — меньше $5.';
+    if (sideNote) sideNote.textContent = '1. Новый поиск очищает предыдущий TOP и мету. 2. Ищем последние 14 дней только по реальным #omni, #veo, #veo3, #ai и #ии. 3. Без слышимой речи и подтверждённого движения — REJECT. 4. До 10.05 сек сохраняем исходный тайминг; 10.05–15.05 сек проходит только естественно сжимаемая в 10 секунд механика. 5. Apify discovery физически ограничен $2.80, общий target полного поиска — меньше $5. 6. V30 блокирует повторную оплату при сбоях, дубли анализа и небезопасные media URL.';
 
     const eyebrow = document.querySelector('header .eyebrow');
-    if (eyebrow) eyebrow.textContent = 'V29 MULTIPLATFORM · HARD BUDGET <$5';
+    if (eyebrow) eyebrow.textContent = 'V30 AUDIT HARDENED · HARD BUDGET <$5';
     const hero = document.querySelector('header h1 span');
     if (hero) hero.textContent = 'Instagram + TikTok + YouTube.';
 
@@ -62,11 +63,11 @@
       const muted = section.querySelector('.muted');
       if (step) step.textContent = '3 ПЛАТФОРМЫ · 5 ТЕГОВ · 14 ДНЕЙ';
       if (h2) h2.textContent = '#omni + #veo + #veo3 + #ai + #ии · только видео с речью · исходник до 15.05 сек';
-      if (muted) muted.textContent = 'до 60 результатов на тег/платформу · Apify hard cap $2.80 · общий target <$5';
+      if (muted) muted.textContent = '60 результатов на тег/платформу · discovery hard cap $2.80 · V30 fail-closed guards';
     }
 
     const geminiMeta = document.getElementById('geminiApiMeta');
-    if (geminiMeta) geminiMeta.textContent = 'Обязательный speech + timing gate и production-анализ выбранного видео';
+    if (geminiMeta) geminiMeta.textContent = 'Speech + timing gate · до 150 кандидатов · одинаковый production-анализ кешируется';
     const apiMeta = document.getElementById('apifyApiMeta');
     if (apiMeta) apiMeta.textContent = 'Hard caps: Instagram $0.85 · TikTok $1.15 · YouTube $0.80';
 
@@ -74,8 +75,8 @@
     if (intro) {
       const title = intro.querySelector('b');
       const text = intro.querySelector('span');
-      if (title) title.textContent = 'Три платформы сохранены, но расход теперь физически ограничен.';
-      if (text) text.textContent = 'На каждый из пяти тегов запрашивается максимум 60 результатов на платформу — до 300 Instagram, 300 TikTok и 300 YouTube записей. Каждый discovery Actor получает и maxItems, и собственный maxTotalChargeUsd: $0.85 / $1.15 / $0.80. Суммарный Apify discovery hard cap — $2.80, ещё $2.20 остаётся запасом до общего target <$5. После strict hashtag/date/duration/motion фильтра Gemini слушает только лучшие кандидаты; максимум 150 speech/timing проверок за run.';
+      if (title) title.textContent = 'Три платформы, жёсткий бюджет и защита от повторной оплаты.';
+      if (text) text.textContent = 'До 300 результатов на платформу. Discovery Actor получает и maxItems, и maxTotalChargeUsd: $0.85 / $1.15 / $0.80, суммарно не больше $2.80. V30 перед платным стартом требует durable KVS, не повторяет Actor после неоднозначного transport-сбоя, запрещает автоматические paid-refresh, ограничивает ручной refresh одним результатом и $0.12, режет static/slideshow локально и кеширует одинаковый production-анализ.';
     }
 
     const mini = [...document.querySelectorAll('.section-mini-title')];
@@ -83,13 +84,13 @@
       const b = mini[0].querySelector('b');
       const span = mini[0].querySelector('span');
       if (b) b.textContent = 'TOP НАБИРАЮЩИХ ОБОРОТЫ';
-      if (span) span.textContent = 'Instagram + TikTok + YouTube · 14 дней · 5 строгих тегов · речь и тайминг подтверждены Gemini';
+      if (span) span.textContent = 'Instagram + TikTok + YouTube · 14 дней · 5 строгих тегов · речь и движение обязательны · тайминг подтверждён Gemini';
     }
     if (mini[1]) {
       const b = mini[1].querySelector('b');
       const span = mini[1].querySelector('span');
-      if (b) b.textContent = 'ПУЛ КАНДИДАТОВ V29';
-      if (span) span.textContent = '#omni · #veo · #veo3 · #ai · #ии · до 900 raw · максимум 150 speech/timing проверок Gemini';
+      if (b) b.textContent = 'ПУЛ КАНДИДАТОВ V30';
+      if (span) span.textContent = '#omni · #veo · #veo3 · #ai · #ии · до 900 raw · максимум 150 кандидатов · 180 automatic AI ticks hard guard';
     }
   }
 

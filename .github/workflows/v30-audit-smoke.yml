@@ -1,0 +1,210 @@
+name: V30 Audit Top10 Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'radar_audit_v30.py'
+      - 'radar_runtime_v27.py'
+      - '.github/workflows/v30-audit-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'radar_audit_v30.py'
+      - 'radar_runtime_v27.py'
+      - '.github/workflows/v30-audit-smoke.yml'
+
+jobs:
+  audit-top10:
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: audit-smoke
+      APIFY_API_TOKEN: ''
+      GEMINI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - name: Verify V30 audit guards without external spend
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import datetime, timedelta, timezone
+
+          import app as app_module
+          import actor_utils
+          import cloud_state
+          import radar_audit_v30 as v30
+          import radar_request_job as radar_job
+          from db import db_conn
+          from static_video_gate import MotionGateResult
+
+          assert app_module.RUNTIME_INFO['audit_top10_closed'] is True
+
+          # 7: snapshot really covers 14 days and excludes older rows.
+          now = datetime.now(timezone.utc)
+          with db_conn() as conn:
+              conn.execute('DELETE FROM radar_posts')
+              for suffix, age in [('ten', 10), ('fifteen', 15)]:
+                  conn.execute(
+                      '''INSERT INTO radar_posts(platform,creator,post_url,published_at,duration_sec,views,likes,comments,
+                         hours_since_publish,views_per_hour,viral_score_v2,search_term,ai_checked,ai_match,screening_profile,reason)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                      ('YouTube Shorts','audit',f'https://youtube.com/shorts/{suffix}',(now-timedelta(days=age)).isoformat(),
+                       8.0,1000,10,1,age*24,100,50,'ai',1,1,v30.SCREENING_PROFILE,'PASS_SPEECH_TIMING_V28:DIRECT'),
+                  )
+              conn.commit()
+          captured = {}
+          original_save = cloud_state.save_cloud_record
+          cloud_state.save_cloud_record = lambda key, payload: captured.update(payload=payload) or True
+          try:
+              assert v30.save_radar_snapshot_v30() is True
+          finally:
+              cloud_state.save_cloud_record = original_save
+          urls = {x['post_url'] for x in captured['payload']['posts']}
+          assert 'https://youtube.com/shorts/ten' in urls, urls
+          assert 'https://youtube.com/shorts/fifteen' not in urls, urls
+          assert captured['payload']['lookback_days'] == 14
+          assert captured['payload']['post_limit'] == 1000
+
+          # 8: private/local media targets are rejected before requests.
+          try:
+              v30._validate_public_https_url('https://127.0.0.1/video.mp4')
+              raise AssertionError('private IP was not rejected')
+          except RuntimeError as exc:
+              assert 'non-public' in str(exc), exc
+          try:
+              v30._validate_public_https_url('http://example.com/video.mp4')
+              raise AssertionError('plain HTTP was not rejected')
+          except RuntimeError:
+              pass
+
+          # 9: an unavailable local motion check is a local reject, not a Gemini call.
+          old_measure = v30.measure_video_duration
+          old_motion = v30.inspect_visual_motion
+          old_base = v30._BASE_CLASSIFY_FILE
+          v30.measure_video_duration = lambda path, fallback=0: 8.0
+          v30.inspect_visual_motion = lambda path: MotionGateResult(False, False, 8.0, 0, 0, 1.0, 'synthetic ffmpeg failure')
+          v30._BASE_CLASSIFY_FILE = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('Gemini path must not run'))
+          try:
+              rejected = v30.classify_file_v30('/tmp/not-needed.mp4', '#ai', 'Instagram Reels')
+              assert rejected.reason.startswith('MOTION_GATE_UNAVAILABLE'), rejected
+          finally:
+              v30.measure_video_duration = old_measure
+              v30.inspect_visual_motion = old_motion
+              v30._BASE_CLASSIFY_FILE = old_base
+          prompt = v30.screen_prompt_v30('#ai', 8.0, 'YouTube Shorts')
+          assert 'STATIC_OR_SLIDESHOW' in prompt and 'always REJECT' in prompt
+
+          # 3: one-item refresh carries a real Apify dollar cap.
+          captured_start = {}
+          class FakeActor:
+              def start(self, **kwargs):
+                  captured_start.update(kwargs)
+                  return {'id':'run-1','status':'SUCCEEDED','defaultDatasetId':'ds-1'}
+          class FakeClient:
+              def actor(self, actor_id): return FakeActor()
+              def run(self, run_id): return object()
+          old_poll = actor_utils._poll_one
+          old_items = actor_utils._items_from_success
+          actor_utils._poll_one = lambda state: {'id':'run-1','status':'SUCCEEDED','defaultDatasetId':'ds-1'}
+          actor_utils._items_from_success = lambda client, state, final: [{'ok':True}]
+          try:
+              rows = v30.capped_refresh_actor_items_v30(FakeClient(), 'actor/x', {'postURLs':['x']})
+          finally:
+              actor_utils._poll_one = old_poll
+              actor_utils._items_from_success = old_items
+          assert rows == [{'ok':True}]
+          assert captured_start['max_items'] == 1
+          assert float(captured_start['max_total_charge_usd']) == 0.12
+          assert captured_start['restart_on_error'] is False
+
+          # 6: automatic screening cannot retry forever.
+          job = {
+              'run_id':'audit-ai', 'phase':'ai',
+              'stats':{'automatic_ai_ticks_v30':v30.MAX_AUTOMATIC_AI_TICKS},
+              'candidates':[{'post_url':'a','ai_done':False},{'post_url':'b','ai_done':False}],
+          }
+          guarded = v30.process_one_ai_v30(job)
+          assert guarded['phase'] == 'finalizing'
+          assert guarded['stats']['automatic_ai_deferred'] == 2
+          assert all(x['ai_done'] and x['ai_deferred_budget'] for x in guarded['candidates'])
+
+          # 1: paid discovery cannot start when durable cloud mirror is unavailable.
+          sources = radar_job._build_sources()
+          durability_job = {
+              'run_id':'audit-durable','profile':v30.SCREENING_PROFILE,'phase':'starting_sources',
+              'sources':sources,'candidates':[],'warnings':[],'source_failures':{},'stats':{},'result':{},
+              'error':'','last_error':'','current_source':'','current_ai_index':None,'current_ai_post_url':'','error_guard':{},
+          }
+          old_cloud = v30._cloud_mirror_available
+          old_base_start = v30._BASE_START_SOURCE
+          v30._cloud_mirror_available = lambda: False
+          v30._BASE_START_SOURCE = lambda client, job: (_ for _ in ()).throw(AssertionError('paid Actor must not start'))
+          try:
+              blocked = v30.start_one_source_v30(object(), durability_job)
+          finally:
+              v30._cloud_mirror_available = old_cloud
+              v30._BASE_START_SOURCE = old_base_start
+          assert blocked['phase'] == 'durability_blocked'
+
+          # 2: ambiguous transport failure is quarantined instead of retried blindly.
+          sources2 = radar_job._build_sources()
+          uncertain_job = {
+              'run_id':'audit-uncertain','profile':v30.SCREENING_PROFILE,'phase':'starting_sources',
+              'sources':sources2,'candidates':[],'warnings':[],'source_failures':{},'stats':{},'result':{},
+              'error':'','last_error':'','current_source':'','current_ai_index':None,'current_ai_post_url':'','error_guard':{},
+          }
+          old_cloud = v30._cloud_mirror_available
+          old_base_start = v30._BASE_START_SOURCE
+          v30._cloud_mirror_available = lambda: True
+          v30._BASE_START_SOURCE = lambda client, job: (_ for _ in ()).throw(TimeoutError('connection timeout after submit'))
+          try:
+              uncertain = v30.start_one_source_v30(object(), uncertain_job)
+          finally:
+              v30._cloud_mirror_available = old_cloud
+              v30._BASE_START_SOURCE = old_base_start
+          assert uncertain['phase'] == 'source_start_uncertain'
+          first_source = next(iter(uncertain['sources'].values()))
+          assert first_source['start_intent_state'] == 'uncertain'
+          assert first_source['start_uncertain_until']
+
+          # 4+5: cached production package returns before route body and concurrent duplicate is refused.
+          item_url = 'https://www.youtube.com/shorts/cache-v30'
+          with db_conn() as conn:
+              conn.execute(
+                  '''INSERT OR REPLACE INTO radar_posts(platform,creator,post_url,published_at,duration_sec,views,likes,comments,
+                     hours_since_publish,views_per_hour,viral_score_v2,search_term,ai_checked,ai_match,screening_profile,reason)
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                  ('YouTube Shorts','cache',item_url,now.isoformat(),8.0,1000,10,1,1,1000,80,'ai',1,1,v30.SCREENING_PROFILE,'PASS_SPEECH_TIMING_V28:DIRECT'),
+              )
+              item_id = conn.execute('SELECT id FROM radar_posts WHERE post_url=?',(item_url,)).fetchone()['id']
+              fingerprint = v30._analysis_fingerprint(item_url, 8.0, False)
+              conn.execute(
+                  '''INSERT INTO analyses(created_at,source_url,title,model,result_json,production_profile,source_duration_sec,owned_or_licensed,source_fingerprint)
+                     VALUES(?,?,?,?,?,?,?,?,?)''',
+                  (now.isoformat(),item_url,'audit cache',v30.ANALYSIS_MODEL,json.dumps({'cached_test':True}),v30.PRODUCTION_PROFILE_VERSION,8.0,0,fingerprint),
+              )
+              analysis_id = conn.execute('SELECT MAX(id) AS id FROM analyses').fetchone()['id']
+              conn.commit()
+          c = app_module.app.test_client()
+          cached = c.post(f'/api/radar/{item_id}/analyze', json={'owned_or_licensed':False})
+          assert cached.status_code == 200, cached.get_data(as_text=True)
+          payload = cached.get_json()
+          assert payload['cached'] is True and payload['id'] == analysis_id and payload['result']['cached_test'] is True, payload
+          with v30._ANALYSIS_LOCK:
+              v30._ANALYSIS_ACTIVE.add(item_id)
+          try:
+              duplicate = c.post(f'/api/radar/{item_id}/analyze', json={'owned_or_licensed':False})
+              assert duplicate.status_code == 409, duplicate.get_data(as_text=True)
+          finally:
+              with v30._ANALYSIS_LOCK:
+                  v30._ANALYSIS_ACTIVE.discard(item_id)
+
+          # 10: cross-site mutation is denied.
+          cross = c.post('/api/radar/sync', headers={'Origin':'https://evil.example','Sec-Fetch-Site':'cross-site'})
+          assert cross.status_code == 403
+
+          print('V30 AUDIT TOP10 REGRESSION OK')
+          PY
