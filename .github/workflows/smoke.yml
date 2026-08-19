@@ -21,7 +21,7 @@ jobs:
       - name: Compile Python
         run: python -m compileall -q .
 
-      - name: V28 product plus V19 edge hardening smoke
+      - name: V29 budget product plus V19 edge hardening smoke
         env:
           SECRET_KEY: smoke-test
           PORT: '10000'
@@ -32,6 +32,7 @@ jobs:
 
           import app as app_module
           import gemini_service
+          import radar_budget_v29 as v29
           import radar_cancel_v18 as cancel
           import radar_edge_v19 as edge
           import radar_hardening_v19 as hardening
@@ -48,17 +49,28 @@ jobs:
               assert r.status_code == 200, (path, r.status_code, r.get_data(as_text=True))
 
           status = c.get('/api/status').get_json()
-          assert status['radar_runtime'] == v28.MODE_VERSION, status
-          assert status['radar_profile'] == v28.MODE_VERSION, status
-          assert status['edge_profile'] == v28.MODE_VERSION, status
-          assert app_module.PROFILE_VERSION == v28.SCREENING_PROFILE
-          assert hardening.PROFILE_VERSION == v28.SCREENING_PROFILE
-          assert app_module.RUNTIME_INFO['internal_screening_profile'] == v28.SCREENING_PROFILE
+          assert status['radar_runtime'] == v29.MODE_VERSION, status
+          assert status['radar_profile'] == v29.MODE_VERSION, status
+          assert status['edge_profile'] == v29.MODE_VERSION, status
+          assert app_module.PROFILE_VERSION == v29.SCREENING_PROFILE
+          assert hardening.PROFILE_VERSION == v29.SCREENING_PROFILE
+          assert app_module.RUNTIME_INFO['internal_screening_profile'] == v29.SCREENING_PROFILE
           assert app_module.RUNTIME_INFO['internal_edge'] == edge.EDGE_PROFILE
           assert status['radar_keep_limit'] == 180
-          assert radar_job.RADAR_AI_ANALYZE_LIMIT == 420
+          assert radar_job.RADAR_AI_ANALYZE_LIMIT == 150
 
-          # SQLite lock/profile hardening survives V28.
+          # Hard spend contract: discovery cannot exceed $2.80 and the full design target is <$5.
+          b = v29.budget_breakdown_v29()
+          assert b['hard_total_target_usd'] == 5.0, b
+          assert b['hard_apify_discovery_caps_usd'] <= 2.80, b
+          assert b['reserved_headroom_usd'] >= 2.20, b
+          assert b['results_per_tag_per_platform'] == 60, b
+          assert b['max_items_per_platform'] == 300, b
+          assert b['max_raw_requested'] == 900, b
+          assert b['gemini_analyze_limit'] == 150, b
+          assert sum(b['source_caps_usd'].values()) <= 2.80, b
+
+          # SQLite lock/profile hardening survives V29.
           with db_conn() as conn:
               assert isinstance(conn, ResilientConnection)
               assert int(conn.execute('PRAGMA busy_timeout').fetchone()[0]) >= 60000
@@ -80,19 +92,23 @@ jobs:
           stopped = c.post('/api/radar/tick').get_json()
           assert stopped['active'] is False and stopped['phase'] == 'cancelled', stopped
 
-          # A stale pre-V28 queue resets before paid work.
+          # A stale pre-V29 queue resets before paid work and receives capped sources.
           c.post('/api/radar/sync')
           stale = load_radar_job()
-          stale['profile'] = 'old-v27-profile'
+          stale['profile'] = 'old-v28-profile'
           stale['phase'] = 'ai'
           stale['candidates'] = [{'post_url':'https://example.invalid/old','ai_done':False}]
           save_radar_job(stale)
           migrated = c.post('/api/radar/sync')
           assert migrated.status_code == 202
           migrated_job = load_radar_job()
-          assert migrated_job['profile'] == v28.SCREENING_PROFILE, migrated_job
+          assert migrated_job['profile'] == v29.SCREENING_PROFILE, migrated_job
           assert migrated_job['phase'] == 'queued', migrated_job
           assert set(migrated_job['sources']) == {'instagram','tiktok','youtube'}, migrated_job
+          for name, source in migrated_job['sources'].items():
+              assert source['max_items'] == 300, source
+              assert source['max_total_charge_usd'] == v29.SOURCE_CHARGE_CAPS_USD[name], source
+              assert source['strict_scope_marker'] == v29.SOURCE_MARKER, source
           c.post('/api/radar/stop')
 
           # Same backend error still has a finite retry circuit breaker.
@@ -134,7 +150,7 @@ jobs:
           verdict = v28.classify_file_v28('/tmp/static.mp4', '#ai', 'Instagram Reels')
           assert verdict.reason.startswith('REJECT_STATIC_IMAGE'), verdict
 
-          # Production reconstruction locks remain untouched underneath V28.
+          # Production reconstruction locks remain untouched underneath V29.
           prod = gemini_service.production_system_prompt(False, 7.64)
           forensic = gemini_service.forensic_system_prompt(False, 7.64)
           audit = gemini_service.audit_system_prompt(7.64)
@@ -146,7 +162,7 @@ jobs:
           assert 'frame_zero_literal_match_ok' in audit
           assert 'explicit_duration_instruction_ok' in audit
 
-          print('V28 PRODUCT + V19 EDGE HARDENING OK', runtime.RUNTIME_VERSION)
+          print('V29 BUDGET PRODUCT + V19 EDGE HARDENING OK', runtime.RUNTIME_VERSION, b)
           PY
 
       - uses: actions/setup-node@v4
@@ -163,5 +179,6 @@ jobs:
           grep -q "/api/radar/stop" static/runtime.js
           grep -q "id=\"stopRadar\"" templates/index.html
           grep -q "screening_profile" db.py
-          grep -q "multiplatform_speech_v28_strict14d" radar_multiplatform_v28.py
+          grep -q "multiplatform_speech_v29_budget5" radar_budget_v29.py
+          grep -q "HARD BUDGET" templates/index.html
           grep -q "#omni + #veo + #veo3 + #ai + #ии" templates/index.html
