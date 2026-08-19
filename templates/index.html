@@ -4,10 +4,17 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>ПОИСК ТРЕНДОВ — INSTAGRAM + TIKTOK + YOUTUBE</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260819-v30" />
-  <link rel="stylesheet" href="/static/upgrade.css?v=20260819-v30" />
+  <style>
+    html,body{min-height:100%;background:#090b0f;color:#f5f7fb}
+    #bootGuard{position:fixed;z-index:2147483647;left:18px;bottom:18px;max-width:min(560px,calc(100vw - 36px));padding:11px 13px;border:1px solid #3c4654;border-radius:10px;background:#111820;color:#dfe7f1;font:600 12px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;box-shadow:0 12px 40px rgba(0,0,0,.35)}
+    #bootGuard[data-state="ok"]{display:none}
+    #bootGuard[data-state="error"]{border-color:#7a3d42;background:#261317;color:#ffd6d9}
+  </style>
+  <link rel="stylesheet" href="/static/style.css?v=20260819-v31" />
+  <link rel="stylesheet" href="/static/upgrade.css?v=20260819-v31" />
 </head>
 <body>
+  <div id="bootGuard" data-state="loading">Загружаю интерфейс…</div>
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
@@ -15,14 +22,14 @@
         <div><strong>ПОИСК ТРЕНДОВ</strong><small>Instagram · TikTok · YouTube</small></div>
       </div>
       <div class="side-note">
-        1. Новый поиск очищает предыдущий TOP и старую мету. 2. Ищем последние 14 дней только по реальным #omni, #veo, #veo3, #ai и #ии. 3. Без слышимой речи и подтверждённого движения ролик не проходит. 4. До 10.05 сек сохраняем исходный тайминг; 10.05–15.05 сек проходит только естественно сжимаемая в 10 секунд механика. 5. Discovery имеет жёсткий Apify hard cap $2.80, общий target полного поиска — меньше $5. 6. V30 блокирует повторную оплату при сбоях, дубли анализа и небезопасные media URL.
+        1. Новый поиск очищает предыдущий TOP и старую мету. 2. Ищем последние 14 дней только по реальным #omni, #veo, #veo3, #ai и #ии. 3. Без слышимой речи и подтверждённого движения ролик не проходит. 4. До 10.05 сек сохраняем исходный тайминг; 10.05–15.05 сек проходит только естественно сжимаемая в 10 секунд механика. 5. Discovery имеет жёсткий Apify hard cap $2.80, общий target полного поиска — меньше $5. 6. V31 дополнительно контролирует целостность CSS/JS и не допускает немого чёрного экрана.
       </div>
     </aside>
 
     <main>
       <header>
         <div>
-          <div class="eyebrow">V30 AUDIT HARDENED · HARD BUDGET &lt;$5</div>
+          <div class="eyebrow">V31 STATIC RELIABILITY · HARD BUDGET &lt;$5</div>
           <h1>Что набирает обороты прямо сейчас.<br><span>Instagram + TikTok + YouTube.</span></h1>
         </div>
         <div class="status" id="serviceStatus"><i></i> проверяю сервис…</div>
@@ -31,7 +38,7 @@
       <section id="radar" class="screen active">
         <div class="section-title">
           <div><span class="step">3 ПЛАТФОРМЫ · 5 ТЕГОВ · 14 ДНЕЙ</span><h2>#omni + #veo + #veo3 + #ai + #ии · только видео с речью · исходник до 15.05 сек</h2></div>
-          <span class="muted">60 результатов на тег/платформу · discovery hard cap $2.80 · V30 fail-closed guards</span>
+          <span class="muted">60 результатов на тег/платформу · discovery hard cap $2.80 · V31 static integrity</span>
         </div>
 
         <div class="api-grid">
@@ -51,7 +58,7 @@
         <div class="card radar-intro">
           <div>
             <b>Три платформы, жёсткий бюджет и защита от повторной оплаты.</b>
-            <span>На каждый из пяти тегов запрашивается максимум 60 результатов на платформу — до 300 Instagram, 300 TikTok и 300 YouTube записей. Discovery Actor получает и maxItems, и maxTotalChargeUsd: $0.85 / $1.15 / $0.80, суммарно не больше $2.80. V30 перед платным стартом требует durable KVS, не повторяет Actor после неоднозначного transport-сбоя, запрещает автоматические paid-refresh, ограничивает ручной refresh одним результатом и $0.12, режет static/slideshow локально и кеширует одинаковый production-анализ.</span>
+            <span>На каждый из пяти тегов запрашивается максимум 60 результатов на платформу — до 300 Instagram, 300 TikTok и 300 YouTube записей. Discovery Actor получает и maxItems, и maxTotalChargeUsd: $0.85 / $1.15 / $0.80, суммарно не больше $2.80. V30 перед платным стартом требует durable KVS, не повторяет Actor после неоднозначного transport-сбоя, запрещает автоматические paid-refresh, ограничивает ручной refresh одним результатом и $0.12, режет static/slideshow локально и кеширует одинаковый production-анализ. V31 отдельно защищает браузерный слой от пустых CSS/JS-ответов.</span>
           </div>
           <div class="radar-controls">
             <button id="syncRadar" class="secondary">ЗАПУСТИТЬ ПОИСК</button>
@@ -85,7 +92,7 @@
         <div id="analysisResult" class="result hidden"></div>
 
         <div id="radarMeta" class="meta-wrap">
-          <div class="card"><div class="empty">После первого завершённого V30-поиска здесь появится мета текущего TOP.</div></div>
+          <div class="card"><div class="empty">После первого завершённого V31-поиска здесь появится мета текущего TOP.</div></div>
         </div>
 
         <div class="section-mini-title">
@@ -98,7 +105,7 @@
         </div>
 
         <div class="section-mini-title candidates-title">
-          <div><b>ПУЛ КАНДИДАТОВ V30</b><span>#omni · #veo · #veo3 · #ai · #ии · максимум 900 raw · 150 кандидатов · 180 automatic AI ticks hard guard</span></div>
+          <div><b>ПУЛ КАНДИДАТОВ V31</b><span>#omni · #veo · #veo3 · #ai · #ии · максимум 900 raw · 150 кандидатов · 180 automatic AI ticks hard guard</span></div>
         </div>
         <div class="card">
           <div id="candidateRows" class="candidate-table">
@@ -109,11 +116,54 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260819-v30"></script>
-  <script src="/static/v17_ui.js?v=20260819-v30"></script>
-  <script src="/static/overlay_v15.js?v=20260819-v30"></script>
-  <script src="/static/runtime.js?v=20260819-v30"></script>
-  <script src="/static/fresh_run_v23.js?v=20260819-v30"></script>
-  <script src="/static/scope_v24.js?v=20260819-v30"></script>
+  <script src="/static/app.js?v=20260819-v31"></script>
+  <script src="/static/v17_ui.js?v=20260819-v31"></script>
+  <script src="/static/overlay_v15.js?v=20260819-v31"></script>
+  <script src="/static/runtime.js?v=20260819-v31"></script>
+  <script src="/static/fresh_run_v23.js?v=20260819-v31"></script>
+  <script src="/static/scope_v24.js?v=20260819-v31"></script>
+  <script>
+    (() => {
+      const guard = document.getElementById('bootGuard');
+      if (!guard) return;
+      let assetError = '';
+
+      const markAssetError = (target) => {
+        if (!target) return;
+        const tag = String(target.tagName || '').toUpperCase();
+        if (tag !== 'SCRIPT' && tag !== 'LINK') return;
+        const src = target.src || target.href || 'asset';
+        assetError = `Не загрузился ${src}`;
+      };
+      window.addEventListener('error', (event) => markAssetError(event.target), true);
+
+      const failVisible = async (reason) => {
+        guard.dataset.state = 'error';
+        guard.textContent = `${reason}. Сервер жив, но браузерный интерфейс загрузился не полностью. Обнови страницу через Ctrl+F5.`;
+        try {
+          const response = await fetch('/api/static-health', {cache:'no-store'});
+          const data = await response.json();
+          if (data && data.assets) {
+            const bad = Object.entries(data.assets).filter(([,v]) => !v || !v.ok).map(([k]) => k);
+            if (bad.length) guard.textContent += ` Проблемные файлы: ${bad.join(', ')}.`;
+            else if (data.ok) guard.textContent += ' Проверка файлов на сервере: OK; вероятен старый/битый кэш браузера.';
+          }
+        } catch (_) {}
+      };
+
+      setTimeout(() => {
+        const shell = document.querySelector('.app-shell');
+        const heading = document.querySelector('header h1');
+        const shellBox = shell && shell.getBoundingClientRect();
+        const headingBox = heading && heading.getBoundingClientRect();
+        const cssReady = shellBox && shellBox.width > 200 && shellBox.height > 200 && headingBox && headingBox.height > 20;
+        const jsReady = typeof window.refreshEverything === 'function' && typeof window.loadRadarStatus === 'function';
+        if (assetError) failVisible(assetError);
+        else if (!cssReady) failVisible('Интерфейс не отрисовался');
+        else if (!jsReady) failVisible('JavaScript приложения не запустился');
+        else guard.dataset.state = 'ok';
+      }, 2200);
+    })();
+  </script>
 </body>
 </html>
