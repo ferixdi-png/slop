@@ -1,0 +1,74 @@
+name: V31 Static Reliability Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'static_reliability_v31.py'
+      - 'gunicorn.conf.py'
+      - 'templates/index.html'
+      - 'static/**'
+      - '.github/workflows/v31-static-reliability-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'static_reliability_v31.py'
+      - 'gunicorn.conf.py'
+      - 'templates/index.html'
+      - 'static/**'
+      - '.github/workflows/v31-static-reliability-smoke.yml'
+
+jobs:
+  static-reliability:
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: static-smoke
+      APIFY_API_TOKEN: ''
+      GEMINI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - name: Compile
+        run: python -m compileall -q app.py static_reliability_v31.py gunicorn.conf.py
+      - name: Verify non-empty CSS JS responses and boot guard
+        run: |
+          python - <<'PY'
+          import runpy
+          import app as app_module
+          from static_reliability_v31 import CRITICAL_ASSETS, install_static_reliability, static_health_payload
+
+          health = install_static_reliability(app_module.app)
+          assert health['ok'] is True, health
+          assert set(CRITICAL_ASSETS) == set(health['assets']), health
+          assert all(int(meta['bytes']) > 0 for meta in health['assets'].values()), health
+
+          c = app_module.app.test_client()
+          root = c.get('/')
+          assert root.status_code == 200
+          html = root.get_data(as_text=True)
+          assert 'bootGuard' in html
+          assert '/api/static-health' in html
+          assert 'v=20260819-v31' in html
+
+          for asset in CRITICAL_ASSETS:
+              response = c.get('/static/' + asset)
+              body = response.get_data()
+              assert response.status_code == 200, (asset, response.status_code)
+              assert len(body) > 0, asset
+              assert int(response.headers['Content-Length']) == len(body), (asset, response.headers, len(body))
+              assert int(response.headers['X-Static-Bytes']) == len(body), (asset, response.headers, len(body))
+              assert response.headers.get('X-Content-Type-Options') == 'nosniff'
+
+          endpoint = c.get('/api/static-health')
+          assert endpoint.status_code == 200
+          payload = endpoint.get_json()
+          assert payload['ok'] is True, payload
+          assert all(v['ok'] and v['bytes'] > 0 for v in payload['assets'].values()), payload
+
+          conf = runpy.run_path('gunicorn.conf.py')
+          assert callable(conf['post_worker_init'])
+          assert conf['bind'].startswith('0.0.0.0:')
+          print('V31 STATIC RELIABILITY OK', {k:v['bytes'] for k,v in payload['assets'].items()})
+          PY

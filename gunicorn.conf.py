@@ -21,3 +21,23 @@ keepalive = 5
 
 # Avoid filesystem-backed worker heartbeat stalls on Linux/Render.
 worker_tmp_dir = "/dev/shm"
+
+
+def post_worker_init(worker):
+    """Install V31 static reliability after the Flask app is loaded.
+
+    The production incident showed healthy HTML/API responses while browser
+    assets were logged as 200 with a zero-byte body. Replacing Flask's dynamic
+    send_static_file target with an explicit byte Response makes CSS/JS payloads
+    deterministic and exposes their real byte length in headers/logs.
+    """
+    try:
+        from app import app
+        from static_reliability_v31 import install_static_reliability
+
+        health = install_static_reliability(app)
+        sizes = {name: meta.get("bytes", 0) for name, meta in health.get("assets", {}).items()}
+        worker.log.info("V31 STATIC RELIABILITY READY ok=%s sizes=%s", health.get("ok"), sizes)
+    except Exception:
+        worker.log.exception("V31 static reliability bootstrap failed")
+        raise
