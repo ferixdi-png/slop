@@ -141,12 +141,17 @@ def activate_v27_runtime():
         from youtube_genai_v34 import install_youtube_v34
         youtube_info = install_youtube_v34()
 
-        # V34 must be after all strict semantic/hardening layers. It preserves every
-        # V30 safety/budget rule but changes visibility from AI-gated to momentum-led.
+        # V34 broad product: momentum is the visibility gate; AI is enrichment only.
         from radar_broad_v34 import apply_broad_v34
         v34_info = apply_broad_v34()
 
-        # V33 remains last and supplies one fail-open browser runtime.
+        # Extend actual cross-run view-growth measurement from the historical
+        # 3-tag/7-day helper to the full 5-tag/14-day V34 product scope.
+        from radar_momentum_v34 import apply_momentum_v34
+        momentum_info = apply_momentum_v34()
+
+        # V33 remains the proven one-runtime fail-open browser architecture. Its
+        # globals were transformed to V34 product copy by frontend_broad_v34.
         from frontend_failopen_v33 import install_frontend_v33
         frontend_info = install_frontend_v33(app_module.app)
 
@@ -202,6 +207,10 @@ def activate_v27_runtime():
         "youtube_direct_gemini": True,
         "youtube_interactions_schema": youtube_info["youtube_interactions_schema"],
         "youtube_failure_policy": youtube_info["youtube_failure_policy"],
+        "momentum_profile": momentum_info["profile"],
+        "momentum_ranking": momentum_info["ranking"],
+        "momentum_scope_tags": momentum_info["tags"],
+        "momentum_scope_days": momentum_info["lookback_days"],
         "automatic_paid_refreshes": False,
         "v28_14day_api": bool(finish_info.get("v28_14day_api")),
         "direct_max_duration_sec": DIRECT_MAX_DURATION_SEC,
@@ -233,7 +242,7 @@ def activate_v27_runtime():
     _APPLIED = True
 
     add_radar_log(
-        "V30 RUNTIME READY + V34 BROAD PRODUCT + V33 FAIL-OPEN FRONTEND: 50-100 momentum candidates visible; Gemini enrichment only; YouTube current Interactions schema; hard budget unchanged.",
+        "V30 RUNTIME READY + V34 BROAD PRODUCT + V33 FAIL-OPEN FRONTEND: 50-100 momentum candidates visible; Gemini enrichment only; YouTube current Interactions schema; 5-tag/14-day measured growth ranking; hard budget unchanged.",
         stage="startup",
         details=dict(_CONTRACT),
     )
