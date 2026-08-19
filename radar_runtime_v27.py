@@ -1,13 +1,8 @@
-"""Single authoritative production bootstrap for the final V27 radar.
+"""Single authoritative production bootstrap for the final radar runtime.
 
-`app.py` must activate product behavior only through `activate_v27_runtime()`.
-Older versioned modules remain implementation dependencies because they contain
-battle-tested STOP/START, budget, cache, source aggregation and production
-helpers, but they are no longer independent product runtimes.
-
-Their legacy `stage=startup` READY banners are suppressed while composing the
-stack. Operational logs (warnings, errors, source/tick progress) are untouched.
-After composition this module emits one authoritative V27 startup line.
+The battle-tested V27 stack remains the infrastructure/content reconstruction
+base. V28 is the final product overlay: Instagram + TikTok + YouTube, five strict
+post-level hashtags, 14-day discovery and mandatory Gemini speech/timing checks.
 """
 
 from __future__ import annotations
@@ -20,7 +15,7 @@ from apify_start_compat import install_apify_start_compat
 from radar_discovery_v27 import install_v27_high_volume_discovery
 from radar_logs import add_radar_log, suppress_startup_logs
 
-RUNTIME_VERSION = "omni_veo_veo3_v27_strict_compress10"
+RUNTIME_VERSION = "multiplatform_speech_v28_strict14d"
 PUBLIC_EDGE_PROFILE = RUNTIME_VERSION
 _APPLIED = False
 _CONTRACT = None
@@ -28,21 +23,13 @@ _LIVENESS_INSTALLED = False
 
 
 def _install_render_liveness(app):
-    """Keep Render's process/port probes completely outside SQLite and APIs.
-
-    The dashboard/browser loads several DB-backed endpoints in parallel while a
-    radar run can also be writing SQLite. Render probes must never wait behind
-    those locks. A delayed liveness probe can otherwise make a healthy worker
-    look dead and produce restart/502 loops.
-    """
+    """Keep Render process/port probes outside SQLite and external APIs."""
     global _LIVENESS_INSTALLED
     if _LIVENESS_INSTALLED:
         return
 
     @app.before_request
     def _render_fast_head_probe():
-        # Render currently probes HEAD /. Flask would normally execute the GET
-        # view for HEAD, and that view touches SQLite. Short-circuit it first.
         if request.method == "HEAD" and request.path in {"/", "/health", "/healthz"}:
             return "", 200, {
                 "Cache-Control": "no-store",
@@ -51,7 +38,6 @@ def _install_render_liveness(app):
         return None
 
     def _healthz():
-        # Pure process liveness: no DB, no cloud state, no Apify, no Gemini.
         return {
             "ok": True,
             "runtime": RUNTIME_VERSION,
@@ -70,40 +56,35 @@ def _install_render_liveness(app):
 
 
 def activate_v27_runtime():
-    """Compose the proven internal layers and expose only the final V27 runtime."""
+    """Compose proven internal layers, then expose only final V28 behavior."""
     global _APPLIED, _CONTRACT
     if _APPLIED:
         return dict(_CONTRACT or {"runtime": RUNTIME_VERSION})
 
     app_module = sys.modules.get("app")
     if app_module is None:
-        raise RuntimeError("V27 runtime must be activated from app startup")
+        raise RuntimeError("Final runtime must be activated from app startup")
 
     required = ("app", "tick_job", "create_or_resume_job", "top_eligible")
     missing = [name for name in required if not hasattr(app_module, name)]
     if missing:
-        raise RuntimeError(f"V27 bootstrap missing app prerequisites: {', '.join(missing)}")
+        raise RuntimeError(f"Runtime bootstrap missing app prerequisites: {', '.join(missing)}")
 
-    # Install process liveness and the Apify start shim before composing runtime
-    # layers. Both are infrastructure compatibility guards, not product logic.
     _install_render_liveness(app_module.app)
     install_apify_start_compat()
 
-    # The sequence below deliberately preserves the already-tested internal
-    # composition order. The architectural cleanup is that only THIS module is
-    # allowed to activate it from the product entrypoint.
     with suppress_startup_logs():
         from radar_growth_v6 import apply_growth_overrides
         apply_growth_overrides()
 
         import radar_budget_v10 as budget
-        budget_info = budget.apply_budget_overrides()
+        budget.apply_budget_overrides()
 
         from radar_highfreq_v12 import apply_highfreq_overrides
-        budget_info = apply_highfreq_overrides()
+        apply_highfreq_overrides()
 
         from radar_dialogue_v14 import apply_dialogue_first_overrides, top_eligible_dialogue
-        budget_info = apply_dialogue_first_overrides()
+        apply_dialogue_first_overrides()
         app_module.top_eligible = top_eligible_dialogue
 
         from overlay_cleanplate_v15 import (
@@ -113,18 +94,16 @@ def activate_v27_runtime():
         apply_overlay_cleanplate_overrides()
 
         from radar_resilient_v17 import apply_resilient_v17_overrides
-        budget_info = apply_resilient_v17_overrides()
+        apply_resilient_v17_overrides()
 
-        # The monthly budget wrapper must remain inside the V19 hardening
-        # wrapper exactly as before.
+        # Keep monthly budget wrapper inside hardening exactly as in the proven stack.
         app_module.tick_job = budget.wrap_tick_job(app_module.tick_job)
 
-        from radar_hardening_v19 import PROFILE_VERSION, apply_hardening_v19
-        budget_info = apply_hardening_v19()
+        from radar_hardening_v19 import apply_hardening_v19
+        apply_hardening_v19()
 
-        # This compatibility edge layer transitively activates source
-        # aggregation, exact hashtag discovery, fresh-run isolation, momentum
-        # persistence and finally V27 strict/compression behavior.
+        # Compatibility edge layer transitively composes source aggregation,
+        # fresh-run isolation, momentum and strict V27 reconstruction behavior.
         from radar_edge_v19 import apply_edge_guards
         edge_info = apply_edge_guards()
 
@@ -133,25 +112,23 @@ def activate_v27_runtime():
             COMPRESSED_TARGET_SEC,
             DIRECT_MAX_DURATION_SEC,
             SOURCE_MAX_DURATION_SEC,
-            TARGET_TAGS,
             _APPLIED as V27_APPLIED,
         )
         from radar_momentum_cloud_v25 import MOMENTUM_RECORD_KEY
 
         if not V27_APPLIED:
-            raise RuntimeError("V27 strict scope did not activate during final bootstrap")
+            raise RuntimeError("V27 reconstruction base did not activate during final bootstrap")
 
-        # Replace only discovery construction after the final V27 strict layer is
-        # active. Exact hashtag provenance remains enforced by V27 normalization.
-        discovery_info = install_v27_high_volume_discovery()
+        # Keep the proven V27 Instagram high-volume adapter as an internal stage,
+        # then replace its final discovery/screening scope with V28.
+        install_v27_high_volume_discovery()
+        from radar_multiplatform_v28 import apply_multiplatform_v28
+        v28_info = apply_multiplatform_v28()
 
-        # Read mutable final values only AFTER V24/V25/V27 finished composing.
-        # Do not copy early module constants before those layers can update them.
-        final_keep_limit = int(budget.KEEP_LIMIT)
+        final_keep_limit = int(v28_info.get("keep_limit") or budget.KEEP_LIMIT)
         final_budget = budget.budget_breakdown()
 
-        # These are compatibility/data-profile values. Public status is V27.
-        app_module.PROFILE_VERSION = PROFILE_VERSION
+        app_module.PROFILE_VERSION = v28_info["screening_profile"]
         app_module.PRODUCTION_PROFILE_VERSION = PRODUCTION_PROFILE_VERSION
         app_module.KEEP_LIMIT = final_keep_limit
         app_module.BUDGET_INFO = final_budget
@@ -164,15 +141,19 @@ def activate_v27_runtime():
     _CONTRACT = {
         "runtime": RUNTIME_VERSION,
         "profile": RUNTIME_VERSION,
-        "internal_screening_profile": app_module.PROFILE_VERSION,
+        "internal_screening_profile": v28_info["screening_profile"],
         "edge_profile": PUBLIC_EDGE_PROFILE,
         "production_profile": app_module.PRODUCTION_PROFILE_VERSION,
-        "hashtags": list(TARGET_TAGS),
-        "hashtag_limit_each": 250,
-        "max_raw_requested": 750,
-        "analyze_limit": 420,
-        "keep_limit": int(app_module.KEEP_LIMIT),
+        "platforms": v28_info["platforms"],
+        "hashtags": v28_info["hashtags"],
+        "lookback_days": v28_info["lookback_days"],
+        "results_per_tag_per_platform": v28_info["results_per_tag_per_platform"],
+        "max_raw_requested": v28_info["max_raw_requested"],
+        "analyze_limit": v28_info["analyze_limit"],
+        "keep_limit": final_keep_limit,
+        "speech_required": True,
         "strict_actual_hashtag": True,
+        "youtube_direct_gemini": bool(v28_info.get("youtube_direct_gemini")),
         "direct_max_duration_sec": DIRECT_MAX_DURATION_SEC,
         "source_max_duration_sec": SOURCE_MAX_DURATION_SEC,
         "compressed_target_sec": COMPRESSED_TARGET_SEC,
@@ -181,15 +162,12 @@ def activate_v27_runtime():
         "legacy_startup_banners_suppressed": True,
         "render_fast_liveness": True,
         "apify_start_compat": True,
-        "discovery_actor": discovery_info.get("actor"),
-        "discovery_recency": discovery_info.get("recency"),
-        "discovery_results_per_tag": discovery_info.get("results_per_tag"),
         "internal_edge": str((edge_info or {}).get("edge_profile") or ""),
     }
     _APPLIED = True
 
     add_radar_log(
-        "V27 RUNTIME READY: единственный production bootstrap; только #omni/#veo/#veo3, strict hashtag provenance, 1–15.05s source и natural 10s compression.",
+        "V28 RUNTIME READY: Instagram + TikTok + YouTube; #omni/#veo/#veo3/#ai/#ии; 14 дней; Gemini speech + timing required.",
         stage="startup",
         details=dict(_CONTRACT),
     )
