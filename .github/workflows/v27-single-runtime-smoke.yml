@@ -1,4 +1,4 @@
-name: V34 Single Runtime Broad Pool Smoke
+name: V36 Single Runtime Broad Pool Smoke
 
 on:
   pull_request:
@@ -6,9 +6,13 @@ on:
       - 'app.py'
       - 'radar_runtime_v27.py'
       - 'radar_broad_v34.py'
+      - 'radar_momentum_v34.py'
       - 'youtube_genai_v34.py'
       - 'frontend_broad_v34.py'
       - 'frontend_failopen_v33.py'
+      - 'frontend_manual_start_v35.py'
+      - 'radar_manual_start_v35.py'
+      - 'prompt_reliability_v36.py'
       - 'radar_multiplatform_v28.py'
       - 'radar_budget_v29.py'
       - 'radar_audit_v30.py'
@@ -21,9 +25,13 @@ on:
       - 'app.py'
       - 'radar_runtime_v27.py'
       - 'radar_broad_v34.py'
+      - 'radar_momentum_v34.py'
       - 'youtube_genai_v34.py'
       - 'frontend_broad_v34.py'
       - 'frontend_failopen_v33.py'
+      - 'frontend_manual_start_v35.py'
+      - 'radar_manual_start_v35.py'
+      - 'prompt_reliability_v36.py'
       - 'radar_multiplatform_v28.py'
       - 'radar_budget_v29.py'
       - 'radar_audit_v30.py'
@@ -35,7 +43,7 @@ jobs:
   broad-single-runtime:
     runs-on: ubuntu-latest
     env:
-      SECRET_KEY: v34-smoke
+      SECRET_KEY: v36-smoke
       PORT: '10000'
       APIFY_API_TOKEN: ''
       GEMINI_API_KEY: ''
@@ -45,9 +53,9 @@ jobs:
         with:
           python-version: '3.13'
       - run: pip install -r requirements.txt
-      - name: Compile V34 runtime
-        run: python -m compileall -q app.py radar_runtime_v27.py radar_broad_v34.py youtube_genai_v34.py frontend_broad_v34.py frontend_failopen_v33.py
-      - name: Verify broad momentum product without external spend
+      - name: Compile current runtime
+        run: python -m compileall -q app.py radar_runtime_v27.py radar_broad_v34.py radar_momentum_v34.py youtube_genai_v34.py frontend_broad_v34.py frontend_failopen_v33.py frontend_manual_start_v35.py radar_manual_start_v35.py prompt_reliability_v36.py
+      - name: Verify broad momentum product, manual control and prompts without external spend
         run: |
           python - <<'PY'
           import contextlib
@@ -60,7 +68,11 @@ jobs:
           startup = stdout.getvalue()
           lines = [x for x in startup.splitlines() if '[startup]' in x]
           assert len(lines) == 1, startup
-          assert 'V30 RUNTIME READY' in lines[0] and 'V34 BROAD PRODUCT' in lines[0], lines[0]
+          line = lines[0]
+          assert 'V30 RUNTIME READY' in line, line
+          assert 'V34 BROAD' in line, line
+          assert 'V35 MANUAL START' in line, line
+          assert 'V36 PROMPTS' in line, line
 
           import radar_audit_v30 as v30
           import radar_broad_v34 as v34
@@ -69,7 +81,6 @@ jobs:
           import radar_request_job as radar_job
           import radar_runtime_v27 as runtime
           import youtube_genai_v34 as yt34
-          import frontend_failopen_v33 as frontend
           from db import db_conn
 
           assert runtime._APPLIED is True
@@ -87,27 +98,36 @@ jobs:
           c = app_module.app.test_client()
           status = c.get('/api/status').get_json()
           assert status['radar_runtime'] == v30.MODE_VERSION, status
-          assert status['runtime_info']['product_mode'] == v34.MODE_VERSION, status
-          assert status['runtime_info']['target_output_min'] == 50, status
-          assert status['runtime_info']['target_output_max'] == 100, status
-          assert status['runtime_info']['ai_enrich_limit'] == 20, status
-          assert status['runtime_info']['ai_role'] == 'enrichment_only', status
-          assert status['runtime_info']['speech_required'] is False, status
+          info = status['runtime_info']
+          assert info['product_mode'] == v34.MODE_VERSION, status
+          assert info['target_output_min'] == 50, status
+          assert info['target_output_max'] == 100, status
+          assert info['ai_enrich_limit'] == 20, status
+          assert info['ai_role'] == 'enrichment_only', status
+          assert info['speech_required'] is False, status
           assert status['radar_speech_required'] is False, status
+          assert info['manual_start_only'] is True, status
+          assert info['auto_resume_on_page_load'] is False, status
+          assert info['tick_requires_driver_token'] is True, status
+          assert info['driver_token_persisted'] is False, status
+          assert info['broad_candidate_prompt_access'] is True, status
+          assert info['apify_private_media_auth'] == 'bearer_header_only', status
+          assert info['apify_signed_record_fallback'] is True, status
+          assert info['prompt_token_in_url'] is False, status
+          assert info['redirect_token_forwarding'] is False, status
           assert status['radar_hard_total_target_usd'] == 5.0, status
           assert status['radar_apify_discovery_hard_cap_usd'] == 2.8, status
           assert status['radar_budget_headroom_usd'] == 2.2, status
           assert status['radar_results_per_tag_per_platform'] == 60, status
           assert status['radar_max_raw_requested'] == 900, status
-          assert status['runtime_info']['automatic_paid_refreshes'] is False, status
-          assert status['runtime_info']['audit_top10_closed'] is True, status
+          assert info['automatic_paid_refreshes'] is False, status
+          assert info['audit_top10_closed'] is True, status
 
           b = v29.budget_breakdown_v29()
           assert b['hard_total_target_usd'] == 5.0
           assert b['hard_apify_discovery_caps_usd'] == 2.8
           assert sum(b['source_caps_usd'].values()) == 2.8
 
-          # Semantic soft rejects are recommendation metadata, not visibility gates.
           no_speech = v28._reject('NO_SPOKEN_DIALOGUE: synthetic')
           timing = v28._reject('TIMING_OR_MECHANIC_REJECT: synthetic', spoken=True)
           tutorial = v28._reject('TUTORIAL_OR_REVIEW: synthetic', spoken=True)
@@ -139,7 +159,6 @@ jobs:
                       (platform,f'creator{i}',f'https://example.com/video/{i}',(now-timedelta(hours=i+1)).isoformat(),
                        8.0,500000-i*1000,1000,40,i+1,50000-i*100,95-i*0.5,tag,checked,0,v30.SCREENING_PROFILE,reason),
                   )
-              # Objective hard reject must stay out.
               conn.execute(
                   '''INSERT INTO radar_posts(platform,creator,post_url,published_at,duration_sec,views,likes,comments,
                      hours_since_publish,views_per_hour,viral_score_v2,search_term,ai_checked,ai_match,screening_profile,reason)
@@ -161,21 +180,20 @@ jobs:
           assert 'NOT_ENRICHED' in labels, labels
           assert top[0]['viral_score_v2'] >= top[-1]['viral_score_v2']
 
-          # Candidate endpoint is also broad and bounded.
           candidates = c.get('/api/radar/candidates').get_json()
           assert 50 <= len(candidates) <= 120, len(candidates)
 
-          # Root still uses the proven one-runtime fail-open document, now with V34 wording.
           root = c.get('/')
           html = root.get_data(as_text=True)
           assert root.status_code == 200
           assert 'V34 BROAD TREND POOL' in html
           assert '50–100' in html
+          assert 'MANUAL START ONLY' in html
+          assert 'window.__V35_MANUAL_START__=true' in html
           assert 'MutationObserver' not in html
           assert '/static/' not in html
           assert root.headers['X-Frontend-Profile'] == 'frontend_v34_broad_fail_open', root.headers
 
-          # Render liveness remains independent from DB/external services.
           original = app_module.db_conn
           app_module.db_conn = lambda: (_ for _ in ()).throw(RuntimeError('synthetic db outage'))
           try:
@@ -184,5 +202,5 @@ jobs:
           finally:
               app_module.db_conn = original
 
-          print('V34 BROAD TREND POOL 50-100 + V30 SAFETY/BUDGET + V33 FAIL-OPEN OK')
+          print('V36 SINGLE RUNTIME: V34 BROAD + V35 MANUAL + V36 PROMPTS + V30 BUDGET/SAFETY OK')
           PY
