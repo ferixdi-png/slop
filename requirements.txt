@@ -1,12 +1,13 @@
 Flask>=3.0,<4.0
 gunicorn>=22,<24
-google-genai>=1.0,<2.0
+# YouTube URL input now uses the current Interactions API. google-genai 2.x
+# contains the May 2026 Interactions schema; GenerateContent remains compatible.
+google-genai>=2.9,<3.0
 pydantic>=2.7,<3.0
 python-dotenv>=1.0,<2.0
 requests>=2.32,<3.0
 # Apify Client v2 switched its synchronous transport from httpx to native impit.
-# Render Starter is exiting with status 139 exactly when /api/radar/sync first
-# touches the Apify client. Keep the last stable 1.x line (pure-Python httpx
-# transport) to remove that native crash surface without changing our API calls.
+# Render Starter was exiting with status 139 when /api/radar/sync first touched
+# that transport, so keep the stable pure-Python/httpx 1.x client.
 apify-client==1.12.1
 imageio-ffmpeg>=0.5,<0.7
