@@ -37,17 +37,30 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Compile
         run: python -m compileall -q app.py mvp_passive_recovery_v39.py radar_json_headroom_v38.py radar_runtime_v27.py
-      - name: Fresh Render instance restores TOP without starting search
+      - name: Fresh Render instance restores TOP and prompt cache without starting search
         run: |
           rm -f /tmp/slop-v39.sqlite /tmp/slop-v39.sqlite-wal /tmp/slop-v39.sqlite-shm
           python - <<'PY'
+          import hashlib
+          import json
           from datetime import datetime, timedelta, timezone
 
           import cloud_state
 
           now = datetime.now(timezone.utc)
+          post_url = 'https://www.tiktok.com/@v39/video/1'
+          fingerprint = hashlib.sha256(
+              f'{post_url}|9.000|gemini-3.1-flash-lite|frame0_cleanplate_capcut_ru_v15|0'.encode('utf-8')
+          ).hexdigest()[:32]
+          cached_result = {
+              'source_title': 'V39 cached package',
+              'block_1_frame0_prompt': 'CACHED PHOTO PROMPT',
+              'block_3_video': {'cached': True, 'duration': '9.00 seconds'},
+              'block_4_audio': {'dialogue': []},
+              'capcut_overlay_plan': {'cached': True},
+          }
           snapshot = {
-              'version': 30,
+              'version': 39,
               'profile': 'multiplatform_speech_v30_audit10_budget5',
               'saved_at': now.isoformat(),
               'lookback_days': 14,
@@ -56,7 +69,7 @@ jobs:
                   'id': 991,
                   'platform': 'TikTok',
                   'creator': 'v39_restore_test',
-                  'post_url': 'https://www.tiktok.com/@v39/video/1',
+                  'post_url': post_url,
                   'video_url': '',
                   'preview_url': '',
                   'published_at': (now - timedelta(hours=2)).isoformat(),
@@ -88,6 +101,20 @@ jobs:
               }],
               'tracked_creators': [],
               'radar_meta': [],
+              'analyses_cache': [{
+                  'id': 777,
+                  'created_at': now.isoformat(),
+                  'title': 'V39 cached package',
+                  'source_url': post_url,
+                  'views': 250000,
+                  'viral_score': 95.0,
+                  'model': 'gemini-3.1-flash-lite',
+                  'result_json': json.dumps(cached_result, ensure_ascii=False),
+                  'production_profile': 'frame0_cleanplate_capcut_ru_v15',
+                  'source_duration_sec': 9.0,
+                  'owned_or_licensed': 0,
+                  'source_fingerprint': fingerprint,
+              }],
           }
           durable_job = {
               'run_id': 'previous-finished-run',
@@ -121,6 +148,8 @@ jobs:
           assert info['restored'] is True, info
           assert info['posts_before'] == 0, info
           assert info['posts_after'] >= 1, info
+          assert info['analyses_restored'] == 1, info
+          assert info['analyses_after'] >= 1, info
           assert info['paid_discovery_started'] is False, info
           assert info['gemini_called'] is False, info
           assert info['job_advanced'] is False, info
@@ -133,6 +162,14 @@ jobs:
           rows = top.get_json()
           assert isinstance(rows, list) and rows, rows
           assert any(x.get('creator') == 'v39_restore_test' for x in rows), rows
+
+          # The restored production package must be returned from cache with no API keys.
+          cached = client.post('/api/radar/991/analyze', json={'owned_or_licensed': False})
+          assert cached.status_code == 200, cached.get_data(as_text=True)
+          cached_payload = cached.get_json()
+          assert cached_payload.get('cached') is True, cached_payload
+          assert cached_payload.get('id') == 777, cached_payload
+          assert cached_payload.get('result', {}).get('block_1_frame0_prompt') == 'CACHED PHOTO PROMPT', cached_payload
 
           # Legacy source-contract migration is allowed to turn a stale terminal job
           # into a PAUSED queued job, but GET-only usage must never authorize/advance it.
@@ -150,11 +187,12 @@ jobs:
 
           cloud_state.load_cloud_record = real_load
           cloud_state.save_cloud_record = real_save
-          print('V39 PASSIVE RECOVERY OK', info, job.get('phase'))
+          print('V39 PASSIVE RECOVERY + PROMPT CACHE OK', info, job.get('phase'))
           PY
-      - name: Ordered durable snapshot keeps newest rows first
+      - name: Ordered durable snapshot keeps newest rows and prompt cache
         run: |
           python - <<'PY'
+          import json
           from datetime import datetime, timedelta, timezone
 
           import cloud_state
@@ -164,6 +202,7 @@ jobs:
           now = datetime.now(timezone.utc)
           with db_conn() as conn:
               conn.execute('DELETE FROM radar_posts')
+              conn.execute('DELETE FROM analyses')
               for i, hours in enumerate([72, 2, 24], start=1):
                   conn.execute(
                       """INSERT INTO radar_posts(
@@ -178,6 +217,16 @@ jobs:
                           '[]', 50.0 + i, 'multiplatform_speech_v30_audit10_budget5',
                       ),
                   )
+              conn.execute(
+                  """INSERT INTO analyses(created_at,title,source_url,views,viral_score,model,result_json,
+                     production_profile,source_duration_sec,owned_or_licensed,source_fingerprint)
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                  (
+                      now.isoformat(), 'cache', 'https://example.com/2', 2000, 52.0,
+                      'gemini-3.1-flash-lite', json.dumps({'cached': True}),
+                      'frame0_cleanplate_capcut_ru_v15', 9.0, 0, 'fingerprint-v39',
+                  ),
+              )
               conn.commit()
 
           captured = {}
@@ -193,7 +242,9 @@ jobs:
           assert captured['payload']['lookback_days'] == 14
           assert captured['payload']['post_limit'] == 1000
           assert captured['payload']['snapshot_order'] == 'published_at_desc_then_viral_score_then_views'
-          print('V39 ORDERED SNAPSHOT OK', creators)
+          assert len(captured['payload']['analyses_cache']) == 1, captured['payload']
+          assert captured['payload']['analyses_cache'][0]['source_fingerprint'] == 'fingerprint-v39'
+          print('V39 ORDERED SNAPSHOT + ANALYSIS CACHE OK', creators)
           PY
       - name: Recovery module contains no paid-work entrypoint
         run: |
@@ -205,5 +256,6 @@ jobs:
               assert token not in text, token
           assert 'restore_radar_snapshot_if_empty()' in text
           assert 'ORDER BY datetime(published_at) DESC' in text
-          print('V39 RECOVERY IS PASSIVE; SNAPSHOT IS DETERMINISTIC')
+          assert 'analyses_cache' in text
+          print('V39 RECOVERY IS PASSIVE; SNAPSHOT/PROMPT CACHE ARE DURABLE')
           PY
