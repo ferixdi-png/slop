@@ -2,18 +2,23 @@
 
 A durable radar job may survive browser reloads and Render deploys, but paid work
 must never advance merely because a page was opened. Every driver session is
-created only by an explicit POST /api/radar/sync and receives an in-memory token.
+created only by an explicit POST /api/radar/sync and receives a signed token.
 POST /api/radar/tick is rejected unless that token is presented.
 
-The token is intentionally NOT persisted. Browser reload, process restart and
-new deploy therefore pause the driver until the user explicitly clicks Start /
-Continue again. Read-only GET endpoints never arm the driver.
+The browser keeps the token only in JavaScript memory. The server token is
+stateless (safe across Gunicorn workers) and is cryptographically bound to a
+per-container boot nonce, so a Render restart/deploy invalidates old tabs too.
+Read-only GET endpoints never arm the driver.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
+import os
 import secrets
-import threading
 import time
 from typing import Any
 
@@ -26,29 +31,86 @@ from radar_logs import add_radar_log
 PROFILE = "manual_start_only_v35"
 TOKEN_HEADER = "X-Radar-Driver-Token"
 TOKEN_TTL_SECONDS = 12 * 60 * 60
+BOOT_NONCE_PATH = os.environ.get("RADAR_V35_BOOT_NONCE_PATH", "/tmp/radar-v35-boot-nonce").strip()
 
-_LOCK = threading.Lock()
-_TOKENS: dict[str, tuple[str, float]] = {}
 _APPLIED = False
 _BASE_APP_START = None
 _BASE_APP_TICK = None
 _BASE_PUBLIC = radar_job.public_job
+_SIGNING_KEY = b""
+_BOOT_NONCE = ""
+_INSTANCE_ID = ""
 
 
-def _cleanup_tokens() -> None:
-    now = time.monotonic()
-    with _LOCK:
-        expired = [token for token, (_, expires) in _TOKENS.items() if expires <= now]
-        for token in expired:
-            _TOKENS.pop(token, None)
+def _b64e(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64d(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def _load_boot_nonce() -> str:
+    """One nonce per running container, shared by all Gunicorn workers."""
+    path = BOOT_NONCE_PATH or "/tmp/radar-v35-boot-nonce"
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        fd = None
+    except OSError:
+        # Local/read-only fallback. Render normally has writable /tmp.
+        return secrets.token_urlsafe(32)
+
+    if fd is not None:
+        nonce = secrets.token_urlsafe(32)
+        try:
+            os.write(fd, nonce.encode("ascii"))
+        finally:
+            os.close(fd)
+        return nonce
+
+    for _ in range(20):
+        try:
+            with open(path, "r", encoding="ascii") as fh:
+                nonce = fh.read().strip()
+            if len(nonce) >= 24:
+                return nonce
+        except OSError:
+            pass
+        time.sleep(0.01)
+    raise RuntimeError("V35 boot nonce could not be shared between workers")
+
+
+def _configure_signing(app_module) -> None:
+    global _SIGNING_KEY, _BOOT_NONCE, _INSTANCE_ID
+    _BOOT_NONCE = _load_boot_nonce()
+    _INSTANCE_ID = str(os.environ.get("RENDER_INSTANCE_ID") or "local-instance")
+    secret_material = str(
+        os.environ.get("SECRET_KEY")
+        or os.environ.get("APIFY_API_TOKEN")
+        or getattr(app_module.app, "secret_key", "")
+        or "local-dev-secret"
+    )
+    commit = str(os.environ.get("RENDER_GIT_COMMIT") or "local-commit")
+    material = f"{secret_material}|{_INSTANCE_ID}|{commit}|{_BOOT_NONCE}".encode("utf-8")
+    _SIGNING_KEY = hashlib.sha256(material).digest()
 
 
 def _issue_token(run_id: str) -> str:
-    _cleanup_tokens()
-    token = secrets.token_urlsafe(32)
-    with _LOCK:
-        _TOKENS[token] = (str(run_id or ""), time.monotonic() + TOKEN_TTL_SECONDS)
-    return token
+    if not _SIGNING_KEY:
+        raise RuntimeError("V35 driver signing key is not configured")
+    now = int(time.time())
+    body = {
+        "r": str(run_id or ""),
+        "iat": now,
+        "exp": now + TOKEN_TTL_SECONDS,
+        "i": _INSTANCE_ID,
+        "b": hashlib.sha256(_BOOT_NONCE.encode("ascii")).hexdigest()[:16],
+        "n": secrets.token_hex(8),
+    }
+    encoded = _b64e(json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    signature = _b64e(hmac.new(_SIGNING_KEY, encoded.encode("ascii"), hashlib.sha256).digest())
+    return f"{encoded}.{signature}"
 
 
 def _request_token() -> str:
@@ -58,24 +120,32 @@ def _request_token() -> str:
 
 
 def _token_valid(token: str, run_id: str) -> bool:
-    if not token or not run_id:
+    if not token or not run_id or not _SIGNING_KEY:
         return False
-    _cleanup_tokens()
-    with _LOCK:
-        record = _TOKENS.get(token)
-    if not record:
+    try:
+        encoded, supplied_sig = token.split(".", 1)
+        expected_sig = _b64e(hmac.new(_SIGNING_KEY, encoded.encode("ascii"), hashlib.sha256).digest())
+        if not hmac.compare_digest(supplied_sig, expected_sig):
+            return False
+        body = json.loads(_b64d(encoded).decode("utf-8"))
+        now = int(time.time())
+        expected_boot = hashlib.sha256(_BOOT_NONCE.encode("ascii")).hexdigest()[:16]
+        return bool(
+            hmac.compare_digest(str(body.get("r") or ""), str(run_id))
+            and hmac.compare_digest(str(body.get("i") or ""), _INSTANCE_ID)
+            and hmac.compare_digest(str(body.get("b") or ""), expected_boot)
+            and int(body.get("iat") or 0) <= now + 60
+            and int(body.get("exp") or 0) >= now
+        )
+    except Exception:
         return False
-    expected_run, expires = record
-    return expires > time.monotonic() and secrets.compare_digest(expected_run, str(run_id))
 
 
 def _revoke_run(run_id: str) -> None:
-    if not run_id:
-        return
-    with _LOCK:
-        doomed = [token for token, (rid, _) in _TOKENS.items() if rid == str(run_id)]
-        for token in doomed:
-            _TOKENS.pop(token, None)
+    # Tokens are stateless and bound to run_id. A cancelled/done run is no longer
+    # active, and a subsequent search receives a new run_id, so no server-side
+    # token registry/revocation store is required.
+    return None
 
 
 def public_job_v35(job=None, busy: bool = False) -> dict[str, Any]:
@@ -93,8 +163,6 @@ def public_job_v35(job=None, busy: bool = False) -> dict[str, Any]:
     payload["manual_start_required"] = bool(raw_active and not authorized)
     payload["resume_available"] = bool(raw_active)
 
-    # Public UI truth is session-aware: an unfinished durable job is not "running"
-    # in a tab that has never explicitly started/continued it.
     if raw_active and not authorized:
         payload["active"] = False
         payload["message"] = (
@@ -111,9 +179,8 @@ def create_or_resume_job_v35():
     run_id = str(payload.get("run_id") or "")
     if bool(payload.get("accepted")) and run_id:
         token = _issue_token(run_id)
-        # _BASE_APP_START may itself have used the session-aware public_job wrapper
-        # before the new token existed. Normalize the response to the truth AFTER
-        # the explicit click has authorized this exact run.
+        # Base wrappers may have rendered the job as paused before this explicit
+        # click received its token. Normalize response to post-click truth.
         payload["active"] = True
         payload["durable_active"] = True
         payload["resume_available"] = True
@@ -128,7 +195,12 @@ def create_or_resume_job_v35():
         add_radar_log(
             "V35 MANUAL START: browser driver explicitly authorized by Start/Continue click.",
             stage="manual-start",
-            details={"run_id": run_id, "token_persisted": False},
+            details={
+                "run_id": run_id,
+                "token_persisted": False,
+                "worker_safe": True,
+                "restart_bound": True,
+            },
         )
     return payload, status_code
 
@@ -146,12 +218,12 @@ def tick_job_v35():
             blocked=True,
             manual_start_required=True,
             message=(
-                "Tick заблокирован: нет driver-token от явного нажатия "
+                "Tick заблокирован: нет действующего driver-token от явного нажатия "
                 "«ЗАПУСТИТЬ/ПРОДОЛЖИТЬ ПОИСК»."
             ),
         )
         add_radar_log(
-            "V35 BLOCKED AUTO-TICK: durable job существует, но ручной driver-token отсутствует.",
+            "V35 BLOCKED AUTO-TICK: durable job существует, но ручной driver-token отсутствует/устарел.",
             level="WARN",
             stage="manual-start",
             details={"run_id": run_id, "phase": job.get("phase")},
@@ -160,8 +232,6 @@ def tick_job_v35():
 
     payload, status_code = _BASE_APP_TICK()
     payload = dict(payload or {})
-    if not bool(payload.get("active")):
-        _revoke_run(run_id)
     payload["manual_start_only"] = True
     payload["tick_requires_driver_token"] = True
     return payload, status_code
@@ -177,6 +247,7 @@ def install_manual_start_v35(app_module) -> dict[str, Any]:
             "tick_requires_driver_token": True,
         }
     _APPLIED = True
+    _configure_signing(app_module)
 
     _BASE_APP_START = app_module.create_or_resume_job
     _BASE_APP_TICK = app_module.tick_job
@@ -205,6 +276,8 @@ def install_manual_start_v35(app_module) -> dict[str, Any]:
                     "radar_auto_resume_on_page_load": False,
                     "radar_tick_requires_driver_token": True,
                     "radar_driver_token_persisted": False,
+                    "radar_driver_token_worker_safe": True,
+                    "radar_driver_token_restart_bound": True,
                     "radar_deploy_resume_policy": "paused_until_explicit_click",
                 }
                 if request.path == "/api/radar/status":
@@ -225,10 +298,12 @@ def install_manual_start_v35(app_module) -> dict[str, Any]:
         "auto_resume_on_page_load": False,
         "tick_requires_driver_token": True,
         "driver_token_persisted": False,
+        "driver_token_worker_safe": True,
+        "driver_token_restart_bound": True,
         "deploy_resume_policy": "paused_until_explicit_click",
     }
     add_radar_log(
-        "V35 MANUAL-START READY: GET/reload/deploy cannot advance radar; every tick needs an in-memory token issued only by explicit Start/Continue.",
+        "V35 MANUAL-START READY: GET/reload/restart/deploy cannot advance radar; every tick needs a signed restart-bound token issued only by explicit Start/Continue.",
         stage="startup",
         details=info,
     )
