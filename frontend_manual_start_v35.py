@@ -17,16 +17,17 @@ PROFILE = broad.PROFILE
 
 
 def _replace_guarded(text: str, old: str, new: str, label: str, *, critical: bool = True) -> str:
-    """Replace one old fragment, accept an already-patched fragment, optionally tolerate copy drift."""
-    if new in text:
-        return text
+    """Prefer replacing a live old fragment; only then accept an already-patched target."""
     count = text.count(old)
     if count == 1:
         return text.replace(old, new, 1)
+    if count > 1:
+        raise RuntimeError(f"V35 frontend invariant {label}: ambiguous source_count={count}")
+    if new in text:
+        return text
     if critical:
         raise RuntimeError(
-            f"V35 frontend invariant {label}: neither expected source nor patched target found "
-            f"(source_count={count})"
+            f"V35 frontend invariant {label}: neither expected source nor patched target found"
         )
     return text
 
@@ -57,7 +58,6 @@ def _sync_modules(html: str) -> dict:
 def patch_frontend_v35() -> dict:
     html = broad.HTML
 
-    # Cosmetic/product copy must never be capable of crashing production startup.
     html = _replace_guarded(
         html,
         "Цель — дать 50–100 сильнейших вариантов, чтобы ты сам выбрал механику. Отсутствие речи, другой тайминг или временная ошибка Gemini больше не скрывают ролик. Перезагрузка страницы не повторяет платный discovery.",
@@ -72,9 +72,6 @@ def patch_frontend_v35() -> dict:
         "eyebrow",
         critical=False,
     )
-
-    # Everything below is behavioural/security-critical. An already-patched target
-    # is accepted, but unexplained source drift fails startup loudly.
     html = _replace_guarded(
         html,
         "const state = { refreshBusy:false, listsBusy:false, driveBusy:false, driveEnabled:false, stopRequested:false, active:false, lastListsAt:0, consecutiveDriveErrors:0, destroyed:false, stickyRuntimeError:false };",
@@ -148,15 +145,12 @@ def patch_frontend_v35() -> dict:
         "manual-runtime-marker",
     )
 
-    # Cosmetic runtime label, safe under wording drift.
     if "V34 · broad trend pool · MANUAL START ONLY · JS готов" not in html:
         html = html.replace(
             "V34 · broad trend pool · fail-open JS готов",
             "V34 · broad trend pool · MANUAL START ONLY · JS готов",
         )
 
-    # Final invariants are stronger than individual replacements and make repeated
-    # calls deterministic.
     required_fragments = (
         "window.__V35_MANUAL_START__=true",
         "X-Radar-Driver-Token",
