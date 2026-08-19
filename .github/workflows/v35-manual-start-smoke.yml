@@ -1,0 +1,192 @@
+name: V35 Manual Start Only Smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'radar_manual_start_v35.py'
+      - 'frontend_manual_start_v35.py'
+      - 'radar_momentum_v34.py'
+      - 'frontend_broad_v34.py'
+      - 'frontend_failopen_v33.py'
+      - '.github/workflows/v35-manual-start-smoke.yml'
+  pull_request:
+    paths:
+      - 'radar_manual_start_v35.py'
+      - 'frontend_manual_start_v35.py'
+      - 'radar_momentum_v34.py'
+      - 'frontend_broad_v34.py'
+      - 'frontend_failopen_v33.py'
+      - '.github/workflows/v35-manual-start-smoke.yml'
+
+jobs:
+  manual-start-only:
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: v35-manual-start-smoke
+      APIFY_API_TOKEN: ''
+      GEMINI_API_KEY: ''
+      PORT: '10000'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install -r requirements.txt playwright
+
+      - name: Compile and server authorization regression
+        run: |
+          python -m compileall -q app.py radar_manual_start_v35.py frontend_manual_start_v35.py radar_momentum_v34.py
+          python - <<'PY'
+          import app as app_module
+          import radar_manual_start_v35 as guard
+          from cloud_state import save_radar_job
+
+          c = app_module.app.test_client()
+
+          # Simulate an unfinished durable job from an older tab/deploy.
+          run_id = 'v35-regression-unfinished'
+          save_radar_job({
+              'version': 5,
+              'runtime': 'request_state_machine_v5',
+              'run_id': run_id,
+              'phase': 'discovering',
+              'created_at': '2026-08-19T08:00:00+00:00',
+              'updated_at': '2026-08-19T08:00:00+00:00',
+              'sources': {},
+              'candidates': [],
+              'warnings': [],
+              'source_failures': {},
+              'stats': {},
+              'result': {},
+              'error': '',
+          })
+          guard._revoke_run(run_id)
+
+          truth = c.get('/api/radar/job')
+          assert truth.status_code == 200, truth.get_data(as_text=True)
+          payload = truth.get_json()
+          assert payload['durable_active'] is True, payload
+          assert payload['active'] is False, payload
+          assert payload['paused'] is True, payload
+          assert payload['manual_start_required'] is True, payload
+          assert payload['auto_resume_on_page_load'] is False, payload
+          assert payload['tick_requires_driver_token'] is True, payload
+
+          # Unauthorized tick must be blocked BEFORE the captured base tick runs.
+          called = {'tick': 0}
+          original_tick = guard._BASE_APP_TICK
+          def forbidden_tick():
+              called['tick'] += 1
+              raise AssertionError('base tick must not execute without manual token')
+          guard._BASE_APP_TICK = forbidden_tick
+          try:
+              blocked = c.post('/api/radar/tick')
+              assert blocked.status_code == 409, blocked.get_data(as_text=True)
+              data = blocked.get_json()
+              assert data['blocked'] is True, data
+              assert data['manual_start_required'] is True, data
+              assert called['tick'] == 0, called
+          finally:
+              guard._BASE_APP_TICK = original_tick
+
+          # Explicit Start/Continue is the only token issuer.
+          original_start = guard._BASE_APP_START
+          original_tick = guard._BASE_APP_TICK
+          guard._BASE_APP_START = lambda: ({
+              'accepted': True, 'active': True, 'run_id': run_id,
+              'phase': 'discovering', 'resumed': True,
+          }, 202)
+          guard._BASE_APP_TICK = lambda: ({
+              'active': True, 'run_id': run_id, 'phase': 'discovering',
+              'message': 'authorized synthetic tick',
+          }, 200)
+          try:
+              started = c.post('/api/radar/sync', headers={'X-Radar-Manual-Start':'click-v35'})
+              assert started.status_code == 202, started.get_data(as_text=True)
+              data = started.get_json()
+              token = data.get('driver_token')
+              assert token and len(token) >= 32, data
+              assert data['manual_session_authorized'] is True, data
+
+              authorized_truth = c.get('/api/radar/job', headers={guard.TOKEN_HEADER: token}).get_json()
+              assert authorized_truth['active'] is True, authorized_truth
+              assert authorized_truth['paused'] is False, authorized_truth
+
+              tick = c.post('/api/radar/tick', headers={guard.TOKEN_HEADER: token})
+              assert tick.status_code == 200, tick.get_data(as_text=True)
+              assert tick.get_json()['message'] == 'authorized synthetic tick'
+          finally:
+              guard._BASE_APP_START = original_start
+              guard._BASE_APP_TICK = original_tick
+
+          root = c.get('/')
+          html = root.get_data(as_text=True)
+          assert root.status_code == 200
+          assert 'window.__V35_MANUAL_START__=true' in html
+          assert 'X-Radar-Driver-Token' in html
+          assert 'read-only refresh NEVER arms or resumes the tick driver' in html
+          assert "setTimeout(checkApis,600)" not in html
+          assert "jobR.value?.active&&!state.stopRequested){state.driveEnabled=true" not in html
+          assert 'MANUAL START ONLY' in html
+          print('V35 SERVER MANUAL-START CONTRACT OK')
+          PY
+
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Real browser opens read-only and sends zero POSTs
+        run: |
+          set -euo pipefail
+          gunicorn app:app --bind 0.0.0.0:10000 --workers 1 --threads 4 --timeout 900 >/tmp/v35-gunicorn.log 2>&1 &
+          PID=$!
+          trap 'kill $PID >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:10000/healthz >/dev/null; then break; fi
+            sleep 0.5
+          done
+
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          requests = []
+          errors = []
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              context = browser.new_context(viewport={'width': 1440, 'height': 1000})
+              page = context.new_page()
+              page.on('request', lambda r: requests.append((r.method, r.url)) if '/api/' in r.url else None)
+              page.on('pageerror', lambda e: errors.append(str(e)))
+
+              # Simulate the exact dangerous condition: server reports an unfinished
+              # durable run, but this newly-opened tab has no driver token.
+              page.route('**/api/radar/job', lambda route: route.fulfill(
+                  status=200,
+                  content_type='application/json',
+                  body='{"ok":true,"active":false,"durable_active":true,"paused":true,"manual_start_required":true,"resume_available":true,"phase":"discovering","run_id":"old-run","message":"Незавершённый поиск сохранён, но приостановлен."}'
+              ))
+
+              response = page.goto('http://127.0.0.1:10000/', wait_until='domcontentloaded', timeout=30000)
+              assert response and response.status == 200
+              page.wait_for_function('window.__V35_MANUAL_START__ === true', timeout=10000)
+              page.wait_for_timeout(15000)
+
+              assert page.locator('#appShell').is_visible()
+              assert page.locator('#syncRadar').inner_text() == 'ПРОДОЛЖИТЬ ПОИСК'
+              assert 'приостановлен' in page.locator('#radarStage').inner_text().lower()
+              assert not errors, errors
+
+              posts = [(m,u) for m,u in requests if m.upper() == 'POST']
+              ticks = [(m,u) for m,u in requests if '/api/radar/tick' in u]
+              diagnostics = [(m,u) for m,u in requests if '/api/diagnostics' in u]
+              assert posts == [], f'page load must send ZERO POSTs: {posts}'
+              assert ticks == [], ticks
+              assert diagnostics == [], diagnostics
+              browser.close()
+
+          print('V35 REAL BROWSER ZERO-AUTOSTART OK; requests:', len(requests))
+          PY
+          kill -0 $PID
