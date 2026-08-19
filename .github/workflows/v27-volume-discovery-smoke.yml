@@ -1,4 +1,4 @@
-name: V27 Volume Discovery Smoke
+name: V28 Multiplatform Discovery Smoke
 
 on:
   push:
@@ -12,48 +12,115 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.13'
       - run: pip install -r requirements.txt
-      - name: Verify V27 discovery and strict provenance
+      - name: Verify V28 discovery strict tags speech and timing
+        env:
+          SECRET_KEY: smoke-test
         run: |
           python - <<'PY'
-          import radar_discovery_v27 as discovery
-          import radar_strict_scope_v27 as strict
+          from datetime import datetime, timedelta, timezone
 
-          sources = discovery.build_v27_sources()
-          assert set(sources) == {"hashtag_omni", "hashtag_veo", "hashtag_veo3"}
-          assert discovery.is_current_v27_source_set({"sources": sources})
+          from models import RadarAssessment
+          import radar_multiplatform_v28 as v28
 
-          for tag in discovery.TARGET_TAGS:
-              source = sources[f"hashtag_{tag}"]
-              payload = source["input"]
-              assert source["actor_id"] == "apify/instagram-scraper"
-              assert payload["directUrls"] == [f"https://www.instagram.com/explore/tags/{tag}/"]
-              assert payload["resultsType"] == "reels"
-              assert payload["resultsLimit"] == 250
-              assert payload["onlyPostsNewerThan"] == "7 days"
-              assert payload["addParentData"] is True
+          sources = v28.build_v28_sources()
+          assert set(sources) == {'instagram', 'tiktok', 'youtube'}, sources
+          assert all(x['strict_scope_marker'] == v28.SOURCE_MARKER for x in sources.values())
 
-          # The source itself is never enough: post-level caption/hashtags must
-          # still prove one of the exact target tags.
-          assert strict._verified_target_tag(
-              {"caption": "generated clip #veo #funny"}, "hashtag: veo"
-          ) == "veo"
-          assert strict._verified_target_tag(
-              {"hashtags": ["omni", "aivideo"]}, "hashtag: omni"
-          ) == "omni"
-          assert strict._verified_target_tag(
-              {"caption": "#funny #over50 #over40"}, "hashtag: veo"
-          ) == ""
+          ig = sources['instagram']
+          assert ig['actor_id'] == 'apify/instagram-scraper'
+          assert len(ig['input']['directUrls']) == 5
+          assert ig['input']['resultsLimit'] == 120
+          assert ig['input']['onlyPostsNewerThan'] == '14 days'
+          assert ig['input']['resultsType'] == 'reels'
 
-          old_sources = {
-              f"hashtag_{tag}": {
-                  "actor_id": "apify/instagram-hashtag-scraper",
-                  "strict_scope_marker": "STRICT_ACTUAL_HASHTAG_V27",
-                  "input": {"hashtags": [tag], "resultsType": "reels", "resultsLimit": 250},
-              }
-              for tag in discovery.TARGET_TAGS
-          }
-          assert not discovery.is_current_v27_source_set({"sources": old_sources})
-          print("V27 volume discovery smoke OK")
+          tt = sources['tiktok']
+          assert tt['actor_id'] == 'clockworks/tiktok-scraper'
+          assert tt['input']['hashtags'] == ['omni', 'veo', 'veo3', 'ai', 'ии']
+          assert tt['input']['resultsPerPage'] == 120
+          assert tt['input']['shouldDownloadVideos'] is True
+
+          yt = sources['youtube']
+          assert yt['actor_id'] == 'constructive_calm/youtube-shorts-scraper-pro'
+          assert yt['input']['startUrls'] == ['#omni', '#veo', '#veo3', '#ai', '#ии']
+          assert yt['input']['publishedAfter'] == '14 days'
+          assert yt['input']['downloadVideos'] is False
+
+          now = datetime.now(timezone.utc)
+          recent = (now - timedelta(days=3)).isoformat()
+
+          # Strict post-level proof, including Cyrillic #ии.
+          assert v28._verified_target_tag({'caption':'реальная подпись #ии #юмор'}) == 'ии'
+          assert v28._verified_target_tag({'caption':'#aivideo #funny'}) == ''
+
+          instagram = v28.normalize_multiplatform_candidate({
+              'url':'https://www.instagram.com/reel/abc/',
+              'ownerUsername':'ig_user',
+              'caption':'scene #ai',
+              'timestamp':recent,
+              'videoDuration':8.4,
+              'videoPlayCount':5000,
+              'likesCount':100,
+              'commentsCount':10,
+          }, 'instagram', {})
+          assert instagram and instagram['platform'] == 'Instagram Reels' and instagram['search_term'] == 'ai'
+
+          tiktok = v28.normalize_multiplatform_candidate({
+              'webVideoUrl':'https://www.tiktok.com/@u/video/1',
+              'authorMeta':{'name':'tt_user','fans':1000},
+              'text':'говорящий ролик #ии',
+              'hashtags':[{'name':'ии'}],
+              'videoMeta':{'duration':9.2},
+              'createTimeISO':recent,
+              'playCount':8000,
+              'diggCount':200,
+              'commentCount':20,
+          }, 'tiktok', {})
+          assert tiktok and tiktok['platform'] == 'TikTok' and tiktok['search_term'] == 'ии'
+
+          youtube = v28.normalize_multiplatform_candidate({
+              'url':'https://www.youtube.com/shorts/xyz',
+              'channelName':'yt_user',
+              'title':'AI scene #veo3',
+              'description':'#veo3',
+              'hashtags':['#veo3'],
+              'durationSeconds':13.2,
+              'publishedAt':recent,
+              'viewCount':12000,
+              'likeCount':300,
+              'commentCount':30,
+          }, 'youtube', {})
+          assert youtube and youtube['platform'] == 'YouTube Shorts' and youtube['search_term'] == 'veo3'
+
+          old = dict({
+              'url':'https://www.youtube.com/shorts/old', 'channelName':'old', 'title':'#ai',
+              'hashtags':['#ai'], 'durationSeconds':8, 'viewCount':1000,
+              'publishedAt':(now - timedelta(days=15)).isoformat(),
+          })
+          assert v28.normalize_multiplatform_candidate(old, 'youtube', {}) is None
+
+          silent = v28._reject('model', spoken=False)
+          silent = v28._finalize_screening(silent, 8.0)
+          assert silent.reason.startswith('NO_SPOKEN_DIALOGUE') and not v28.matches_v28(silent)
+
+          def spoken_assessment():
+              a = v28._reject('model', spoken=True, language='Russian')
+              a.simple_situation = True
+              a.reproducible_format = True
+              a.is_tutorial_or_review = False
+              a.is_talking_head = False
+              a.dialogue_summary = 'короткая слышимая реплика'
+              return a
+
+          direct = v28._finalize_screening(spoken_assessment(), 8.4)
+          assert direct.reason.startswith(v28.PASS_PREFIX + 'DIRECT') and v28.matches_v28(direct)
+          long = v28._finalize_screening(spoken_assessment(), 13.2)
+          assert long.reason.startswith(v28.PASS_PREFIX + 'COMPRESSIBLE_TO_10S') and v28.matches_v28(long)
+
+          row = dict(youtube)
+          row.update(reason=long.reason)
+          assert v28.top_eligible_v28(row)
+
+          print('V28 multiplatform discovery + speech/timing smoke OK')
           PY
