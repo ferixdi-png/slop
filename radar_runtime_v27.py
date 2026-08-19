@@ -224,7 +224,7 @@ def activate_v27_runtime():
     _APPLIED = True
 
     add_radar_log(
-        "V32 FRONTEND READY: self-contained HTML; zero browser /static dependencies; persistent DOM watchdog; source watchdog tightened; V30 paid/search contract unchanged.",
+        "V30 RUNTIME READY + V32 FRONTEND READY: self-contained HTML; zero browser /static dependencies; persistent DOM watchdog; source watchdog tightened; paid/search contract unchanged.",
         stage="startup",
         details=dict(_CONTRACT),
     )
