@@ -5,6 +5,7 @@ on:
     paths:
       - 'static_reliability_v31.py'
       - 'gunicorn.conf.py'
+      - 'render.yaml'
       - 'templates/index.html'
       - 'static/**'
       - '.github/workflows/v31-static-reliability-smoke.yml'
@@ -13,6 +14,7 @@ on:
     paths:
       - 'static_reliability_v31.py'
       - 'gunicorn.conf.py'
+      - 'render.yaml'
       - 'templates/index.html'
       - 'static/**'
       - '.github/workflows/v31-static-reliability-smoke.yml'
@@ -36,6 +38,8 @@ jobs:
         run: |
           python - <<'PY'
           import runpy
+          from pathlib import Path
+
           import app as app_module
           from static_reliability_v31 import CRITICAL_ASSETS, static_health_payload
 
@@ -44,6 +48,11 @@ jobs:
           assert 'post_worker_init' not in conf, conf.keys()
           assert conf['bind'].startswith('0.0.0.0:')
           assert conf['timeout'] == 900
+
+          # Render liveness must stay independent from SQLite/Apify/Gemini.
+          render_text = Path('render.yaml').read_text(encoding='utf-8')
+          assert 'healthCheckPath: /healthz' in render_text, render_text
+          assert 'gunicorn app:app' in render_text, render_text
 
           # Legacy files may remain as passive compatibility/debug artifacts, but
           # checking them must not mutate the live Flask app or register routes.
@@ -59,9 +68,10 @@ jobs:
           assert '/static/' not in html
           assert root.headers['X-Frontend-Profile'] == 'frontend_v34_broad_fail_open'
           assert c.get('/api/frontend-health').get_json()['external_static_dependencies'] == 0
+          assert c.get('/healthz').status_code == 200
 
           # The legacy static health endpoint is intentionally absent from the live
           # app because its installer is no longer part of production bootstrap.
           assert c.get('/api/static-health').status_code == 404
-          print('LEGACY STATIC FILES PASSIVE; PRODUCTION BOOT IS SELF-CONTAINED')
+          print('LEGACY STATIC FILES PASSIVE; RENDER/PRODUCTION BOOT IS SELF-CONTAINED')
           PY
