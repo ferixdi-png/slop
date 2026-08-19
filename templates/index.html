@@ -4,8 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>ПОИСК ТРЕНДОВ — INSTAGRAM + TIKTOK + YOUTUBE</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260819-v28" />
-  <link rel="stylesheet" href="/static/upgrade.css?v=20260819-v28" />
+  <link rel="stylesheet" href="/static/style.css?v=20260819-v29" />
+  <link rel="stylesheet" href="/static/upgrade.css?v=20260819-v29" />
 </head>
 <body>
   <div class="app-shell">
@@ -15,14 +15,14 @@
         <div><strong>ПОИСК ТРЕНДОВ</strong><small>Instagram · TikTok · YouTube</small></div>
       </div>
       <div class="side-note">
-        1. Новый поиск очищает предыдущий TOP и старую мету. 2. Ищем только ролики за последние 14 дней, где в самом посте реально присутствует #omni, #veo, #veo3, #ai или #ии. 3. Каждый не-статичный кандидат обязательно слушает Gemini: без реальной слышимой речи ролик не проходит. 4. Исходник до 10.05 сек сохраняет собственный тайминг; 10.05–15.05 сек проходит только если все необходимые реплики, действия и реакцию можно естественно уложить ровно в 10 секунд без ускоренной речи. 5. Ranking ставит выше ролики, которые быстрее всего набирают просмотры.
+        1. Новый поиск очищает предыдущий TOP и старую мету. 2. Ищем только ролики за последние 14 дней, где в самом посте реально присутствует #omni, #veo, #veo3, #ai или #ии. 3. Каждый не-статичный кандидат обязательно слушает Gemini: без реальной слышимой речи ролик не проходит. 4. Исходник до 10.05 сек сохраняет собственный тайминг; 10.05–15.05 сек проходит только если все необходимые реплики, действия и реакцию можно естественно уложить ровно в 10 секунд без ускоренной речи. 5. Discovery имеет жёсткий Apify hard cap $2.80, общий целевой бюджет одного полного поиска — меньше $5.
       </div>
     </aside>
 
     <main>
       <header>
         <div>
-          <div class="eyebrow">V28 MULTIPLATFORM SPEECH RADAR</div>
+          <div class="eyebrow">V29 MULTIPLATFORM · HARD BUDGET &lt;$5</div>
           <h1>Что набирает обороты прямо сейчас.<br><span>Instagram + TikTok + YouTube.</span></h1>
         </div>
         <div class="status" id="serviceStatus"><i></i> проверяю сервис…</div>
@@ -31,7 +31,7 @@
       <section id="radar" class="screen active">
         <div class="section-title">
           <div><span class="step">3 ПЛАТФОРМЫ · 5 ТЕГОВ · 14 ДНЕЙ</span><h2>#omni + #veo + #veo3 + #ai + #ии · только видео с речью · исходник до 15.05 сек</h2></div>
-          <span class="muted">строгий hashtag в самом посте · Gemini слушает речь и проверяет тайминг</span>
+          <span class="muted">до 60 результатов на тег/платформу · Apify discovery hard cap $2.80 · общий target &lt;$5</span>
         </div>
 
         <div class="api-grid">
@@ -43,15 +43,15 @@
           <div class="card api-card" id="apifyApiCard">
             <div><span class="api-dot"></span><b>Apify</b></div>
             <strong id="apifyApiStatus">Проверяю ключ…</strong>
-            <small id="apifyApiMeta">Instagram Reels + TikTok + YouTube Shorts · 5 строгих тегов</small>
+            <small id="apifyApiMeta">Instagram $0.85 · TikTok $1.15 · YouTube $0.80 hard cap за discovery</small>
           </div>
           <button id="checkApis" class="secondary api-check-btn">ПРОВЕРИТЬ API</button>
         </div>
 
         <div class="card radar-intro">
           <div>
-            <b>Один радар на три платформы. В TOP — только ролики с реальной речью.</b>
-            <span>Apify собирает Instagram Reels, TikTok и YouTube Shorts по #omni, #veo, #veo3, #ai и #ии. Источник или поисковая выдача не считаются доказательством: каждый сырой объект повторно проверяется, и нужный тег обязан реально находиться в hashtags/caption/title/description самого поста. Затем локально отсекаются старше 14 дней, слишком длинные и статичные записи. После этого Gemini обязательно слушает видео: без слышимой речи кандидат получает REJECT. Для ролика до 10.05 сек Gemini проверяет, можно ли сохранить речь, порядок спикеров, паузы, действия и реакцию в исходном тайминге. Для исходника 10.05–15.05 сек PASS возможен только если всю обязательную разговорную механику можно естественно пересобрать ровно в 10.00 сек без глобального ускорения и торопливой речи.</span>
+            <b>Три платформы сохранены, но расход теперь физически ограничен.</b>
+            <span>Apify собирает Instagram Reels, TikTok и YouTube Shorts по #omni, #veo, #veo3, #ai и #ии. На каждую платформу запрашивается максимум 60 результатов на тег — до 300 записей на платформу. Помимо maxItems каждый Actor получает собственный maxTotalChargeUsd: Instagram $0.85, TikTok $1.15, YouTube $0.80. Суммарный discovery не может превысить $2.80; ещё $2.20 остаётся запасом до целевого лимита $5. Затем strict-фильтры проверяют реальный hashtag, дату, длительность и движение, а Gemini слушает только лучшие кандидаты: максимум 150 speech/timing проверок. Без слышимой речи кандидат получает REJECT.</span>
           </div>
           <div class="radar-controls">
             <button id="syncRadar" class="secondary">ЗАПУСТИТЬ ПОИСК</button>
@@ -85,7 +85,7 @@
         <div id="analysisResult" class="result hidden"></div>
 
         <div id="radarMeta" class="meta-wrap">
-          <div class="card"><div class="empty">После первого завершённого V28-поиска здесь появится мета текущего TOP.</div></div>
+          <div class="card"><div class="empty">После первого завершённого V29-поиска здесь появится мета текущего TOP.</div></div>
         </div>
 
         <div class="section-mini-title">
@@ -98,7 +98,7 @@
         </div>
 
         <div class="section-mini-title candidates-title">
-          <div><b>ПУЛ КАНДИДАТОВ V28</b><span>#omni · #veo · #veo3 · #ai · #ии · Instagram / TikTok / YouTube · максимум 420 Gemini-проверок за run</span></div>
+          <div><b>ПУЛ КАНДИДАТОВ V29</b><span>#omni · #veo · #veo3 · #ai · #ии · максимум 900 raw и 150 Gemini speech/timing проверок за run</span></div>
         </div>
         <div class="card">
           <div id="candidateRows" class="candidate-table">
@@ -109,11 +109,11 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260819-v28"></script>
-  <script src="/static/v17_ui.js?v=20260819-v28"></script>
-  <script src="/static/overlay_v15.js?v=20260819-v28"></script>
-  <script src="/static/runtime.js?v=20260819-v28"></script>
-  <script src="/static/fresh_run_v23.js?v=20260819-v28"></script>
-  <script src="/static/scope_v24.js?v=20260819-v28"></script>
+  <script src="/static/app.js?v=20260819-v29"></script>
+  <script src="/static/v17_ui.js?v=20260819-v29"></script>
+  <script src="/static/overlay_v15.js?v=20260819-v29"></script>
+  <script src="/static/runtime.js?v=20260819-v29"></script>
+  <script src="/static/fresh_run_v23.js?v=20260819-v29"></script>
+  <script src="/static/scope_v24.js?v=20260819-v29"></script>
 </body>
 </html>
