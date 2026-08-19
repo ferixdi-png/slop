@@ -96,15 +96,11 @@ def activate_v27_runtime():
         apply_dialogue_first_overrides()
         app_module.top_eligible = top_eligible_dialogue
 
-        from overlay_cleanplate_v15 import (
-            PRODUCTION_PROFILE_VERSION,
-            apply_overlay_cleanplate_overrides,
-        )
+        from overlay_cleanplate_v15 import PRODUCTION_PROFILE_VERSION, apply_overlay_cleanplate_overrides
         apply_overlay_cleanplate_overrides()
 
         from radar_resilient_v17 import apply_resilient_v17_overrides
         apply_resilient_v17_overrides()
-
         app_module.tick_job = budget.wrap_tick_job(app_module.tick_job)
 
         from radar_hardening_v19 import apply_hardening_v19
@@ -141,6 +137,10 @@ def activate_v27_runtime():
         from radar_v28_finish import apply_v28_finish
         finish_info = apply_v28_finish()
 
+        # Current google-genai Interactions adapter for public YouTube URLs.
+        from youtube_genai_v34 import install_youtube_v34
+        youtube_info = install_youtube_v34()
+
         # V34 must be after all strict semantic/hardening layers. It preserves every
         # V30 safety/budget rule but changes visibility from AI-gated to momentum-led.
         from radar_broad_v34 import apply_broad_v34
@@ -150,14 +150,7 @@ def activate_v27_runtime():
         from frontend_failopen_v33 import install_frontend_v33
         frontend_info = install_frontend_v33(app_module.app)
 
-        final_info = {
-            **dict(v28_info or {}),
-            **dict(v29_info or {}),
-            **dict(search_guard_info or {}),
-            **dict(v30_info or {}),
-            **dict(v34_info or {}),
-        }
-        final_keep_limit = int(v34_info.get("target_output_max") or final_info.get("keep_limit") or budget.KEEP_LIMIT)
+        final_keep_limit = int(v34_info.get("target_output_max") or v30_info.get("keep_limit") or budget.KEEP_LIMIT)
         final_budget = budget_breakdown_v29()
 
         # Persistence/screening profile stays V30; visible product behavior is V34.
@@ -207,6 +200,8 @@ def activate_v27_runtime():
         "ai_error_policy": "keep_for_manual_review",
         "strict_actual_hashtag": True,
         "youtube_direct_gemini": True,
+        "youtube_interactions_schema": youtube_info["youtube_interactions_schema"],
+        "youtube_failure_policy": youtube_info["youtube_failure_policy"],
         "automatic_paid_refreshes": False,
         "v28_14day_api": bool(finish_info.get("v28_14day_api")),
         "direct_max_duration_sec": DIRECT_MAX_DURATION_SEC,
@@ -238,7 +233,7 @@ def activate_v27_runtime():
     _APPLIED = True
 
     add_radar_log(
-        "V30 RUNTIME READY + V34 BROAD PRODUCT + V33 FAIL-OPEN FRONTEND: 50-100 momentum candidates visible; Gemini enrichment only; hard budget unchanged.",
+        "V30 RUNTIME READY + V34 BROAD PRODUCT + V33 FAIL-OPEN FRONTEND: 50-100 momentum candidates visible; Gemini enrichment only; YouTube current Interactions schema; hard budget unchanged.",
         stage="startup",
         details=dict(_CONTRACT),
     )
