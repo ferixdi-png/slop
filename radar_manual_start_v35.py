@@ -111,12 +111,20 @@ def create_or_resume_job_v35():
     run_id = str(payload.get("run_id") or "")
     if bool(payload.get("accepted")) and run_id:
         token = _issue_token(run_id)
+        # _BASE_APP_START may itself have used the session-aware public_job wrapper
+        # before the new token existed. Normalize the response to the truth AFTER
+        # the explicit click has authorized this exact run.
+        payload["active"] = True
+        payload["durable_active"] = True
+        payload["resume_available"] = True
         payload["driver_token"] = token
         payload["driver_token_header"] = TOKEN_HEADER
         payload["manual_start_only"] = True
         payload["manual_session_authorized"] = True
         payload["manual_start_required"] = False
         payload["paused"] = False
+        payload["auto_resume_on_page_load"] = False
+        payload["tick_requires_driver_token"] = True
         add_radar_log(
             "V35 MANUAL START: browser driver explicitly authorized by Start/Continue click.",
             stage="manual-start",
