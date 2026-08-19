@@ -9,6 +9,7 @@ on:
       - 'radar_multiplatform_v28.py'
       - 'radar_budget_search_guard_v29.py'
       - 'prompt_reliability_v36.py'
+      - 'metrics_truth_v40.py'
       - 'overlay_cleanplate_v15.py'
       - 'frontend_manual_start_v35.py'
       - 'radar_manual_start_v35.py'
@@ -24,6 +25,7 @@ on:
       - 'radar_multiplatform_v28.py'
       - 'radar_budget_search_guard_v29.py'
       - 'prompt_reliability_v36.py'
+      - 'metrics_truth_v40.py'
       - 'overlay_cleanplate_v15.py'
       - 'frontend_manual_start_v35.py'
       - 'radar_manual_start_v35.py'
@@ -45,9 +47,7 @@ jobs:
         with:
           python-version: '3.13'
       - run: pip install -r requirements.txt
-      - name: Compile full production Python surface
-        run: |
-          python -m compileall -q .
+      - run: python -m compileall -q .
       - name: Verify final runtime architecture without external spend
         run: |
           python - <<'PY'
@@ -57,6 +57,7 @@ jobs:
           import app as app_module
           import frontend_failopen_v33 as frontend
           import gemini_service
+          import metrics_truth_v40 as metrics
           import overlay_cleanplate_v15 as overlay
           import radar_broad_v34 as broad
           import radar_budget_search_guard_v29 as search_guard
@@ -79,27 +80,24 @@ jobs:
           assert tuple(info['platforms']) == v28.PLATFORMS, info
           assert info['lookback_days'] == 14, info
 
-          # No obsolete second history API may remain. V28 is the single scorer;
-          # V34 only schedules it before final TOP + checkpoints its DB table.
+          # V28 remains the authoritative velocity scorer. V40 is a narrow
+          # provenance guard in front of it so two different platform counters can
+          # never be compared as if they were the same historical metric.
           source = Path('radar_momentum_v34.py').read_text(encoding='utf-8')
           assert 'load_momentum_history' not in source
           assert 'save_momentum_history' not in source
-          assert momentum._BASE_REFRESH is v28.refresh_scores_v28
+          assert momentum._BASE_REFRESH is metrics.refresh_metric_aware_momentum_v40
+          assert metrics._BASE_MOMENTUM_REFRESH is v28.refresh_scores_v28
           assert edge._BASE_FINALIZE is momentum.finalize_with_momentum_v34
 
           # Production package and UI agree on the actual output schema.
           assert gemini_service.ProductionPackage is overlay.ProductionPackageV15
-          assert 'capcut_overlay_plan' in gemini_service.ProductionPackage.model_fields
-          assert 'block_1_frame0_prompt' in gemini_service.ProductionPackage.model_fields
-          assert 'block_3_video' in gemini_service.ProductionPackage.model_fields
-          assert 'block_4_audio' in gemini_service.ProductionPackage.model_fields
-          assert 'capcut_overlay_plan' in frontend.HTML
-          assert 'block_1_frame0_prompt' in frontend.HTML
-          assert 'block_3_video' in frontend.HTML
+          for field in ('capcut_overlay_plan','block_1_frame0_prompt','block_3_video','block_4_audio'):
+              assert field in gemini_service.ProductionPackage.model_fields, field
+          for marker in ('capcut_overlay_plan','block_1_frame0_prompt','block_3_video'):
+              assert marker in frontend.HTML, marker
 
-          # Automatic search and manual production analysis intentionally have
-          # different media policies. Search may not start a paid refresh Actor;
-          # manual user-selected analysis keeps the original 3-platform refresher.
+          # Automatic search cannot paid-refresh media; a user-selected prompt job can.
           assert v28.download_multiplatform_video is search_guard.download_search_candidate_v29
           manual_downloader = app_module.download_reel_for_analysis
           assert manual_downloader is not v28.download_multiplatform_video
@@ -121,8 +119,8 @@ jobs:
               v28._download_from_url = original_dl
               v28._persist_media = original_persist
 
-          # Synthetic five-tag history. An old-profile record has enormous VPH but
-          # must never contaminate the current product TOP.
+          # Five-tag measured history still works when metric provenance is stable;
+          # stale screening profiles never contaminate the current TOP.
           now = datetime.now(timezone.utc)
           current_profile = broad.SCREENING_PROFILE
           with db_conn() as conn:
@@ -131,32 +129,35 @@ jobs:
               for i, tag in enumerate(v28.TARGET_TAGS):
                   views = 5000 + i * 100
                   conn.execute(
-                      '''INSERT INTO radar_posts(platform,creator,post_url,published_at,duration_sec,views,likes,comments,
-                         hours_since_publish,views_per_hour,viral_score_v2,search_term,ai_checked,ai_match,screening_profile,reason)
-                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                      '''INSERT INTO radar_posts(
+                         platform,creator,post_url,published_at,duration_sec,views,likes,comments,
+                         hours_since_publish,views_per_hour,viral_score_v2,search_term,ai_checked,ai_match,
+                         screening_profile,reason,metrics_updated_at,views_metric_source,views_metric_quality
+                         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                       (
                           v28.PLATFORMS[i % len(v28.PLATFORMS)], f'current{i}', f'https://example.com/current/{tag}',
                           (now - timedelta(hours=2+i)).isoformat(), 8.0, views, 50, 5, 2+i,
-                          2500.0-i*100, 50.0, tag, 1, 1, current_profile, 'NO_SPOKEN_DIALOGUE: synthetic'
+                          2500.0-i*100, 50.0, tag, 1, 1, current_profile, 'NO_SPOKEN_DIALOGUE: synthetic',
+                          now.isoformat(), 'synthetic.stable', 'public_exact'
                       ),
                   )
               conn.execute(
-                  '''INSERT INTO radar_posts(platform,creator,post_url,published_at,duration_sec,views,likes,comments,
-                     hours_since_publish,views_per_hour,viral_score_v2,search_term,ai_checked,ai_match,screening_profile,reason)
-                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                  '''INSERT INTO radar_posts(
+                     platform,creator,post_url,published_at,duration_sec,views,likes,comments,
+                     hours_since_publish,views_per_hour,viral_score_v2,search_term,ai_checked,ai_match,
+                     screening_profile,reason,metrics_updated_at,views_metric_source,views_metric_quality
+                     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                   (
                       'TikTok','stale','https://example.com/stale',now.isoformat(),8.0,9999999,9999,999,
-                      1.0,9999999.0,100.0,'ai',1,1,'obsolete_profile',''
+                      1.0,9999999.0,100.0,'ai',1,1,'obsolete_profile','',now.isoformat(),
+                      'synthetic.stable','public_exact'
                   ),
               )
               conn.execute(
-                  '''INSERT INTO radar_momentum_history(post_url,observed_at,views,average_views_per_hour,search_term)
-                     VALUES(?,?,?,?,?)''',
-                  (
-                      'https://example.com/current/ai',
-                      (now - timedelta(minutes=30)).isoformat(),
-                      1000, 100.0, 'ai'
-                  ),
+                  '''INSERT INTO radar_momentum_history(
+                     post_url,observed_at,views,average_views_per_hour,search_term,views_metric_source
+                     ) VALUES(?,?,?,?,?,?)''',
+                  ('https://example.com/current/ai',(now-timedelta(minutes=30)).isoformat(),1000,100.0,'ai','synthetic.stable'),
               )
               conn.commit()
 
@@ -170,7 +171,7 @@ jobs:
 
           with db_conn() as conn:
               ai_row = conn.execute(
-                  "SELECT measured_growth_per_hour,growth_acceleration FROM radar_posts WHERE post_url=?",
+                  'SELECT measured_growth_per_hour,growth_acceleration FROM radar_posts WHERE post_url=?',
                   ('https://example.com/current/ai',),
               ).fetchone()
           assert float(ai_row['measured_growth_per_hour'] or 0) > 0, dict(ai_row)
@@ -185,12 +186,12 @@ jobs:
           api_urls = {x['post_url'] for x in c.get('/api/radar').get_json()}
           assert 'https://example.com/stale' not in api_urls, api_urls
           assert urls == api_urls, (urls, api_urls)
-
           root = c.get('/').get_data(as_text=True)
           assert 'window.__V35_MANUAL_START__=true' in root
           assert 'setTimeout(checkApis,600)' not in root
           assert 'jobR.value?.active&&!state.stopRequested){state.driveEnabled=true' not in root
+          assert 'ОБНОВИТЬ ЦИФРЫ' in root
           assert c.get('/healthz').status_code == 200
 
-          print('V37 FINAL AUDIT OK: momentum finalization + current profile + split media policy + prompt schema + manual start')
+          print('V37/V40 FINAL AUDIT OK')
           PY
