@@ -1,0 +1,180 @@
+name: V36 Production Prompts Reliability Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'prompt_reliability_v36.py'
+      - 'radar_runtime_v27.py'
+      - 'radar_manual_start_v35.py'
+      - 'frontend_manual_start_v35.py'
+      - 'app.py'
+      - '.github/workflows/v36-production-prompts-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'prompt_reliability_v36.py'
+      - 'radar_runtime_v27.py'
+      - 'radar_manual_start_v35.py'
+      - 'frontend_manual_start_v35.py'
+      - 'app.py'
+      - '.github/workflows/v36-production-prompts-smoke.yml'
+
+jobs:
+  prompts-reliability:
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: v36-smoke
+      APIFY_API_TOKEN: v36-fake-secret-token
+      GEMINI_API_KEY: ''
+      PORT: '10000'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - name: Compile
+        run: python -m compileall -q app.py radar_runtime_v27.py prompt_reliability_v36.py radar_manual_start_v35.py frontend_manual_start_v35.py
+      - name: Verify auth scoping, fallback, broad prompt access and production activation
+        run: |
+          python - <<'PY'
+          import os
+          import tempfile
+          from datetime import datetime, timezone
+
+          import app as app_module
+          import prompt_reliability_v36 as v36
+          import radar_audit_v30 as v30
+          import radar_manual_start_v35 as v35
+          from cloud_state import save_radar_job
+          from db import db_conn
+
+          info = app_module.RUNTIME_INFO
+          assert info['manual_start_only'] is True, info
+          assert info['auto_resume_on_page_load'] is False, info
+          assert info['tick_requires_driver_token'] is True, info
+          assert info['apify_private_media_auth'] == 'bearer_header_only', info
+          assert info['apify_signed_record_fallback'] is True, info
+          assert info['broad_candidate_prompt_access'] is True, info
+          assert info['prompt_token_in_url'] is False, info
+          assert info['redirect_token_forwarding'] is False, info
+          assert app_module.RADAR_RUNTIME == v30.MODE_VERSION
+
+          private = 'https://api.apify.com/v2/key-value-stores/store123/records/video-abc.mp4'
+          normal = 'https://cdn.example.com/video.mp4'
+          h1 = v36._request_headers(private)
+          h2 = v36._request_headers(normal)
+          assert h1['Authorization'] == 'Bearer v36-fake-secret-token', h1
+          assert 'Authorization' not in h2, h2
+          assert 'v36-fake-secret-token' not in private
+
+          # Mock safe downloader network so CI verifies per-hop credential scoping.
+          class Resp:
+              def __init__(self, status=200, location='', body=b'x'*4096, content_type='video/mp4'):
+                  self.status_code = status
+                  self.headers = {'Content-Type': content_type, 'Content-Length': str(len(body))}
+                  if location:
+                      self.headers['Location'] = location
+                  self._body = body
+              def close(self): pass
+              def raise_for_status(self):
+                  if self.status_code >= 400:
+                      import requests
+                      raise requests.HTTPError(f'{self.status_code} synthetic')
+              def iter_content(self, _size):
+                  yield self._body
+
+          calls = []
+          original_get = v36.requests.get
+          original_validate = v36.audit._validate_public_https_url
+          original_signed = v36._signed_record_url
+          v36.audit._validate_public_https_url = lambda u: u
+          try:
+              def redirect_get(url, **kwargs):
+                  calls.append((url, dict(kwargs.get('headers') or {})))
+                  if len(calls) == 1:
+                      return Resp(302, location='https://cdn.example.com/video.mp4')
+                  return Resp(200)
+              v36.requests.get = redirect_get
+              path = v36.download_temp_video_v36(private)
+              try:
+                  assert os.path.getsize(path) == 4096
+              finally:
+                  os.unlink(path)
+              assert calls[0][1].get('Authorization') == 'Bearer v36-fake-secret-token', calls
+              assert 'Authorization' not in calls[1][1], calls
+
+              calls.clear()
+              v36._signed_record_url = lambda _url: 'https://cdn.example.com/signed-one-record.mp4?signature=test'
+              def forbidden_then_signed(url, **kwargs):
+                  calls.append((url, dict(kwargs.get('headers') or {})))
+                  return Resp(403) if len(calls) == 1 else Resp(200)
+              v36.requests.get = forbidden_then_signed
+              path = v36.download_temp_video_v36(private)
+              try:
+                  assert os.path.getsize(path) == 4096
+              finally:
+                  os.unlink(path)
+              assert calls[0][1].get('Authorization') == 'Bearer v36-fake-secret-token', calls
+              assert 'Authorization' not in calls[1][1], calls
+              assert 'signature=test' in calls[1][0]
+          finally:
+              v36.requests.get = original_get
+              v36.audit._validate_public_https_url = original_validate
+              v36._signed_record_url = original_signed
+
+          c = app_module.app.test_client()
+
+          # Prove V35 is really installed by the production bootstrap.
+          run_id = 'v36-paused-run'
+          save_radar_job({
+              'version': 5, 'runtime': 'request_state_machine_v5', 'run_id': run_id,
+              'phase': 'discovering', 'created_at': datetime.now(timezone.utc).isoformat(),
+              'updated_at': datetime.now(timezone.utc).isoformat(), 'sources': {},
+              'candidates': [], 'warnings': [], 'source_failures': {}, 'stats': {},
+              'result': {}, 'error': ''
+          })
+          truth = c.get('/api/radar/job').get_json()
+          assert truth['durable_active'] is True, truth
+          assert truth['active'] is False, truth
+          assert truth['paused'] is True, truth
+          assert truth['manual_start_required'] is True, truth
+          blocked = c.post('/api/radar/tick')
+          assert blocked.status_code == 409, blocked.get_data(as_text=True)
+
+          # V34 broad candidate: ai_match=0 must no longer be blocked by the old app gate.
+          with db_conn() as conn:
+              conn.execute('DELETE FROM radar_posts')
+              cur = conn.execute(
+                  '''INSERT INTO radar_posts(platform,creator,post_url,video_url,preview_url,published_at,duration_sec,
+                     views,likes,comments,hours_since_publish,views_per_hour,viral_score_v2,search_term,
+                     ai_checked,ai_match,screening_profile,reason)
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                  ('YouTube Shorts','broadtest','https://youtube.com/shorts/test','','',
+                   datetime.now(timezone.utc).isoformat(),10.0,1000000,10000,500,1.0,1000000.0,99.0,
+                   'ai',1,0,app_module.PROFILE_VERSION,'NO_SPOKEN_DIALOGUE: synthetic')
+              )
+              item_id = cur.lastrowid
+              conn.commit()
+
+          original_eligible = app_module.top_eligible
+          original_analyze = v36._analyze_broad_candidate
+          app_module.top_eligible = lambda row: True
+          v36._analyze_broad_candidate = lambda appmod, iid, row: appmod.jsonify(
+              ok=True, broad_candidate=True, item_id=iid, prompt_access='allowed'
+          )
+          try:
+              response = c.post(f'/api/radar/{item_id}/analyze', json={'owned_or_licensed': False})
+              assert response.status_code == 200, response.get_data(as_text=True)
+              data = response.get_json()
+              assert data['broad_candidate'] is True, data
+              assert data['prompt_access'] == 'allowed', data
+          finally:
+              app_module.top_eligible = original_eligible
+              v36._analyze_broad_candidate = original_analyze
+
+          root = c.get('/').get_data(as_text=True)
+          assert 'MANUAL START ONLY' in root
+          assert 'window.__V35_MANUAL_START__=true' in root
+          print('V36 PRODUCTION PROMPTS + V35 PRODUCTION ACTIVATION OK')
+          PY
