@@ -182,9 +182,9 @@ jobs:
               item_id = conn.execute('SELECT id FROM radar_posts WHERE post_url=?',(item_url,)).fetchone()['id']
               fingerprint = v30._analysis_fingerprint(item_url, 8.0, False)
               conn.execute(
-                  '''INSERT INTO analyses(created_at,source_url,model,result_json,production_profile,source_duration_sec,owned_or_licensed,source_fingerprint)
-                     VALUES(?,?,?,?,?,?,?,?)''',
-                  (now.isoformat(),item_url,v30.ANALYSIS_MODEL,json.dumps({'cached_test':True}),v30.PRODUCTION_PROFILE_VERSION,8.0,0,fingerprint),
+                  '''INSERT INTO analyses(created_at,source_url,title,model,result_json,production_profile,source_duration_sec,owned_or_licensed,source_fingerprint)
+                     VALUES(?,?,?,?,?,?,?,?,?)''',
+                  (now.isoformat(),item_url,'audit cache',v30.ANALYSIS_MODEL,json.dumps({'cached_test':True}),v30.PRODUCTION_PROFILE_VERSION,8.0,0,fingerprint),
               )
               analysis_id = conn.execute('SELECT MAX(id) AS id FROM analyses').fetchone()['id']
               conn.commit()
