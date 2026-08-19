@@ -1,0 +1,196 @@
+name: V37 Final Audit Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'radar_momentum_v34.py'
+      - 'radar_broad_v34.py'
+      - 'radar_runtime_v27.py'
+      - 'radar_multiplatform_v28.py'
+      - 'radar_budget_search_guard_v29.py'
+      - 'prompt_reliability_v36.py'
+      - 'overlay_cleanplate_v15.py'
+      - 'frontend_manual_start_v35.py'
+      - 'radar_manual_start_v35.py'
+      - 'render.yaml'
+      - 'gunicorn.conf.py'
+      - '.github/workflows/v37-final-audit-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'radar_momentum_v34.py'
+      - 'radar_broad_v34.py'
+      - 'radar_runtime_v27.py'
+      - 'radar_multiplatform_v28.py'
+      - 'radar_budget_search_guard_v29.py'
+      - 'prompt_reliability_v36.py'
+      - 'overlay_cleanplate_v15.py'
+      - 'frontend_manual_start_v35.py'
+      - 'radar_manual_start_v35.py'
+      - 'render.yaml'
+      - 'gunicorn.conf.py'
+      - '.github/workflows/v37-final-audit-smoke.yml'
+
+jobs:
+  final-audit:
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: v37-final-audit
+      APIFY_API_TOKEN: ''
+      GEMINI_API_KEY: ''
+      PORT: '10000'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - name: Compile full production Python surface
+        run: |
+          python -m compileall -q .
+      - name: Verify final runtime architecture without external spend
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timedelta, timezone
+          from pathlib import Path
+
+          import app as app_module
+          import frontend_failopen_v33 as frontend
+          import gemini_service
+          import overlay_cleanplate_v15 as overlay
+          import radar_broad_v34 as broad
+          import radar_budget_search_guard_v29 as search_guard
+          import radar_edge_v19 as edge
+          import radar_momentum_cloud_v25 as cloud_momentum
+          import radar_momentum_v34 as momentum
+          import radar_multiplatform_v28 as v28
+          from db import db_conn
+
+          info = app_module.RUNTIME_INFO
+          assert info['product_mode'] == broad.MODE_VERSION, info
+          assert info['manual_start_only'] is True, info
+          assert info['auto_resume_on_page_load'] is False, info
+          assert info['tick_requires_driver_token'] is True, info
+          assert info['broad_candidate_prompt_access'] is True, info
+          assert info['apify_private_media_auth'] == 'bearer_header_only', info
+          assert info['hard_total_target_usd'] == 5.0, info
+          assert info['apify_discovery_hard_cap_usd'] == 2.8, info
+          assert tuple(info['hashtags']) == v28.TARGET_TAGS, info
+          assert tuple(info['platforms']) == v28.PLATFORMS, info
+          assert info['lookback_days'] == 14, info
+
+          # No obsolete second history API may remain. V28 is the single scorer;
+          # V34 only schedules it before final TOP + checkpoints its DB table.
+          source = Path('radar_momentum_v34.py').read_text(encoding='utf-8')
+          assert 'load_momentum_history' not in source
+          assert 'save_momentum_history' not in source
+          assert momentum._BASE_REFRESH is v28.refresh_scores_v28
+          assert edge._BASE_FINALIZE is momentum.finalize_with_momentum_v34
+
+          # Production package and UI agree on the actual output schema.
+          assert gemini_service.ProductionPackage is overlay.ProductionPackageV15
+          assert 'capcut_overlay_plan' in gemini_service.ProductionPackage.model_fields
+          assert 'block_1_frame0_prompt' in gemini_service.ProductionPackage.model_fields
+          assert 'block_3_video' in gemini_service.ProductionPackage.model_fields
+          assert 'block_4_audio' in gemini_service.ProductionPackage.model_fields
+          assert 'capcut_overlay_plan' in frontend.HTML
+          assert 'block_1_frame0_prompt' in frontend.HTML
+          assert 'block_3_video' in frontend.HTML
+
+          # Automatic search and manual production analysis intentionally have
+          # different media policies. Search may not start a paid refresh Actor;
+          # manual user-selected analysis keeps the original 3-platform refresher.
+          assert v28.download_multiplatform_video is search_guard.download_search_candidate_v29
+          manual_downloader = app_module.download_reel_for_analysis
+          assert manual_downloader is not v28.download_multiplatform_video
+          assert manual_downloader.__name__ == 'download_multiplatform_video'
+          original_tt = v28._refresh_tiktok
+          original_yt = v28._refresh_youtube
+          original_dl = v28._download_from_url
+          original_persist = v28._persist_media
+          try:
+              v28._refresh_tiktok = lambda row: ('https://cdn.example/tiktok.mp4', 7.0)
+              v28._refresh_youtube = lambda row: ('https://cdn.example/youtube.mp4', 8.0)
+              v28._download_from_url = lambda url, fallback_duration=0: ('/tmp/synthetic.mp4', float(fallback_duration))
+              v28._persist_media = lambda *args, **kwargs: None
+              assert manual_downloader({'platform':'TikTok','post_url':'x','video_url':'','duration_sec':7}) == ('/tmp/synthetic.mp4', 7.0)
+              assert manual_downloader({'platform':'YouTube Shorts','post_url':'y','video_url':'','duration_sec':8}) == ('/tmp/synthetic.mp4', 8.0)
+          finally:
+              v28._refresh_tiktok = original_tt
+              v28._refresh_youtube = original_yt
+              v28._download_from_url = original_dl
+              v28._persist_media = original_persist
+
+          # Synthetic five-tag history. An old-profile record has enormous VPH but
+          # must never contaminate the current product TOP.
+          now = datetime.now(timezone.utc)
+          current_profile = broad.SCREENING_PROFILE
+          with db_conn() as conn:
+              conn.execute('DELETE FROM radar_posts')
+              conn.execute('DELETE FROM radar_momentum_history')
+              for i, tag in enumerate(v28.TARGET_TAGS):
+                  views = 5000 + i * 100
+                  conn.execute(
+                      '''INSERT INTO radar_posts(platform,creator,post_url,published_at,duration_sec,views,likes,comments,
+                         hours_since_publish,views_per_hour,viral_score_v2,search_term,ai_checked,ai_match,screening_profile,reason)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                      (
+                          v28.PLATFORMS[i % len(v28.PLATFORMS)], f'current{i}', f'https://example.com/current/{tag}',
+                          (now - timedelta(hours=2+i)).isoformat(), 8.0, views, 50, 5, 2+i,
+                          2500.0-i*100, 50.0, tag, 1, 1, current_profile, 'NO_SPOKEN_DIALOGUE: synthetic'
+                      ),
+                  )
+              conn.execute(
+                  '''INSERT INTO radar_posts(platform,creator,post_url,published_at,duration_sec,views,likes,comments,
+                     hours_since_publish,views_per_hour,viral_score_v2,search_term,ai_checked,ai_match,screening_profile,reason)
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                  (
+                      'TikTok','stale','https://example.com/stale',now.isoformat(),8.0,9999999,9999,999,
+                      1.0,9999999.0,100.0,'ai',1,1,'obsolete_profile',''
+                  ),
+              )
+              conn.execute(
+                  '''INSERT INTO radar_momentum_history(post_url,observed_at,views,average_views_per_hour,search_term)
+                     VALUES(?,?,?,?,?)''',
+                  (
+                      'https://example.com/current/ai',
+                      (now - timedelta(minutes=30)).isoformat(),
+                      1000, 100.0, 'ai'
+                  ),
+              )
+              conn.commit()
+
+          original_checkpoint = cloud_momentum.save_momentum_checkpoint
+          cloud_momentum.save_momentum_checkpoint = lambda conn=None: True
+          try:
+              with db_conn() as conn:
+                  momentum.refresh_momentum_v34(conn)
+          finally:
+              cloud_momentum.save_momentum_checkpoint = original_checkpoint
+
+          with db_conn() as conn:
+              ai_row = conn.execute(
+                  "SELECT measured_growth_per_hour,growth_acceleration FROM radar_posts WHERE post_url=?",
+                  ('https://example.com/current/ai',),
+              ).fetchone()
+          assert float(ai_row['measured_growth_per_hour'] or 0) > 0, dict(ai_row)
+
+          top = momentum.query_broad_by_current_velocity(100)
+          urls = {x['post_url'] for x in top}
+          assert 'https://example.com/stale' not in urls, urls
+          assert {f'https://example.com/current/{tag}' for tag in v28.TARGET_TAGS}.issubset(urls), urls
+          assert any(x['search_term'] == 'ai' and x['growth_signal'] == 'MEASURED' for x in top), top
+
+          c = app_module.app.test_client()
+          api_urls = {x['post_url'] for x in c.get('/api/radar').get_json()}
+          assert 'https://example.com/stale' not in api_urls, api_urls
+          assert urls == api_urls, (urls, api_urls)
+
+          root = c.get('/').get_data(as_text=True)
+          assert 'window.__V35_MANUAL_START__=true' in root
+          assert 'setTimeout(checkApis,600)' not in root
+          assert 'jobR.value?.active&&!state.stopRequested){state.driveEnabled=true' not in root
+          assert c.get('/healthz').status_code == 200
+
+          print('V37 FINAL AUDIT OK: momentum finalization + current profile + split media policy + prompt schema + manual start')
+          PY

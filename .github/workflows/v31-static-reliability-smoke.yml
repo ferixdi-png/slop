@@ -1,10 +1,11 @@
-name: V31 Static Reliability Smoke
+name: Legacy Static Isolation Smoke
 
 on:
   pull_request:
     paths:
       - 'static_reliability_v31.py'
       - 'gunicorn.conf.py'
+      - 'render.yaml'
       - 'templates/index.html'
       - 'static/**'
       - '.github/workflows/v31-static-reliability-smoke.yml'
@@ -13,15 +14,16 @@ on:
     paths:
       - 'static_reliability_v31.py'
       - 'gunicorn.conf.py'
+      - 'render.yaml'
       - 'templates/index.html'
       - 'static/**'
       - '.github/workflows/v31-static-reliability-smoke.yml'
 
 jobs:
-  static-reliability:
+  static-isolation:
     runs-on: ubuntu-latest
     env:
-      SECRET_KEY: static-smoke
+      SECRET_KEY: static-isolation-smoke
       APIFY_API_TOKEN: ''
       GEMINI_API_KEY: ''
     steps:
@@ -32,14 +34,29 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Compile
         run: python -m compileall -q app.py static_reliability_v31.py gunicorn.conf.py
-      - name: Verify non-empty CSS JS responses and boot guard
+      - name: Verify legacy static files are passive and production is self-contained
         run: |
           python - <<'PY'
           import runpy
-          import app as app_module
-          from static_reliability_v31 import CRITICAL_ASSETS, install_static_reliability, static_health_payload
+          from pathlib import Path
 
-          health = install_static_reliability(app_module.app)
+          import app as app_module
+          from static_reliability_v31 import CRITICAL_ASSETS, static_health_payload
+
+          # Production Gunicorn must not install the obsolete V31 middleware.
+          conf = runpy.run_path('gunicorn.conf.py')
+          assert 'post_worker_init' not in conf, conf.keys()
+          assert conf['bind'].startswith('0.0.0.0:')
+          assert conf['timeout'] == 900
+
+          # Render liveness must stay independent from SQLite/Apify/Gemini.
+          render_text = Path('render.yaml').read_text(encoding='utf-8')
+          assert 'healthCheckPath: /healthz' in render_text, render_text
+          assert 'gunicorn app:app' in render_text, render_text
+
+          # Legacy files may remain as passive compatibility/debug artifacts, but
+          # checking them must not mutate the live Flask app or register routes.
+          health = static_health_payload()
           assert health['ok'] is True, health
           assert set(CRITICAL_ASSETS) == set(health['assets']), health
           assert all(int(meta['bytes']) > 0 for meta in health['assets'].values()), health
@@ -48,27 +65,13 @@ jobs:
           root = c.get('/')
           assert root.status_code == 200
           html = root.get_data(as_text=True)
-          assert 'bootGuard' in html
-          assert '/api/static-health' in html
-          assert 'v=20260819-v31' in html
+          assert '/static/' not in html
+          assert root.headers['X-Frontend-Profile'] == 'frontend_v34_broad_fail_open'
+          assert c.get('/api/frontend-health').get_json()['external_static_dependencies'] == 0
+          assert c.get('/healthz').status_code == 200
 
-          for asset in CRITICAL_ASSETS:
-              response = c.get('/static/' + asset)
-              body = response.get_data()
-              assert response.status_code == 200, (asset, response.status_code)
-              assert len(body) > 0, asset
-              assert int(response.headers['Content-Length']) == len(body), (asset, response.headers, len(body))
-              assert int(response.headers['X-Static-Bytes']) == len(body), (asset, response.headers, len(body))
-              assert response.headers.get('X-Content-Type-Options') == 'nosniff'
-
-          endpoint = c.get('/api/static-health')
-          assert endpoint.status_code == 200
-          payload = endpoint.get_json()
-          assert payload['ok'] is True, payload
-          assert all(v['ok'] and v['bytes'] > 0 for v in payload['assets'].values()), payload
-
-          conf = runpy.run_path('gunicorn.conf.py')
-          assert callable(conf['post_worker_init'])
-          assert conf['bind'].startswith('0.0.0.0:')
-          print('V31 STATIC RELIABILITY OK', {k:v['bytes'] for k,v in payload['assets'].items()})
+          # The legacy static health endpoint is intentionally absent from the live
+          # app because its installer is no longer part of production bootstrap.
+          assert c.get('/api/static-health').status_code == 404
+          print('LEGACY STATIC FILES PASSIVE; RENDER/PRODUCTION BOOT IS SELF-CONTAINED')
           PY

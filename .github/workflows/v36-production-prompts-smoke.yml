@@ -35,7 +35,7 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Compile
         run: python -m compileall -q app.py radar_runtime_v27.py prompt_reliability_v36.py radar_manual_start_v35.py frontend_manual_start_v35.py
-      - name: Verify auth scoping, fallback, broad prompt access and production activation
+      - name: Verify auth scoping, both signed fallbacks, broad prompt access and production activation
         run: |
           python - <<'PY'
           import os
@@ -58,14 +58,46 @@ jobs:
           assert info['prompt_token_in_url'] is False, info
           assert info['redirect_token_forwarding'] is False, info
           assert app_module.RADAR_RUNTIME == v30.MODE_VERSION
+          assert v36.diagnostics()['apify_run_record_signed_fallback'] is True
 
           private = 'https://api.apify.com/v2/key-value-stores/store123/records/video-abc.mp4'
+          run_private = 'https://api.apify.com/v2/actor-runs/run123/key-value-store/records/video-run.mp4'
           normal = 'https://cdn.example.com/video.mp4'
           h1 = v36._request_headers(private)
+          hrun = v36._request_headers(run_private)
           h2 = v36._request_headers(normal)
           assert h1['Authorization'] == 'Bearer v36-fake-secret-token', h1
+          assert hrun['Authorization'] == 'Bearer v36-fake-secret-token', hrun
           assert 'Authorization' not in h2, h2
           assert 'v36-fake-secret-token' not in private
+          assert 'v36-fake-secret-token' not in run_private
+
+          # Directly reproduce a run-relative private record. The fallback must
+          # resolve the run's default KVS and sign only the requested record.
+          original_client = v36.ApifyClient
+          class FakeRun:
+              def get(self):
+                  return {'defaultKeyValueStoreId': 'store-from-run'}
+          class FakeStore:
+              def get_record_public_url(self, key):
+                  assert key == 'video-run.mp4', key
+                  return 'https://cdn.example.com/run-signed.mp4?signature=run-test'
+          class FakeClient:
+              def __init__(self, token):
+                  assert token == 'v36-fake-secret-token', token
+              def run(self, run_id):
+                  assert run_id == 'run123', run_id
+                  return FakeRun()
+              def key_value_store(self, store_id):
+                  assert store_id == 'store-from-run', store_id
+                  return FakeStore()
+          v36.ApifyClient = FakeClient
+          try:
+              signed = v36._signed_record_url(run_private)
+              assert signed == 'https://cdn.example.com/run-signed.mp4?signature=run-test', signed
+              assert 'v36-fake-secret-token' not in signed
+          finally:
+              v36.ApifyClient = original_client
 
           class Resp:
               def __init__(self, status=200, location='', body=b'x'*4096, content_type='video/mp4'):
@@ -172,5 +204,5 @@ jobs:
           root = c.get('/').get_data(as_text=True)
           assert 'MANUAL START ONLY' in root
           assert 'window.__V35_MANUAL_START__=true' in root
-          print('V36 PRODUCTION PROMPTS + V35 PRODUCTION ACTIVATION OK')
+          print('V36 PRODUCTION PROMPTS + DIRECT/RUN KVS FALLBACK + V35 ACTIVATION OK')
           PY

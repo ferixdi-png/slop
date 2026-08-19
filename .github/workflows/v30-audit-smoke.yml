@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: '3.13'
       - run: pip install -r requirements.txt
-      - name: Verify V30 audit guards without external spend
+      - name: Verify V30 audit guards inside the final broad product without external spend
         run: |
           python - <<'PY'
           import json
@@ -40,7 +40,15 @@ jobs:
           from db import db_conn
           from static_video_gate import MotionGateResult
 
-          assert app_module.RUNTIME_INFO['audit_top10_closed'] is True
+          runtime = app_module.RUNTIME_INFO
+          assert runtime['audit_top10_closed'] is True, runtime
+          # V30 is the safety/persistence contract; V34 is the public product rule.
+          assert runtime['speech_required'] is False, runtime
+          assert runtime['ai_role'] == 'enrichment_only', runtime
+          assert runtime['broad_candidate_prompt_access'] is True, runtime
+          assert runtime['manual_start_only'] is True, runtime
+          assert runtime['hard_total_target_usd'] == 5.0, runtime
+          assert runtime['apify_discovery_hard_cap_usd'] == 2.8, runtime
 
           # 7: snapshot really covers 14 days and excludes older rows.
           now = datetime.now(timezone.utc)
@@ -206,5 +214,5 @@ jobs:
           cross = c.post('/api/radar/sync', headers={'Origin':'https://evil.example','Sec-Fetch-Site':'cross-site'})
           assert cross.status_code == 403
 
-          print('V30 AUDIT TOP10 REGRESSION OK')
+          print('V30 SAFETY AUDIT + FINAL V34/V35/V36 PRODUCT CONTRACT OK')
           PY

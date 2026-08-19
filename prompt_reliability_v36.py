@@ -75,29 +75,63 @@ def _request_headers(url: str) -> dict[str, str]:
 
 
 def _signed_record_url(url: str) -> str:
-    """Return an ephemeral signed URL for one private KVS record, or empty string."""
+    """Return an ephemeral signed URL for one private KVS/run record, or empty string."""
     token = _apify_token()
     if not token:
         return ""
     parsed = urlparse(str(url or ""))
     if (parsed.hostname or "").lower().rstrip(".") != "api.apify.com":
         return ""
-    match = _APIFY_KVS_RE.match(parsed.path or "")
-    if not match:
+
+    path = parsed.path or ""
+    direct_match = _APIFY_KVS_RE.match(path)
+    run_match = _APIFY_RUN_KVS_RE.match(path)
+    store_id = ""
+    run_id = ""
+    key = ""
+
+    if direct_match:
+        store_id = unquote(direct_match.group(1))
+        key = unquote(direct_match.group(2))
+    elif run_match:
+        run_id = unquote(run_match.group(1))
+        key = unquote(run_match.group(2))
+    else:
         return ""
-    store_id = unquote(match.group(1))
-    key = unquote(match.group(2))
-    if not store_id or not key:
+
+    if not key or (not store_id and not run_id):
         return ""
+
     try:
-        signed = ApifyClient(token).key_value_store(store_id).get_record_public_url(key)
+        client = ApifyClient(token)
+        if not store_id:
+            run = client.run(run_id).get() or {}
+            if isinstance(run, dict):
+                store_id = str(
+                    run.get("defaultKeyValueStoreId")
+                    or run.get("default_key_value_store_id")
+                    or ""
+                )
+            else:
+                store_id = str(
+                    getattr(run, "default_key_value_store_id", "")
+                    or getattr(run, "defaultKeyValueStoreId", "")
+                    or ""
+                )
+        if not store_id:
+            return ""
+        signed = client.key_value_store(store_id).get_record_public_url(key)
         return str(signed or "").strip()
     except Exception as exc:
         add_radar_log(
             f"V36 signed KVS fallback unavailable: {type(exc).__name__}",
             level="WARN",
             stage="prompts-media",
-            details={"store_id": store_id, "record_key": key[:120]},
+            details={
+                "store_id": store_id,
+                "actor_run_id": run_id,
+                "record_key": key[:120],
+            },
         )
         return ""
 
@@ -368,6 +402,7 @@ def diagnostics() -> dict:
         "profile": PROFILE,
         "apify_private_media_auth": "bearer_header_only",
         "apify_signed_record_fallback": True,
+        "apify_run_record_signed_fallback": True,
         "token_in_url": False,
         "token_in_browser": False,
         "redirect_token_forwarding": False,
