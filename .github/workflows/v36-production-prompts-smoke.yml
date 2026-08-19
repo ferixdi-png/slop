@@ -39,13 +39,12 @@ jobs:
         run: |
           python - <<'PY'
           import os
-          import tempfile
           from datetime import datetime, timezone
 
+          from flask import jsonify
           import app as app_module
           import prompt_reliability_v36 as v36
           import radar_audit_v30 as v30
-          import radar_manual_start_v35 as v35
           from cloud_state import save_radar_job
           from db import db_conn
 
@@ -68,7 +67,6 @@ jobs:
           assert 'Authorization' not in h2, h2
           assert 'v36-fake-secret-token' not in private
 
-          # Mock safe downloader network so CI verifies per-hop credential scoping.
           class Resp:
               def __init__(self, status=200, location='', body=b'x'*4096, content_type='video/mp4'):
                   self.status_code = status
@@ -125,7 +123,6 @@ jobs:
 
           c = app_module.app.test_client()
 
-          # Prove V35 is really installed by the production bootstrap.
           run_id = 'v36-paused-run'
           save_radar_job({
               'version': 5, 'runtime': 'request_state_machine_v5', 'run_id': run_id,
@@ -142,7 +139,6 @@ jobs:
           blocked = c.post('/api/radar/tick')
           assert blocked.status_code == 409, blocked.get_data(as_text=True)
 
-          # V34 broad candidate: ai_match=0 must no longer be blocked by the old app gate.
           with db_conn() as conn:
               conn.execute('DELETE FROM radar_posts')
               cur = conn.execute(
@@ -160,7 +156,7 @@ jobs:
           original_eligible = app_module.top_eligible
           original_analyze = v36._analyze_broad_candidate
           app_module.top_eligible = lambda row: True
-          v36._analyze_broad_candidate = lambda appmod, iid, row: appmod.jsonify(
+          v36._analyze_broad_candidate = lambda appmod, iid, row: jsonify(
               ok=True, broad_candidate=True, item_id=iid, prompt_access='allowed'
           )
           try:
