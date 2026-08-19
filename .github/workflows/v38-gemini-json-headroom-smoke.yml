@@ -1,0 +1,118 @@
+name: V38 Gemini JSON Headroom Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'radar_json_headroom_v38.py'
+      - 'youtube_genai_v34.py'
+      - 'radar_multiplatform_v28.py'
+      - 'radar_audit_v30.py'
+      - '.github/workflows/v38-gemini-json-headroom-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'radar_json_headroom_v38.py'
+      - 'youtube_genai_v34.py'
+      - 'radar_multiplatform_v28.py'
+      - 'radar_audit_v30.py'
+      - '.github/workflows/v38-gemini-json-headroom-smoke.yml'
+
+jobs:
+  json-headroom:
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: v38-json-smoke
+      APIFY_API_TOKEN: ''
+      GEMINI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - name: Compile
+        run: python -m compileall -q app.py radar_json_headroom_v38.py youtube_genai_v34.py radar_multiplatform_v28.py radar_audit_v30.py
+      - name: Verify structured JSON headroom without external calls
+        run: |
+          python - <<'PY'
+          from google.genai import types
+
+          import app as app_module
+          import radar_audit_v30 as v30
+          import radar_json_headroom_v38 as v38
+          import radar_multiplatform_v28 as v28
+          from models import RadarAssessment
+
+          # V38 must be active only underneath V30's authoritative motion wrapper.
+          assert v38._APPLIED is True
+          assert v30._BASE_CLASSIFY_FILE is v38.classify_file_v38_base
+          assert v38.MAX_OUTPUT_TOKENS == 1024
+          assert app_module.RUNTIME_INFO['ai_enrich_limit'] == 20
+          assert float(app_module.RUNTIME_INFO['hard_total_target_usd']) == 5.0
+
+          captured = {'calls': 0}
+
+          class FakeModels:
+              def generate_content(self, **kwargs):
+                  captured['calls'] += 1
+                  captured.update(kwargs)
+                  return object()
+
+          class FakeClient:
+              models = FakeModels()
+
+          assessment = RadarAssessment(
+              is_russian=True,
+              is_ai_video=True,
+              is_comedy_scene=True,
+              is_tutorial_or_review=False,
+              is_talking_head=False,
+              simple_situation=True,
+              strong_first_frame=True,
+              one_clear_joke_or_twist=True,
+              characters_count=2,
+              scene_description='Two people react to one simple event.',
+              characters=['speaker', 'listener'],
+              joke='Short payoff.',
+              hook='Immediate reaction.',
+              ending='Reaction lands.',
+              reproducible_format=True,
+              reason='Speech and timing fit.',
+              has_spoken_dialogue=True,
+              dialogue_is_comedic=True,
+              dialogue_summary='One short line and a reaction.',
+              detected_language='Russian',
+          )
+
+          old_measure = v38.measure_video_duration
+          old_upload = v38.gemini_service.with_uploaded_file
+          old_video_part = v38.gemini_service.video_part
+          old_parse = v38.gemini_service.parse_response
+          try:
+              v38.measure_video_duration = lambda _path, fallback=0: 8.0
+              v38.gemini_service.video_part = lambda _uploaded, _fps: types.Part(text='synthetic-video')
+              v38.gemini_service.parse_response = lambda _response, schema: assessment
+              v38.gemini_service.with_uploaded_file = lambda _path, fn: fn(FakeClient(), object())
+
+              result = v38.classify_file_v38_base('/tmp/synthetic.mp4', '#ai test', 'Instagram Reels')
+          finally:
+              v38.measure_video_duration = old_measure
+              v38.gemini_service.with_uploaded_file = old_upload
+              v38.gemini_service.video_part = old_video_part
+              v38.gemini_service.parse_response = old_parse
+
+          # Reliability fix must be headroom/compactness, not an extra paid retry.
+          assert captured['calls'] == 1, captured
+          config = captured['config']
+          assert int(config.max_output_tokens) == 1024, config
+          assert config.response_mime_type == 'application/json', config
+          assert config.response_schema is RadarAssessment, config
+
+          prompt = captured['contents'].parts[1].text
+          assert 'V38 STRUCTURED OUTPUT RELIABILITY' in prompt
+          assert 'scene_description: max 160 characters' in prompt
+          assert 'never reproduce the full caption or transcript' in prompt
+          assert result.reason.startswith(v28.PASS_PREFIX), result
+
+          print('V38 JSON HEADROOM OK: 1024 tokens, compact schema, one model call, V30 wrapper preserved')
+          PY
