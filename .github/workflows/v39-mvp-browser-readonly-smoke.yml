@@ -1,0 +1,94 @@
+name: V39 MVP Browser Read-Only Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'mvp_passive_recovery_v39.py'
+      - 'radar_json_headroom_v38.py'
+      - 'frontend_failopen_v33.py'
+      - 'frontend_manual_start_v35.py'
+      - 'radar_manual_start_v35.py'
+      - '.github/workflows/v39-mvp-browser-readonly-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'mvp_passive_recovery_v39.py'
+      - 'radar_json_headroom_v38.py'
+      - 'frontend_failopen_v33.py'
+      - 'frontend_manual_start_v35.py'
+      - 'radar_manual_start_v35.py'
+      - '.github/workflows/v39-mvp-browser-readonly-smoke.yml'
+
+jobs:
+  real-browser-readonly:
+    runs-on: ubuntu-latest
+    env:
+      DB_PATH: /tmp/slop-v39-browser.sqlite
+      SECRET_KEY: v39-browser-smoke
+      APIFY_API_TOKEN: ''
+      GEMINI_API_KEY: ''
+      PORT: '10000'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt playwright
+      - name: Compile MVP browser/runtime files
+        run: python -m compileall -q app.py mvp_passive_recovery_v39.py radar_json_headroom_v38.py radar_manual_start_v35.py frontend_manual_start_v35.py frontend_failopen_v33.py
+      - name: Verify system Chrome
+        run: google-chrome --version
+      - name: Real Chrome page-open remains read-only and visible
+        run: |
+          set -euo pipefail
+          rm -f /tmp/slop-v39-browser.sqlite /tmp/slop-v39-browser.sqlite-wal /tmp/slop-v39-browser.sqlite-shm
+          gunicorn app:app --bind 0.0.0.0:10000 --workers 1 --threads 4 --timeout 900 >/tmp/v39-browser-gunicorn.log 2>&1 &
+          PID=$!
+          trap 'kill $PID >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:10000/healthz >/dev/null; then break; fi
+            sleep 0.5
+          done
+
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          api_requests = []
+          page_errors = []
+          with sync_playwright() as p:
+              browser = p.chromium.launch(channel='chrome')
+              context = browser.new_context(viewport={'width': 1440, 'height': 1000})
+              page = context.new_page()
+              page.on('request', lambda r: api_requests.append((r.method.upper(), r.url)) if '/api/' in r.url else None)
+              page.on('pageerror', lambda e: page_errors.append(str(e)))
+
+              response = page.goto('http://127.0.0.1:10000/', wait_until='domcontentloaded', timeout=30000)
+              assert response and response.status == 200
+              page.wait_for_function('window.__V35_MANUAL_START__ === true', timeout=10000)
+              page.wait_for_timeout(12000)
+
+              assert page.locator('#appShell').is_visible()
+              assert page.locator('#syncRadar').is_visible()
+              assert page.locator('#radarStage').is_visible()
+              assert not page_errors, page_errors
+
+              posts = [(m,u) for m,u in api_requests if m == 'POST']
+              ticks = [(m,u) for m,u in api_requests if '/api/radar/tick' in u]
+              syncs = [(m,u) for m,u in api_requests if '/api/radar/sync' in u]
+              diagnostics = [(m,u) for m,u in api_requests if '/api/diagnostics' in u]
+              assert posts == [], posts
+              assert ticks == [], ticks
+              assert syncs == [], syncs
+              assert diagnostics == [], diagnostics
+
+              health = page.request.get('http://127.0.0.1:10000/healthz')
+              assert health.status == 200
+              assert health.json()['control_mode'] == 'manual_start_only_v35'
+              browser.close()
+
+          print('V39 REAL BROWSER READ-ONLY OK; API requests:', len(api_requests))
+          PY
+
+          kill -0 $PID
+          echo '--- V39 GUNICORN TAIL ---'
+          tail -n 80 /tmp/v39-browser-gunicorn.log

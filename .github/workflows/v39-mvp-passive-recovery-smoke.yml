@@ -1,0 +1,261 @@
+name: V39 MVP Passive Recovery Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'mvp_passive_recovery_v39.py'
+      - 'radar_json_headroom_v38.py'
+      - 'radar_runtime_v27.py'
+      - 'cloud_state.py'
+      - 'radar_fresh_run_v23.py'
+      - 'radar_audit_v30.py'
+      - '.github/workflows/v39-mvp-passive-recovery-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'mvp_passive_recovery_v39.py'
+      - 'radar_json_headroom_v38.py'
+      - 'radar_runtime_v27.py'
+      - 'cloud_state.py'
+      - 'radar_fresh_run_v23.py'
+      - 'radar_audit_v30.py'
+      - '.github/workflows/v39-mvp-passive-recovery-smoke.yml'
+
+jobs:
+  passive-recovery:
+    runs-on: ubuntu-latest
+    env:
+      DB_PATH: /tmp/slop-v39.sqlite
+      SECRET_KEY: v39-smoke
+      APIFY_API_TOKEN: ''
+      GEMINI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - name: Compile
+        run: python -m compileall -q app.py mvp_passive_recovery_v39.py radar_json_headroom_v38.py radar_runtime_v27.py
+      - name: Fresh Render instance restores TOP and prompt cache without starting search
+        run: |
+          rm -f /tmp/slop-v39.sqlite /tmp/slop-v39.sqlite-wal /tmp/slop-v39.sqlite-shm
+          python - <<'PY'
+          import hashlib
+          import json
+          from datetime import datetime, timedelta, timezone
+
+          import cloud_state
+
+          now = datetime.now(timezone.utc)
+          post_url = 'https://www.tiktok.com/@v39/video/1'
+          fingerprint = hashlib.sha256(
+              f'{post_url}|9.000|gemini-3.1-flash-lite|frame0_cleanplate_capcut_ru_v15|0'.encode('utf-8')
+          ).hexdigest()[:32]
+          cached_result = {
+              'source_title': 'V39 cached package',
+              'block_1_frame0_prompt': 'CACHED PHOTO PROMPT',
+              'block_3_video': {'cached': True, 'duration': '9.00 seconds'},
+              'block_4_audio': {'dialogue': []},
+              'capcut_overlay_plan': {'cached': True},
+          }
+          snapshot = {
+              'version': 39,
+              'profile': 'multiplatform_speech_v30_audit10_budget5',
+              'saved_at': now.isoformat(),
+              'lookback_days': 14,
+              'post_limit': 1000,
+              'posts': [{
+                  'id': 991,
+                  'platform': 'TikTok',
+                  'creator': 'v39_restore_test',
+                  'post_url': post_url,
+                  'video_url': '',
+                  'preview_url': '',
+                  'published_at': (now - timedelta(hours=2)).isoformat(),
+                  'duration_sec': 9.0,
+                  'views': 250000,
+                  'likes': 12000,
+                  'comments': 500,
+                  'hours_since_publish': 2.0,
+                  'views_per_hour': 125000.0,
+                  'search_term': 'ai',
+                  'caption': '#ai',
+                  'ai_checked': 0,
+                  'ai_match': 1,
+                  'scene_description': '',
+                  'characters_json': '[]',
+                  'joke': '',
+                  'hook': 'restored trend',
+                  'ending': '',
+                  'reproducible': 0,
+                  'reason': '',
+                  'followers_count': 0,
+                  'creator_usual_views': 0,
+                  'anomaly_multiplier': 0,
+                  'follower_reach': 0,
+                  'like_rate': 0,
+                  'comment_rate': 0,
+                  'viral_score_v2': 95.0,
+                  'screening_profile': 'multiplatform_speech_v30_audit10_budget5',
+              }],
+              'tracked_creators': [],
+              'radar_meta': [],
+              'analyses_cache': [{
+                  'id': 777,
+                  'created_at': now.isoformat(),
+                  'title': 'V39 cached package',
+                  'source_url': post_url,
+                  'views': 250000,
+                  'viral_score': 95.0,
+                  'model': 'gemini-3.1-flash-lite',
+                  'result_json': json.dumps(cached_result, ensure_ascii=False),
+                  'production_profile': 'frame0_cleanplate_capcut_ru_v15',
+                  'source_duration_sec': 9.0,
+                  'owned_or_licensed': 0,
+                  'source_fingerprint': fingerprint,
+              }],
+          }
+          durable_job = {
+              'run_id': 'previous-finished-run',
+              'phase': 'done',
+              'created_at': (now - timedelta(hours=3)).isoformat(),
+              'dataset_reset_at': (now - timedelta(hours=3)).isoformat(),
+              'candidates': [],
+              'sources': {},
+              'result': {},
+          }
+
+          real_load = cloud_state.load_cloud_record
+          real_save = cloud_state.save_cloud_record
+
+          def fake_load(key):
+              if key == cloud_state.RECORD_KEY:
+                  return snapshot
+              if key == cloud_state.JOB_RECORD_KEY:
+                  return durable_job
+              return None
+
+          cloud_state.load_cloud_record = fake_load
+          cloud_state.save_cloud_record = lambda key, payload: True
+
+          import app as app_module
+          import radar_json_headroom_v38 as v38
+          import radar_request_job as radar_job
+
+          info = v38.diagnostics()['passive_recovery']
+          assert info['attempted'] is True, info
+          assert info['restored'] is True, info
+          assert info['posts_before'] == 0, info
+          assert info['posts_after'] >= 1, info
+          assert info['analyses_restored'] == 1, info
+          assert info['analyses_after'] >= 1, info
+          assert info['paid_discovery_started'] is False, info
+          assert info['gemini_called'] is False, info
+          assert info['job_advanced'] is False, info
+          assert info['snapshot_writer'] == 'newest_first_v39', info
+          assert radar_job._snapshot_checked is True
+
+          client = app_module.app.test_client()
+          top = client.get('/api/radar')
+          assert top.status_code == 200, top.status_code
+          rows = top.get_json()
+          assert isinstance(rows, list) and rows, rows
+          assert any(x.get('creator') == 'v39_restore_test' for x in rows), rows
+
+          # The restored production package must be returned from cache with no API keys.
+          cached = client.post('/api/radar/991/analyze', json={'owned_or_licensed': False})
+          assert cached.status_code == 200, cached.get_data(as_text=True)
+          cached_payload = cached.get_json()
+          assert cached_payload.get('cached') is True, cached_payload
+          assert cached_payload.get('id') == 777, cached_payload
+          assert cached_payload.get('result', {}).get('block_1_frame0_prompt') == 'CACHED PHOTO PROMPT', cached_payload
+
+          # Legacy source-contract migration is allowed to turn a stale terminal job
+          # into a PAUSED queued job, but GET-only usage must never authorize/advance it.
+          job = client.get('/api/radar/job').get_json()
+          assert job.get('active') is False, job
+          assert job.get('manual_start_only') is True, job
+          assert job.get('manual_session_authorized') is False, job
+          assert app_module.RUNTIME_INFO['manual_start_only'] is True
+          assert app_module.RUNTIME_INFO['auto_resume_on_page_load'] is False
+          assert job.get('run_id') == 'previous-finished-run', job
+          assert all(not (x or {}).get('run_id') for x in (job.get('sources') or {}).values()), job
+
+          # No read-only recovery action may create a different paid run.
+          assert durable_job['run_id'] == 'previous-finished-run'
+
+          cloud_state.load_cloud_record = real_load
+          cloud_state.save_cloud_record = real_save
+          print('V39 PASSIVE RECOVERY + PROMPT CACHE OK', info, job.get('phase'))
+          PY
+      - name: Ordered durable snapshot keeps newest rows and prompt cache
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import datetime, timedelta, timezone
+
+          import cloud_state
+          from db import db_conn
+          import mvp_passive_recovery_v39 as v39
+
+          now = datetime.now(timezone.utc)
+          with db_conn() as conn:
+              conn.execute('DELETE FROM radar_posts')
+              conn.execute('DELETE FROM analyses')
+              for i, hours in enumerate([72, 2, 24], start=1):
+                  conn.execute(
+                      """INSERT INTO radar_posts(
+                         platform,creator,post_url,published_at,duration_sec,views,likes,comments,
+                         hours_since_publish,views_per_hour,search_term,caption,ai_match,
+                         characters_json,viral_score_v2,screening_profile)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      (
+                          'TikTok', f'order_{i}', f'https://example.com/{i}',
+                          (now - timedelta(hours=hours)).isoformat(), 9.0,
+                          1000 * i, 10, 1, float(hours), 100.0, 'ai', '#ai', 1,
+                          '[]', 50.0 + i, 'multiplatform_speech_v30_audit10_budget5',
+                      ),
+                  )
+              conn.execute(
+                  """INSERT INTO analyses(created_at,title,source_url,views,viral_score,model,result_json,
+                     production_profile,source_duration_sec,owned_or_licensed,source_fingerprint)
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                  (
+                      now.isoformat(), 'cache', 'https://example.com/2', 2000, 52.0,
+                      'gemini-3.1-flash-lite', json.dumps({'cached': True}),
+                      'frame0_cleanplate_capcut_ru_v15', 9.0, 0, 'fingerprint-v39',
+                  ),
+              )
+              conn.commit()
+
+          captured = {}
+          real_save = cloud_state.save_cloud_record
+          cloud_state.save_cloud_record = lambda key, payload: captured.setdefault('payload', payload) is not None
+          try:
+              assert v39.save_ordered_snapshot_v39() is True
+          finally:
+              cloud_state.save_cloud_record = real_save
+
+          creators = [x['creator'] for x in captured['payload']['posts']]
+          assert creators[:3] == ['order_2', 'order_3', 'order_1'], creators
+          assert captured['payload']['lookback_days'] == 14
+          assert captured['payload']['post_limit'] == 1000
+          assert captured['payload']['snapshot_order'] == 'published_at_desc_then_viral_score_then_views'
+          assert len(captured['payload']['analyses_cache']) == 1, captured['payload']
+          assert captured['payload']['analyses_cache'][0]['source_fingerprint'] == 'fingerprint-v39'
+          print('V39 ORDERED SNAPSHOT + ANALYSIS CACHE OK', creators)
+          PY
+      - name: Recovery module contains no paid-work entrypoint
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('mvp_passive_recovery_v39.py').read_text('utf-8')
+          forbidden = ['ApifyClient', 'genai.Client', '.actor(', 'create_or_resume_job(', 'tick_job(']
+          for token in forbidden:
+              assert token not in text, token
+          assert 'restore_radar_snapshot_if_empty()' in text
+          assert 'ORDER BY datetime(published_at) DESC' in text
+          assert 'analyses_cache' in text
+          print('V39 RECOVERY IS PASSIVE; SNAPSHOT/PROMPT CACHE ARE DURABLE')
+          PY

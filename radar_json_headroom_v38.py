@@ -1,4 +1,4 @@
-"""V38 structured-output headroom for local Gemini radar enrichment.
+"""V38 structured-output headroom + V39 passive MVP recovery.
 
 Production log 2026-08-19 showed an Instagram enrichment response ending inside a
 JSON string (Pydantic `EOF while parsing a string`). The V28 local file classifier
@@ -12,6 +12,10 @@ V38 deliberately changes only response reliability:
 - raise the structured-output ceiling to 1024 tokens;
 - explicitly keep descriptive fields compact so normal responses remain cheap;
 - preserve the same RadarAssessment schema and V28 finalization semantics.
+
+V39 additionally performs one passive durable snapshot recovery during startup so
+a fresh Render instance can display the previous TOP without requiring /sync or
+/tick. It does not start discovery, advance a job, or call Gemini.
 """
 
 from __future__ import annotations
@@ -23,6 +27,8 @@ import radar_audit_v30 as v30
 import radar_multiplatform_v28 as v28
 from media_duration import measure_video_duration
 from models import RadarAssessment
+from mvp_passive_recovery_v39 import diagnostics as recovery_diagnostics
+from mvp_passive_recovery_v39 import install_passive_recovery_v39
 from radar_logs import add_radar_log
 
 PROFILE = "gemini_radar_json_headroom_v38"
@@ -91,7 +97,7 @@ def classify_file_v38_base(file_path, caption="", platform=""):
 
 
 def install_json_headroom_v38():
-    """Replace only V30's captured local-file base classifier."""
+    """Replace only V30's captured local-file base classifier and restore saved TOP."""
     global _APPLIED, _PREVIOUS_BASE_CLASSIFIER
     if _APPLIED:
         return diagnostics()
@@ -103,11 +109,16 @@ def install_json_headroom_v38():
     v30._BASE_CLASSIFY_FILE = classify_file_v38_base
     _APPLIED = True
 
+    # This executes after V30 has replaced the snapshot implementation and after
+    # V23 has installed its latest-run freshness guard. It is therefore the safe
+    # point to hydrate a fresh Render SQLite cache without advancing the radar job.
+    recovery_info = install_passive_recovery_v39()
+
     info = diagnostics()
     add_radar_log(
-        "V38 GEMINI JSON HEADROOM READY: local RadarAssessment output cap 420 -> 1024; compact fields; no extra retry call.",
+        "V38+V39 READY: RadarAssessment cap 420 -> 1024; passive TOP recovery enabled; no auto-search or extra Gemini retry.",
         stage="startup",
-        details=info,
+        details={**info, "passive_recovery": recovery_info},
     )
     return info
 
@@ -120,4 +131,5 @@ def diagnostics():
         "schema": "RadarAssessment",
         "v30_motion_gate_preserved": True,
         "compact_output_contract": True,
+        "passive_recovery": recovery_diagnostics(),
     }
