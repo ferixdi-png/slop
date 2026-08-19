@@ -120,11 +120,19 @@ def _install_http_surface(app) -> None:
     app._gemini_overload_v40_http = True
 
 
+def _install_v41(app) -> dict:
+    if app is None:
+        return {}
+    from product_finish_v41 import install_product_finish_v41
+    return install_product_finish_v41(app=app)
+
+
 def install_gemini_overload_v40(app=None) -> dict:
     global _APPLIED
     if _APPLIED:
         if app is not None:
             _install_http_surface(app)
+            _install_v41(app)
         return diagnostics()
 
     for name in ("build_forensic_map", "build_production_package", "audit_package"):
@@ -132,12 +140,24 @@ def install_gemini_overload_v40(app=None) -> dict:
         _BASES[name] = base
         setattr(gemini_service, name, _wrap_stage(name, base))
 
+    v41_info = {}
     if app is not None:
         _install_http_surface(app)
+        # Runtime calls this layer after V40 metric truth and immediately before
+        # installing the single fail-open frontend. V41 therefore patches the real
+        # final HTML and prompt endpoint without changing the V30 persistence ID.
+        v41_info = _install_v41(app)
     _APPLIED = True
     info = diagnostics()
+    if v41_info:
+        info.update(
+            product_finish_profile=v41_info.get("profile"),
+            prompt_modal_v41=bool(v41_info.get("prompt_modal")),
+            universal_prompt_access_v41=bool(v41_info.get("universal_visible_trend_prompt_access")),
+            tiktok_link_truth_v41=bool(v41_info.get("tiktok_canonical_public_url")),
+        )
     add_radar_log(
-        "V40 GEMINI OVERLOAD READY: only transient 429/5xx/high-demand failures get two bounded retries; final overload is HTTP 503, not 500.",
+        "V40 GEMINI OVERLOAD READY + V41 PRODUCT FINISH: transient Gemini retry preserved; two-prompt modal and TikTok link truth active.",
         stage="startup",
         details=info,
     )

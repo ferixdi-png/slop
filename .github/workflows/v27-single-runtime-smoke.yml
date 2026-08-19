@@ -1,4 +1,4 @@
-name: V40 Single Runtime Broad Pool Smoke
+name: V41 Single Runtime Broad Pool Smoke
 
 on:
   pull_request:
@@ -17,6 +17,7 @@ on:
       - 'mvp_passive_recovery_v39.py'
       - 'metrics_truth_v40.py'
       - 'gemini_overload_v40.py'
+      - 'product_finish_v41.py'
       - 'radar_multiplatform_v28.py'
       - 'radar_budget_v29.py'
       - 'radar_audit_v30.py'
@@ -30,28 +31,16 @@ on:
       - 'radar_runtime_v27.py'
       - 'radar_broad_v34.py'
       - 'radar_momentum_v34.py'
-      - 'youtube_genai_v34.py'
-      - 'frontend_broad_v34.py'
-      - 'frontend_failopen_v33.py'
-      - 'frontend_manual_start_v35.py'
-      - 'radar_manual_start_v35.py'
-      - 'prompt_reliability_v36.py'
-      - 'radar_json_headroom_v38.py'
-      - 'mvp_passive_recovery_v39.py'
       - 'metrics_truth_v40.py'
       - 'gemini_overload_v40.py'
-      - 'radar_multiplatform_v28.py'
-      - 'radar_budget_v29.py'
-      - 'radar_audit_v30.py'
-      - 'radar_v28_finish.py'
-      - 'requirements.txt'
+      - 'product_finish_v41.py'
       - '.github/workflows/v27-single-runtime-smoke.yml'
 
 jobs:
   broad-single-runtime:
     runs-on: ubuntu-latest
     env:
-      SECRET_KEY: v40-single-runtime
+      SECRET_KEY: v41-single-runtime
       PORT: '10000'
       APIFY_API_TOKEN: ''
       GEMINI_API_KEY: ''
@@ -61,7 +50,7 @@ jobs:
         with:
           python-version: '3.13'
       - run: pip install -r requirements.txt
-      - run: python -m compileall -q app.py radar_runtime_v27.py radar_broad_v34.py radar_momentum_v34.py metrics_truth_v40.py gemini_overload_v40.py
+      - run: python -m compileall -q app.py radar_runtime_v27.py radar_broad_v34.py radar_momentum_v34.py metrics_truth_v40.py gemini_overload_v40.py product_finish_v41.py
       - name: Verify one production runtime and all current product overlays
         run: |
           python - <<'PY'
@@ -81,6 +70,7 @@ jobs:
           assert 'HTTP 503' in line, line
 
           import metrics_truth_v40 as metrics
+          import product_finish_v41 as v41
           import radar_audit_v30 as v30
           import radar_broad_v34 as v34
           import radar_budget_v29 as v29
@@ -98,10 +88,14 @@ jobs:
           assert radar_job.RADAR_AI_ANALYZE_LIMIT == 150
           assert radar_job._process_one_ai is v34.process_one_ai_v34
           assert radar_job._prepare_candidates is v34.prepare_candidates_v34
-          assert app_module.top_eligible is v34.broad_eligible
+          assert app_module.top_eligible is v41.broad_eligible_v41
+          assert v34.broad_eligible is v41.broad_eligible_v41
+          assert v41._BASE_BROAD_ELIGIBLE is not None
+          assert getattr(v41._BASE_BROAD_ELIGIBLE,'__name__','') == 'broad_eligible'
           assert v28.matches_v28 is v34.broad_matches
           assert v28.classify_youtube_url_v28 is yt34.classify_youtube_url_v34
-          assert radar_job.normalize_reel is metrics.normalize_candidate_v40
+          assert radar_job.normalize_reel is v41.normalize_candidate_v41
+          assert v41._BASE_NORMALIZE is metrics.normalize_candidate_v40
 
           c = app_module.app.test_client()
           status = c.get('/api/status').get_json()
@@ -150,17 +144,21 @@ jobs:
               conn.execute('DELETE FROM radar_posts')
               reasons = ['', 'NO_SPOKEN_DIALOGUE: synthetic', 'TIMING_OR_MECHANIC_REJECT: synthetic',
                          'TUTORIAL_OR_REVIEW: synthetic', v28.PASS_PREFIX + 'DIRECT: synthetic']
-              for i in range(75):
+              for i in range(90):
                   platform = v28.PLATFORMS[i % len(v28.PLATFORMS)]
                   tag = v28.TARGET_TAGS[i % len(v28.TARGET_TAGS)]
                   reason = reasons[i % len(reasons)]
                   checked = 0 if not reason else 1
+                  if platform == 'TikTok':
+                      post_url = f'https://www.tiktok.com/@creator{i}/video/{7534567890000000000+i}'
+                  else:
+                      post_url = f'https://example.com/video/{i}'
                   conn.execute(
                       '''INSERT INTO radar_posts(platform,creator,post_url,published_at,duration_sec,views,likes,comments,
                          hours_since_publish,views_per_hour,viral_score_v2,search_term,ai_checked,ai_match,screening_profile,reason)
                          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                      (platform,f'creator{i}',f'https://example.com/video/{i}',(now-timedelta(hours=i+1)).isoformat(),
-                       8.0,500000-i*1000,1000,40,i+1,50000-i*100,95-i*0.5,tag,checked,0,v30.SCREENING_PROFILE,reason),
+                      (platform,f'creator{i}',post_url,(now-timedelta(hours=(i%72)+1)).isoformat(),
+                       8.0,500000-i*1000,1000,40,(i%72)+1,50000-i*100,95-i*0.3,tag,checked,0,v30.SCREENING_PROFILE,reason),
                   )
               conn.execute(
                   '''INSERT INTO radar_posts(platform,creator,post_url,published_at,duration_sec,views,likes,comments,
@@ -177,6 +175,7 @@ jobs:
           assert all(x['speech_required_for_top'] is False for x in top)
           assert all(x['ai_role'] == 'enrichment_only' for x in top)
           assert not any(x['post_url'] == 'https://example.com/static' for x in top)
+          assert all(v41.is_canonical_tiktok_url(x['post_url']) for x in top if x['platform']=='TikTok')
           labels = {x['adaptation_status'] for x in top}
           assert {'ADD_RUSSIAN_SPEECH','REBUILD_TO_10S','NOT_ENRICHED'}.issubset(labels), labels
           assert top[0]['viral_score_v2'] >= top[-1]['viral_score_v2']
@@ -185,7 +184,8 @@ jobs:
           assert 'V34 BROAD TREND POOL' in html
           assert '50–100' in html and 'MANUAL START ONLY' in html
           assert 'window.__V35_MANUAL_START__=true' in html
-          assert 'ОБНОВИТЬ ЦИФРЫ' in html
+          assert 'ОБНОВИТЬ ЦИФРЫ' in html and 'ПРОМПТЫ GEMINI' in html
+          assert 'id="promptModal"' in html
           assert 'MutationObserver' not in html and '/static/' not in html
 
           original = app_module.db_conn
@@ -196,5 +196,5 @@ jobs:
           finally:
               app_module.db_conn = original
 
-          print('V40 SINGLE RUNTIME OK')
+          print('V41 SINGLE RUNTIME OK')
           PY
