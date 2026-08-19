@@ -1,40 +1,38 @@
-name: V32 Self-Contained UI Smoke
+name: V33 Fail-Open Browser Smoke
 
 on:
   pull_request:
     paths:
-      - 'frontend_selfcontained_v32.py'
+      - 'frontend_failopen_v33.py'
       - 'radar_runtime_v27.py'
-      - 'templates/index.html'
-      - 'static/**'
       - '.github/workflows/v32-self-contained-ui-smoke.yml'
   push:
     branches: [main]
     paths:
-      - 'frontend_selfcontained_v32.py'
+      - 'frontend_failopen_v33.py'
       - 'radar_runtime_v27.py'
-      - 'templates/index.html'
-      - 'static/**'
       - '.github/workflows/v32-self-contained-ui-smoke.yml'
 
 jobs:
-  self-contained-ui:
+  fail-open-browser:
     runs-on: ubuntu-latest
     env:
-      SECRET_KEY: v32-smoke
+      SECRET_KEY: v33-smoke
       APIFY_API_TOKEN: ''
       GEMINI_API_KEY: ''
-      RADAR_SOURCE_MAX_AGE_SECONDS: '480'
+      PORT: '10000'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: pip install -r requirements.txt
-      - name: Compile
-        run: python -m compileall -q app.py frontend_selfcontained_v32.py radar_runtime_v27.py
-      - name: Verify one-response UI, no DB root dependency, JS syntax and watchdog
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install -r requirements.txt playwright
+      - name: Compile and static fail-open contract
         run: |
+          python -m compileall -q app.py frontend_failopen_v33.py radar_runtime_v27.py
           python - <<'PY'
           import re
           import subprocess
@@ -42,37 +40,34 @@ jobs:
           from pathlib import Path
 
           import app as app_module
-          import radar_hardening_v19 as hardening
+          from frontend_failopen_v33 import HTML
 
           c = app_module.app.test_client()
           root = c.get('/')
-          assert root.status_code == 200, root.status_code
+          assert root.status_code == 200
           body = root.get_data()
           html = body.decode('utf-8')
-          assert len(body) > 50_000, len(body)
-          assert root.headers.get('X-Frontend-Profile') == 'frontend_v32_self_contained', root.headers
-          assert root.headers.get('Cache-Control', '').startswith('no-store'), root.headers
-          assert '<script src="/static/' not in html
-          assert "<script src='/static/" not in html
-          assert '<link rel="stylesheet" href="/static/' not in html
-          assert 'data-v32-asset="style.css"' in html
-          assert 'data-v32-asset="upgrade.css"' in html
-          assert 'data-v32-asset="app.js"' in html
-          assert 'data-v32-asset="runtime.js"' in html
-          assert 'data-v32-watchdog="1"' in html
-          assert 'setInterval(check, 3000)' in html
-          assert 'V32 SELF-CONTAINED UI' in html
+          assert len(body) > 20_000, len(body)
+          assert root.headers['X-Frontend-Profile'] == 'frontend_v33_fail_open_single_runtime'
+          assert root.headers['Cache-Control'].startswith('no-store')
+          assert '/static/' not in html
+          assert html.count('<script>') == 1
+          assert html.count('</script>') == 1
+          assert 'MutationObserver' not in html
+          assert 'setInterval(' not in html
+          assert 'V33 FAIL-OPEN SINGLE RUNTIME' in html
+          assert 'Даже без JavaScript эта страница остаётся видимой' in html
+          assert 'id="appShell"' in html
 
-          # GET / must never touch SQLite anymore. If the old index route executes,
-          # this replacement raises and the assertion below fails with HTTP 500.
+          # Root must remain available if SQLite is unavailable.
           original_db = app_module.db_conn
           def explode_db(*args, **kwargs):
               raise RuntimeError('ROOT_MUST_NOT_TOUCH_DB')
           app_module.db_conn = explode_db
           try:
               again = c.get('/')
-              assert again.status_code == 200, again.status_code
-              assert len(again.get_data()) == len(body)
+              assert again.status_code == 200
+              assert again.get_data() == body
           finally:
               app_module.db_conn = original_db
 
@@ -80,54 +75,91 @@ jobs:
           assert health.status_code == 200
           payload = health.get_json()
           assert payload['ok'] is True, payload
-          assert payload['profile'] == 'frontend_v32_self_contained', payload
+          assert payload['profile'] == 'frontend_v33_fail_open_single_runtime', payload
+          assert payload['fail_open_dom'] is True, payload
+          assert payload['single_js_runtime'] is True, payload
+          assert payload['legacy_client_scripts'] == 0, payload
+          assert payload['mutation_observers'] == 0, payload
+          assert payload['parallel_polling_layers'] == 0, payload
           assert payload['external_static_dependencies'] == 0, payload
-          assert payload['runtime_watchdog'] is True, payload
           assert payload['root_db_dependency'] is False, payload
-          assert payload['asset_count'] >= 8, payload
-          assert payload['html_bytes'] == len(body), (payload, len(body))
-          assert payload['source_watchdog_seconds'] == 480, payload
-          assert hardening.SOURCE_MAX_AGE_SECONDS == 480, hardening.SOURCE_MAX_AGE_SECONDS
+          assert payload['html_bytes'] == len(body), payload
 
-          # Syntax-check every application JS block after server-side inlining.
-          blocks = re.findall(r'<script data-v32-asset="([^"]+)">\n(.*?)\n</script>', html, re.S)
-          js_blocks = [(name, code) for name, code in blocks if name.endswith('.js')]
-          assert len(js_blocks) >= 6, [name for name, _ in js_blocks]
+          runtime = app_module.RUNTIME_INFO
+          assert runtime['frontend_profile'] == payload['profile'], runtime
+          assert runtime['fail_open_dom'] is True, runtime
+          assert runtime['single_js_runtime'] is True, runtime
+          assert runtime['legacy_client_scripts'] == 0, runtime
+          assert runtime['mutation_observers'] == 0, runtime
+          assert runtime['parallel_polling_layers'] == 0, runtime
+
+          script = re.search(r'<script>\s*(.*?)\s*</script>', html, re.S)
+          assert script, 'single JS block missing'
           with tempfile.TemporaryDirectory() as td:
-              for name, code in js_blocks:
-                  path = Path(td) / name
-                  path.write_text(code, encoding='utf-8')
-                  subprocess.run(['node', '--check', str(path)], check=True)
-
-          runtime_info = app_module.RUNTIME_INFO
-          assert runtime_info['self_contained_frontend'] is True, runtime_info
-          assert runtime_info['external_static_dependencies'] == 0, runtime_info
-          assert runtime_info['source_watchdog_seconds'] == 480, runtime_info
-          print('V32 SELF-CONTAINED UI OK', payload)
+              js = Path(td) / 'frontend-v33.js'
+              js.write_text(script.group(1), encoding='utf-8')
+              subprocess.run(['node', '--check', str(js)], check=True)
+          print('V33 STATIC FAIL-OPEN CONTRACT OK', payload)
           PY
-      - name: Exact Gunicorn root stability check
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Real Chromium + Gunicorn stability
         run: |
           set -euo pipefail
-          PORT=10000 gunicorn app:app --bind 0.0.0.0:10000 --workers 1 --threads 4 --timeout 900 >/tmp/v32-gunicorn.log 2>&1 &
+          gunicorn app:app --bind 0.0.0.0:10000 --workers 1 --threads 4 --timeout 900 >/tmp/v33-gunicorn.log 2>&1 &
           PID=$!
           trap 'kill $PID >/dev/null 2>&1 || true' EXIT
-          for i in $(seq 1 40); do
+          for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:10000/healthz >/dev/null; then break; fi
             sleep 0.5
           done
-          for i in $(seq 1 8); do
-            curl -fsS -D /tmp/v32-headers.txt http://127.0.0.1:10000/ -o /tmp/v32-root.html
-            python - <<'PY'
-          from pathlib import Path
-          body = Path('/tmp/v32-root.html').read_bytes()
-          assert len(body) > 50_000, len(body)
-          text = body.decode('utf-8')
-          assert '/static/app.js' not in text
-          assert '/static/style.css' not in text
-          assert 'data-v32-watchdog="1"' in text
-          PY
-            sleep 0.5
-          done
           curl -fsS http://127.0.0.1:10000/api/frontend-health | python -m json.tool
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          api_requests = []
+          initial_page_errors = []
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              context = browser.new_context(viewport={'width': 1440, 'height': 1000})
+              page = context.new_page()
+              page.on('request', lambda r: api_requests.append(r.url) if '/api/' in r.url else None)
+              page.on('pageerror', lambda e: initial_page_errors.append(str(e)))
+              response = page.goto('http://127.0.0.1:10000/', wait_until='domcontentloaded', timeout=30000)
+              assert response and response.status == 200
+              page.wait_for_function('window.__V33_LOADED__ === true', timeout=10000)
+              hero = page.locator('h1')
+              shell = page.locator('#appShell')
+              assert hero.is_visible(), 'hero not visible after boot'
+              assert shell.is_visible(), 'shell not visible after boot'
+              box = shell.bounding_box()
+              assert box and box['width'] > 900 and box['height'] > 600, box
+              assert 'V33 · fail-open single runtime · JS готов' in page.locator('#runtimePill').inner_text()
+              page.wait_for_timeout(12000)
+              assert hero.is_visible(), 'hero disappeared after polling'
+              assert shell.is_visible(), 'shell disappeared after polling'
+              assert len(api_requests) <= 20, f'excessive API polling: {len(api_requests)} {api_requests}'
+              assert not initial_page_errors, initial_page_errors
+
+              # Network loss is a normal Render/browser failure mode. UI must remain.
+              context.set_offline(True)
+              page.wait_for_timeout(10000)
+              assert hero.is_visible(), 'hero disappeared while offline'
+              assert shell.is_visible(), 'shell disappeared while offline'
+              context.set_offline(False)
+
+              # An arbitrary later JS exception must surface visibly without blanking DOM.
+              before = len(initial_page_errors)
+              page.evaluate("setTimeout(() => { throw new Error('V33_SYNTHETIC_RUNTIME_ERROR') }, 0)")
+              page.wait_for_timeout(800)
+              assert len(initial_page_errors) > before, initial_page_errors
+              assert page.locator('#runtimeError').is_visible(), 'runtime error not surfaced'
+              assert 'V33_SYNTHETIC_RUNTIME_ERROR' in page.locator('#runtimeError').inner_text()
+              assert hero.is_visible(), 'hero disappeared after runtime exception'
+              assert shell.is_visible(), 'shell disappeared after runtime exception'
+              page.screenshot(path='/tmp/v33-final.png', full_page=True)
+              browser.close()
+          print('V33 CHROMIUM FAIL-OPEN OK; API requests:', len(api_requests))
+          PY
           kill -0 $PID
-          echo 'Gunicorn stayed alive with repeated self-contained root requests.'
+          echo 'Gunicorn + real Chromium stayed healthy.'

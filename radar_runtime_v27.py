@@ -1,9 +1,8 @@
 """Single authoritative production bootstrap for the final radar runtime.
 
-The battle-tested V27 stack remains the infrastructure/content reconstruction
-base. V28 supplies the three-platform speech/timing product behavior, V29 adds
-the hard <$5 spend guard, V30 closes the adversarial audit top-10, and V32 makes
-the browser UI self-contained so a static-delivery failure cannot blank the page.
+The V30 search/screening/budget contract stays authoritative. V33 replaces the
+browser compatibility stack with one fail-open frontend runtime: one HTML, one
+CSS block, one JS block, no MutationObserver and no parallel legacy polling.
 """
 
 from __future__ import annotations
@@ -16,12 +15,11 @@ from apify_start_compat import install_apify_start_compat
 from radar_discovery_v27 import install_v27_high_volume_discovery
 from radar_logs import add_radar_log, suppress_startup_logs
 
-# Keep the semantic/runtime identity stable so an already-paid durable V30 run is
-# resumed after deploy instead of being migrated and re-discovered. V32 is a UI and
-# operational reliability layer, not a new screening contract.
+# IMPORTANT: do not change this semantic identity for frontend-only releases.
+# Existing durable paid runs must resume after deploy instead of being migrated.
 RUNTIME_VERSION = "multiplatform_speech_v30_audit10_budget5"
 PUBLIC_EDGE_PROFILE = RUNTIME_VERSION
-FRONTEND_PROFILE = "frontend_v32_self_contained"
+FRONTEND_PROFILE = "frontend_v33_fail_open_single_runtime"
 _APPLIED = False
 _CONTRACT = None
 _LIVENESS_INSTALLED = False
@@ -39,6 +37,7 @@ def _install_render_liveness(app):
             return "", 200, {
                 "Cache-Control": "no-store",
                 "X-Radar-Runtime": RUNTIME_VERSION,
+                "X-Frontend-Profile": FRONTEND_PROFILE,
             }
         return None
 
@@ -62,7 +61,7 @@ def _install_render_liveness(app):
 
 
 def activate_v27_runtime():
-    """Compose proven internal layers, then expose final V30 + V32 reliability behavior."""
+    """Compose proven backend layers, then expose V30 + V33 frontend reliability."""
     global _APPLIED, _CONTRACT
     if _APPLIED:
         return dict(_CONTRACT or {"runtime": RUNTIME_VERSION})
@@ -126,29 +125,22 @@ def activate_v27_runtime():
         from radar_multiplatform_v28 import apply_multiplatform_v28
         v28_info = apply_multiplatform_v28()
 
-        # Apply the spend guard before importing the final DB/API layer so the
-        # imported profile constants already have the final identity.
         from radar_budget_v29 import apply_budget_v29, budget_breakdown_v29
         v29_info = apply_budget_v29()
 
         from radar_budget_search_guard_v29 import apply_search_budget_guard_v29
         search_guard_info = apply_search_budget_guard_v29()
 
-        # V30 must be applied BEFORE radar_v28_finish is imported because it
-        # intentionally bumps the semantic screening profile after adding the
-        # fail-closed motion/static rules.
         from radar_audit_v30 import apply_audit_v30
         v30_info = apply_audit_v30()
 
         from radar_v28_finish import apply_v28_finish
         finish_info = apply_v28_finish()
 
-        # V32 is intentionally installed last. It intercepts GET / before the old
-        # DB-backed index route, bundles every CSS/JS asset into one HTML response,
-        # and tightens the already-running source watchdog without changing the paid
-        # discovery/screening identity.
-        from frontend_selfcontained_v32 import install_frontend_v32
-        frontend_info = install_frontend_v32(app_module.app)
+        # V33 is intentionally last. Unlike V32 it does NOT bundle the old browser
+        # scripts. It supplies a clean fail-open page with a single client runtime.
+        from frontend_failopen_v33 import install_frontend_v33
+        frontend_info = install_frontend_v33(app_module.app)
 
         final_info = {
             **dict(v28_info or {}),
@@ -180,9 +172,13 @@ def activate_v27_runtime():
         "external_static_dependencies": frontend_info.get("external_static_dependencies", 0),
         "frontend_html_bytes": frontend_info.get("html_bytes"),
         "frontend_html_sha256": frontend_info.get("html_sha256"),
-        "runtime_dom_watchdog": bool(frontend_info.get("runtime_watchdog")),
+        "fail_open_dom": bool(frontend_info.get("fail_open_dom")),
+        "single_js_runtime": bool(frontend_info.get("single_js_runtime")),
+        "legacy_client_scripts": frontend_info.get("legacy_client_scripts", 0),
+        "mutation_observers": frontend_info.get("mutation_observers", 0),
+        "parallel_polling_layers": frontend_info.get("parallel_polling_layers", 0),
+        "runtime_error_surface": bool(frontend_info.get("runtime_error_surface")),
         "root_db_dependency": bool(frontend_info.get("root_db_dependency", False)),
-        "source_watchdog_seconds": frontend_info.get("source_watchdog_seconds"),
         "platforms": final_info["platforms"],
         "hashtags": final_info["hashtags"],
         "lookback_days": final_info["lookback_days"],
@@ -224,7 +220,7 @@ def activate_v27_runtime():
     _APPLIED = True
 
     add_radar_log(
-        "V30 RUNTIME READY + V32 FRONTEND READY: self-contained HTML; zero browser /static dependencies; persistent DOM watchdog; source watchdog tightened; paid/search contract unchanged.",
+        "V30 RUNTIME READY + V33 FAIL-OPEN FRONTEND READY: one HTML/CSS/JS runtime; no legacy browser stack; no MutationObserver; V30 paid/search contract unchanged.",
         stage="startup",
         details=dict(_CONTRACT),
     )
