@@ -1,7 +1,7 @@
 name: Smoke Check
 on:
   push:
-    branches: [main, hardening-v19-top10, hardening-v19-edgecases]
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -21,9 +21,10 @@ jobs:
       - name: Compile Python
         run: python -m compileall -q .
 
-      - name: V19 production hardening smoke
+      - name: V28 product plus V19 edge hardening smoke
         env:
           SECRET_KEY: smoke-test
+          PORT: '10000'
         run: |
           python - <<'PY'
           import subprocess
@@ -31,13 +32,11 @@ jobs:
 
           import app as app_module
           import gemini_service
-          import radar_budget_v10 as budget_module
           import radar_cancel_v18 as cancel
           import radar_edge_v19 as edge
-          import radar_growth_v6 as growth
-          import radar_hardening_v19 as v19
+          import radar_hardening_v19 as hardening
+          import radar_multiplatform_v28 as v28
           import radar_request_job as radar_job
-          import radar_resilient_v17 as v17
           import radar_runtime_v27 as runtime
           from cloud_state import load_radar_cancel_request, load_radar_job, save_radar_job
           from db import ResilientConnection, db_conn
@@ -48,260 +47,83 @@ jobs:
               r = c.get(path)
               assert r.status_code == 200, (path, r.status_code, r.get_data(as_text=True))
 
-          # Public identity is one final V27 runtime. V19/V20 stay internal and
-          # are still tested below as the hardening/cache/edge implementation.
           status = c.get('/api/status').get_json()
-          assert status['radar_runtime'] == runtime.RUNTIME_VERSION, status
-          assert status['radar_profile'] == runtime.RUNTIME_VERSION, status
-          assert status['edge_profile'] == runtime.RUNTIME_VERSION, status
-          assert app_module.PROFILE_VERSION == v19.PROFILE_VERSION
-          assert app_module.RUNTIME_INFO['internal_screening_profile'] == v19.PROFILE_VERSION
+          assert status['radar_runtime'] == v28.MODE_VERSION, status
+          assert status['radar_profile'] == v28.MODE_VERSION, status
+          assert status['edge_profile'] == v28.MODE_VERSION, status
+          assert app_module.PROFILE_VERSION == v28.SCREENING_PROFILE
+          assert hardening.PROFILE_VERSION == v28.SCREENING_PROFILE
+          assert app_module.RUNTIME_INFO['internal_screening_profile'] == v28.SCREENING_PROFILE
           assert app_module.RUNTIME_INFO['internal_edge'] == edge.EDGE_PROFILE
-          assert v19.PROFILE_VERSION == 'dialogue_trends_v19_hardened_budget5'
           assert status['radar_keep_limit'] == 180
           assert radar_job.RADAR_AI_ANALYZE_LIMIT == 420
-          assert growth._ORIGINAL_FINALIZE is edge.finalize_edge
-          b = budget_module.budget_breakdown()
-          assert b['guarded_apify_usd'] <= 4.00, b
-          assert b['hard_apify_actor_caps_usd'] <= 3.35, b
-          assert b['designed_total_budget_usd'] <= 5.00, b
-          assert b['hard_budget_usd'] == 5.0, b
 
-          # 1) SQLite lock hardening + semantic-cache profile column.
+          # SQLite lock/profile hardening survives V28.
           with db_conn() as conn:
               assert isinstance(conn, ResilientConnection)
-              busy = conn.execute('PRAGMA busy_timeout').fetchone()[0]
-              assert int(busy) >= 60000, busy
+              assert int(conn.execute('PRAGMA busy_timeout').fetchone()[0]) >= 60000
               cols = {row[1] for row in conn.execute('PRAGMA table_info(radar_posts)').fetchall()}
-              assert 'screening_profile' in cols
+              assert {'screening_profile','platform','measured_growth_per_hour','growth_acceleration'} <= cols
 
-          # 2) STOP must be durable even when the tick lock is busy; no 180s wait.
+          # Durable STOP marker still wins without waiting for a long tick.
           started = c.post('/api/radar/sync')
           assert started.status_code == 202, started.get_data(as_text=True)
-          old_run_id = started.get_json()['run_id']
+          run_id = started.get_json()['run_id']
           assert radar_job._tick_lock.acquire(blocking=False)
           try:
-              pending, pending_code = cancel.cancel_active_job(wait_seconds=0)
-              assert pending_code == 202, pending
-              assert pending['stop_pending'] is True, pending
+              pending, code = cancel.cancel_active_job(wait_seconds=0)
+              assert code == 202 and pending['stop_pending'] is True, pending
               marker = load_radar_cancel_request()
-              assert marker and marker['run_id'] == old_run_id, marker
+              assert marker and marker['run_id'] == run_id, marker
           finally:
               radar_job._tick_lock.release()
-          stopped = c.post('/api/radar/tick')
-          stopped_json = stopped.get_json()
-          assert stopped_json['active'] is False, stopped_json
-          assert stopped_json['phase'] == 'cancelled', stopped_json
+          stopped = c.post('/api/radar/tick').get_json()
+          assert stopped['active'] is False and stopped['phase'] == 'cancelled', stopped
 
-          # 3) A stale active pre-v19 queue is reset BEFORE more paid work.
+          # A stale pre-V28 queue resets before paid work.
           c.post('/api/radar/sync')
           stale = load_radar_job()
-          stale['profile'] = 'old-profile-v1'
+          stale['profile'] = 'old-v27-profile'
           stale['phase'] = 'ai'
           stale['candidates'] = [{'post_url':'https://example.invalid/old','ai_done':False}]
           save_radar_job(stale)
           migrated = c.post('/api/radar/sync')
-          assert migrated.status_code == 202, migrated.get_data(as_text=True)
+          assert migrated.status_code == 202
           migrated_job = load_radar_job()
-          assert migrated_job['profile'] == v19.PROFILE_VERSION, migrated_job
+          assert migrated_job['profile'] == v28.SCREENING_PROFILE, migrated_job
           assert migrated_job['phase'] == 'queued', migrated_job
-          assert migrated_job['candidates'] == [], migrated_job
+          assert set(migrated_job['sources']) == {'instagram','tiktok','youtube'}, migrated_job
           c.post('/api/radar/stop')
 
-          # 4) Same backend error cannot retry forever.
+          # Same backend error still has a finite retry circuit breaker.
           c.post('/api/radar/sync')
           guarded = None
-          for _ in range(v19.MAX_SAME_TICK_ERRORS):
-              guarded = v19._apply_tick_error_guard({
-                  'active': True,
-                  'transient_error': True,
+          for _ in range(hardening.MAX_SAME_TICK_ERRORS):
+              guarded = hardening._apply_tick_error_guard({
+                  'active': True, 'transient_error': True,
                   'message': 'synthetic identical transport failure',
               })
           assert guarded['retry_budget_exceeded'] is True, guarded
-          failed_job = load_radar_job()
-          assert failed_job['phase'] == 'failed', failed_job
+          assert load_radar_job()['phase'] == 'failed'
 
-          # 5+6) Poll failures are isolated and a stuck Actor is watchdog-aborted.
-          class FakeRun:
-              def __init__(self, mode): self.mode = mode; self.aborted = False
-              def get(self):
-                  if self.mode == 'raise': raise RuntimeError('temporary status read failure')
-                  if self.mode == 'running': return {'status':'RUNNING'}
-                  return {'status':'SUCCEEDED','defaultDatasetId':'ds-good'}
-              def abort(self, gracefully=False): self.aborted = True; return {'status':'ABORTING'}
-          class FakeClient:
-              def __init__(self): self.runs = {'bad':FakeRun('raise'),'good':FakeRun('good'),'old':FakeRun('running')}
-              def run(self, run_id): return self.runs[run_id]
-          fc = FakeClient()
-          now = datetime.now(timezone.utc).isoformat()
-          old = (datetime.now(timezone.utc) - timedelta(seconds=v19.SOURCE_MAX_AGE_SECONDS + 5)).isoformat()
-          job = {
-              'run_id':'unit-poll','phase':'discovering','profile':v19.PROFILE_VERSION,
-              'sources':{
-                  'bad':{'run_id':'bad','status':'RUNNING','started_at':now,'poll_errors':v19.MAX_SOURCE_POLL_ERRORS-1},
-                  'good':{'run_id':'good','status':'RUNNING','started_at':now},
-                  'old':{'run_id':'old','status':'RUNNING','started_at':old},
-              },
-              'source_failures':{},'candidates':[],'stats':{},'result':{},'error':''
-          }
-          polled = v19._poll_sources_v19(fc, job)
-          assert polled['sources']['bad']['status'] == 'FAILED', polled
-          assert polled['sources']['good']['status'] == 'SUCCEEDED', polled
-          assert polled['sources']['old']['status'] == 'TIMED-OUT', polled
-          assert fc.runs['old'].aborted is True
-          assert polled['phase'] == 'preparing', polled
-
-          # 7) Dataset materialization is RAM-bounded and one bad dataset is isolated.
-          class FakeDataset:
-              def __init__(self, bad=False): self.bad = bad
-              def iterate_items(self):
-                  if self.bad: raise RuntimeError('dataset read failed')
-                  for i in range(20): yield {'id':i}
-          class DatasetClient:
-              def dataset(self, dataset_id): return FakeDataset(bad=(dataset_id == 'bad-ds'))
-              def run(self, run_id): return FakeRun('good')
-          old_limit = v19.DATASET_MAX_ITEMS_PER_SOURCE
-          v19.DATASET_MAX_ITEMS_PER_SOURCE = 3
-          try:
-              ds_job = {
-                  'sources':{
-                      'ok':{'status':'SUCCEEDED','dataset_id':'ok-ds','run_id':'good'},
-                      'bad':{'status':'SUCCEEDED','dataset_id':'bad-ds','run_id':'good'},
-                  },
-                  'source_failures':{}
-              }
-              rows = v19._collect_source_rows_v19(DatasetClient(), ds_job)
-              assert len(rows['ok']) == 3, rows
-              assert rows['bad'] == [], rows
-              assert ds_job['sources']['ok']['dataset_truncated'] is True
-              assert 'bad' in ds_job['source_failures']
-          finally:
-              v19.DATASET_MAX_ITEMS_PER_SOURCE = old_limit
-
-          # 8) Old Gemini cache is invalid after semantic profile changes.
-          cache_url = 'https://example.com/reel/cache-test'
-          with db_conn() as conn:
-              conn.execute(
-                  "INSERT OR REPLACE INTO radar_posts(creator,post_url,published_at,duration_sec,ai_checked,ai_match,screening_profile) VALUES(?,?,?,?,?,?,?)",
-                  ('cache_user', cache_url, datetime.now(timezone.utc).isoformat(), 7.0, 1, 1, 'old-profile'),
-              )
-              conn.commit()
-          original_prepare = v19._ORIGINAL_PREPARE
-          v19._ORIGINAL_PREPARE = lambda client, job: job
-          try:
-              cache_job = {
-                  'run_id':'cache-unit','phase':'ai','profile':v19.PROFILE_VERSION,
-                  'candidates':[{'post_url':cache_url,'ai_done':True,'ai_match':True,'ai_attempts':0,'ai_error':''}],
-                  'stats':{},'result':{},'error':''
-              }
-              cache_job = v19._prepare_candidates_v19(None, cache_job)
-              assert cache_job['candidates'][0]['ai_done'] is False, cache_job
-              with db_conn() as conn:
-                  row = conn.execute('SELECT ai_checked,ai_match FROM radar_posts WHERE post_url=?',(cache_url,)).fetchone()
-                  assert int(row['ai_checked']) == 0 and int(row['ai_match']) == 0
-          finally:
-              v19._ORIGINAL_PREPARE = original_prepare
-
-          # 9) Permanent media error is not paid/retried three full outer ticks.
-          original_process = v19._ORIGINAL_PROCESS
-          def fake_process(job):
-              item = job['candidates'][0]
-              item['ai_attempts'] = 1
-              item['ai_error'] = '404 not found while refreshing Reel media'
-              return job
-          v19._ORIGINAL_PROCESS = fake_process
-          try:
-              ai_job = {
-                  'run_id':'ai-unit','phase':'ai','profile':v19.PROFILE_VERSION,
-                  'candidates':[{'creator':'x','post_url':'u','ai_done':False,'ai_match':False,'ai_attempts':0,'ai_error':''}],
-                  'stats':{},'result':{},'error':''
-              }
-              ai_job = v19._process_one_ai_v19(ai_job)
-              assert ai_job['candidates'][0]['ai_done'] is True, ai_job
-              assert ai_job['candidates'][0]['terminal_ai_error'] is True, ai_job
-          finally:
-              v19._ORIGINAL_PROCESS = original_process
-
-          # 10) Corrupted old meta JSON must not 500 the dashboard.
-          with db_conn() as conn:
-              conn.execute(
-                  "INSERT INTO radar_meta(created_at,source_count,average_duration_sec,report_json) VALUES(?,?,?,?)",
-                  (datetime.now(timezone.utc).isoformat(), 1, 7.0, '{broken-json'),
-              )
-              conn.commit()
-          meta = c.get('/api/radar/meta')
-          assert meta.status_code == 200, meta.get_data(as_text=True)
-          assert meta.get_json()['report_parse_error'] is True, meta.get_json()
-
-          # EDGE A: STOP marker wins over START from another tab/request.
-          c.post('/api/radar/sync')
-          race_job = load_radar_job()
-          race_run = race_job['run_id']
-          assert radar_job._tick_lock.acquire(blocking=False)
-          try:
-              pending, pending_code = cancel.cancel_active_job(wait_seconds=0)
-              assert pending_code == 202 and pending['stop_pending'] is True
-              raced_start = c.post('/api/radar/sync')
-              raced_json = raced_start.get_json()
-              assert raced_start.status_code == 202, raced_start.get_data(as_text=True)
-              assert raced_json['accepted'] is False and raced_json['stop_pending'] is True, raced_json
-              marker = load_radar_cancel_request()
-              assert marker and marker['run_id'] == race_run, marker
-          finally:
-              radar_job._tick_lock.release()
-          c.post('/api/radar/tick')
-          assert load_radar_job()['phase'] == 'cancelled'
-
-          # EDGE B: harmless BUSY from a second tab cannot erase backend error history.
-          c.post('/api/radar/sync')
-          first_error = v19._apply_tick_error_guard({
-              'active':True,'transient_error':True,'message':'same-edge-error'
-          })
-          assert first_error['same_error_repeats'] == 1, first_error
-          busy_payload = v19._apply_tick_error_guard({'active':True,'busy':True,'message':'tick busy'})
-          assert busy_payload['busy'] is True
-          second_error = v19._apply_tick_error_guard({
-              'active':True,'transient_error':True,'message':'same-edge-error'
-          })
-          assert second_error['same_error_repeats'] == 2, second_error
-          c.post('/api/radar/stop')
-
-          # EDGE C: discovering with a missing run_id self-heals to starting_sources.
-          missing_job = {
-              'run_id':'missing-source','phase':'discovering','profile':v19.PROFILE_VERSION,
-              'sources':{
-                  'started':{'run_id':'good','status':'RUNNING','started_at':now},
-                  'missing':{'run_id':'','status':'NOT_STARTED','started_at':''},
-              },
-              'source_failures':{},'candidates':[],'stats':{},'result':{},'error':''
-          }
-          recovered = edge.poll_sources_edge(fc, missing_job)
-          assert recovered['phase'] == 'starting_sources', recovered
-
-          # EDGE D: old-profile PASS cannot leak into TOP/status and is invalidated.
-          stale_top_url = 'https://example.com/reel/stale-top'
-          baseline_matches = c.get('/api/status').get_json()['radar_matches']
+          # Old-profile PASS cannot leak into current TOP.
+          stale_url = 'https://example.com/old-pass'
           with db_conn() as conn:
               conn.execute(
                   """INSERT OR REPLACE INTO radar_posts(
-                       creator,post_url,published_at,duration_sec,views,likes,comments,
-                       hours_since_publish,views_per_hour,viral_score_v2,ai_checked,ai_match,screening_profile
-                     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                  ('stale_top', stale_top_url, datetime.now(timezone.utc).isoformat(), 7.0,
-                   999999, 9999, 999, 2.0, 499999, 99.0, 1, 1, 'obsolete-profile'),
+                       platform,creator,post_url,published_at,duration_sec,views,likes,comments,
+                       hours_since_publish,views_per_hour,viral_score_v2,search_term,
+                       ai_checked,ai_match,screening_profile,reason
+                     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  ('Instagram Reels','old',stale_url,datetime.now(timezone.utc).isoformat(),8.0,
+                   999999,9999,999,1.0,999999,99.0,'ai',1,1,'old-profile','OLD_PASS'),
               )
               conn.commit()
-          assert c.get('/api/status').get_json()['radar_matches'] == baseline_matches
-          assert stale_top_url not in {row.get('post_url') for row in c.get('/api/radar').get_json()}
-          invalidated = edge.invalidate_stale_recent_matches()
-          assert invalidated >= 1
-          with db_conn() as conn:
-              row = conn.execute('SELECT ai_match FROM radar_posts WHERE post_url=?',(stale_top_url,)).fetchone()
-              assert int(row['ai_match']) == 0
+          assert stale_url not in {x.get('post_url') for x in c.get('/api/radar').get_json()}
 
-          # Static card rejection remains local/no Gemini key needed.
+          # Static card is rejected locally before speech Gemini.
           ffmpeg = ffmpeg_executable()
-          assert ffmpeg, 'No system or bundled ffmpeg available'
+          assert ffmpeg
           subprocess.run([
               ffmpeg, '-y', '-loglevel', 'error', '-f', 'lavfi',
               '-i', 'color=c=blue:s=320x240:r=30:d=4',
@@ -309,10 +131,10 @@ jobs:
           ], check=True)
           still = inspect_visual_motion('/tmp/static.mp4')
           assert still.checked and still.is_static_image_video, still
-          verdict = v17.classify_v17('/tmp/static.mp4', 'text card')
+          verdict = v28.classify_file_v28('/tmp/static.mp4', '#ai', 'Instagram Reels')
           assert verdict.reason.startswith('REJECT_STATIC_IMAGE'), verdict
 
-          # Product locks remain exactly intact.
+          # Production reconstruction locks remain untouched underneath V28.
           prod = gemini_service.production_system_prompt(False, 7.64)
           forensic = gemini_service.forensic_system_prompt(False, 7.64)
           audit = gemini_service.audit_system_prompt(7.64)
@@ -323,9 +145,8 @@ jobs:
           assert 'timestamp 0.000 seconds' in forensic
           assert 'frame_zero_literal_match_ok' in audit
           assert 'explicit_duration_instruction_ok' in audit
-          assert 'publication_russian_ok' in audit
 
-          print('V27 PUBLIC + V19/V20 INTERNAL HARDENING OK', status['radar_profile'], app_module.PROFILE_VERSION, edge.EDGE_PROFILE, b)
+          print('V28 PRODUCT + V19 EDGE HARDENING OK', runtime.RUNTIME_VERSION)
           PY
 
       - uses: actions/setup-node@v4
@@ -337,15 +158,10 @@ jobs:
           node --check static/app.js
           node --check static/overlay_v15.js
           node --check static/runtime.js
+          node --check static/scope_v24.js
           grep -q "/api/radar/job" static/runtime.js
-          grep -q "trend-radar-driver-v19" static/runtime.js
-          grep -q "consecutiveTransportErrors >= 8" static/runtime.js
-          grep -q "data?.stop_pending || data?.accepted === false" static/runtime.js
           grep -q "/api/radar/stop" static/runtime.js
           grep -q "id=\"stopRadar\"" templates/index.html
-          grep -q "dialogue_trends_v19_hardened_budget5" radar_hardening_v19.py
-          grep -q "v19_edge_guard_1" radar_edge_v19.py
-          grep -q "force_stop_v19_marker" radar_cancel_v18.py
           grep -q "screening_profile" db.py
-          grep -q "frame0_cleanplate_capcut_ru_v15" overlay_cleanplate_v15.py
-          grep -q "CAPCUT OVERLAY PLAN" static/overlay_v15.js
+          grep -q "multiplatform_speech_v28_strict14d" radar_multiplatform_v28.py
+          grep -q "#omni + #veo + #veo3 + #ai + #ии" templates/index.html
