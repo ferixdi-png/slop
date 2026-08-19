@@ -1,4 +1,4 @@
-name: V28 Single Runtime Smoke
+name: V29 Single Runtime Smoke
 
 on:
   pull_request:
@@ -6,6 +6,7 @@ on:
       - 'app.py'
       - 'radar_runtime_v27.py'
       - 'radar_multiplatform_v28.py'
+      - 'radar_budget_v29.py'
       - 'radar_v28_finish.py'
       - 'radar_logs.py'
       - 'radar_strict_scope_v27.py'
@@ -20,6 +21,7 @@ on:
       - 'app.py'
       - 'radar_runtime_v27.py'
       - 'radar_multiplatform_v28.py'
+      - 'radar_budget_v29.py'
       - 'radar_v28_finish.py'
       - 'radar_logs.py'
       - 'radar_strict_scope_v27.py'
@@ -40,8 +42,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Compile runtime
-        run: python -m compileall -q app.py radar_runtime_v27.py radar_multiplatform_v28.py radar_v28_finish.py radar_strict_scope_v27.py gunicorn.conf.py
-      - name: Verify one authoritative V28 bootstrap
+        run: python -m compileall -q app.py radar_runtime_v27.py radar_multiplatform_v28.py radar_budget_v29.py radar_v28_finish.py radar_strict_scope_v27.py gunicorn.conf.py
+      - name: Verify one authoritative V29 bootstrap and hard budget
         env:
           SECRET_KEY: smoke-test
           PORT: '10000'
@@ -59,18 +61,19 @@ jobs:
           startup = stdout.getvalue()
           startup_lines = [line for line in startup.splitlines() if '[startup]' in line]
           assert len(startup_lines) == 1, startup
-          assert 'V28 RUNTIME READY' in startup_lines[0], startup
+          assert 'V29 RUNTIME READY' in startup_lines[0], startup
 
           banned = (
               'GLOBAL AI v9', 'BUDGET AI v11', 'HIGH-FREQ AI v13', 'DIALOGUE-ONLY v15',
               'DIALOGUE MOTION v16', 'V17 READY', 'V19 HARDENING READY',
               'SOURCE AGGREGATION v20 READY', 'OMNI/VEO V21 READY', 'OMNI/VEO V22 READY',
               'V24 READY', 'V25 READY', 'FRESH RUN V23 READY', 'V20 EDGE GUARDS READY',
-              'V27 RUNTIME READY',
+              'V27 RUNTIME READY', 'V28 RUNTIME READY',
           )
           for marker in banned:
               assert marker not in startup, (marker, startup)
 
+          import radar_budget_v29 as v29
           import radar_hardening_v19 as hardening
           import radar_multiplatform_v28 as v28
           import radar_request_job as radar_job
@@ -81,30 +84,45 @@ jobs:
           assert runtime._APPLIED is True
           assert runtime._LIVENESS_INSTALLED is True
           assert v28._APPLIED is True
+          assert v29._APPLIED is True
           assert finish._APPLIED is True
-          assert app_module.RADAR_RUNTIME == v28.MODE_VERSION
-          assert app_module.EDGE_PROFILE == v28.MODE_VERSION
-          assert app_module.PROFILE_VERSION == v28.SCREENING_PROFILE
-          assert hardening.PROFILE_VERSION == v28.SCREENING_PROFILE
+          assert app_module.RADAR_RUNTIME == v29.MODE_VERSION
+          assert app_module.EDGE_PROFILE == v29.MODE_VERSION
+          assert app_module.PROFILE_VERSION == v29.SCREENING_PROFILE
+          assert hardening.PROFILE_VERSION == v29.SCREENING_PROFILE
           assert app_module.RADAR_MAX_DURATION_SEC == 15.05
           assert app_module.KEEP_LIMIT == 180
+          assert radar_job.RADAR_AI_ANALYZE_LIMIT == 150
 
           c = app_module.app.test_client()
           status = c.get('/api/status').get_json()
-          assert status['radar_runtime'] == v28.MODE_VERSION, status
-          assert status['radar_profile'] == v28.MODE_VERSION, status
-          assert status['edge_profile'] == v28.MODE_VERSION, status
-          assert status['radar_mode'] == v28.MODE_VERSION, status
+          assert status['radar_runtime'] == v29.MODE_VERSION, status
+          assert status['radar_profile'] == v29.MODE_VERSION, status
+          assert status['edge_profile'] == v29.MODE_VERSION, status
+          assert status['radar_mode'] == v29.MODE_VERSION, status
           assert status['radar_platforms'] == ['Instagram Reels', 'TikTok', 'YouTube Shorts'], status
           assert status['radar_hashtags'] == ['omni', 'veo', 'veo3', 'ai', 'ии'], status
           assert status['radar_lookback_days'] == 14, status
           assert status['radar_speech_required'] is True, status
           assert status['radar_source_max_duration_sec'] == 15.05, status
           assert status['radar_compressed_target_sec'] == 10.0, status
+          assert status['radar_hard_total_target_usd'] == 5.0, status
+          assert status['radar_apify_discovery_hard_cap_usd'] == 2.8, status
+          assert status['radar_budget_headroom_usd'] == 2.2, status
+          assert status['radar_results_per_tag_per_platform'] == 60, status
+          assert status['radar_max_raw_requested'] == 900, status
+          assert status['radar_ai_analyze_limit'] == 150, status
           assert status['runtime_info']['v28_14day_api'] is True, status
           assert status['runtime_info']['youtube_direct_gemini'] is True, status
           assert status['runtime_info']['legacy_startup_banners_suppressed'] is True, status
           assert status['runtime_info']['render_fast_liveness'] is True, status
+
+          b = v29.budget_breakdown_v29()
+          assert b['hard_total_target_usd'] == 5.0, b
+          assert b['hard_apify_discovery_caps_usd'] == 2.8, b
+          assert b['reserved_headroom_usd'] == 2.2, b
+          assert b['estimated_discovery_usd_at_full_300_each'] <= 2.8, b
+          assert sum(b['source_caps_usd'].values()) == 2.8, b
 
           # CRITICAL Render liveness remains DB-independent.
           original_db_conn = app_module.db_conn
@@ -116,7 +134,7 @@ jobs:
               assert c.head('/healthz').status_code == 200
               health = c.get('/healthz')
               assert health.status_code == 200
-              assert health.get_json()['runtime'] == v28.MODE_VERSION
+              assert health.get_json()['runtime'] == v29.MODE_VERSION
           finally:
               app_module.db_conn = original_db_conn
 
@@ -128,11 +146,14 @@ jobs:
           assert sources['instagram']['actor_id'] == 'apify/instagram-scraper'
           assert sources['tiktok']['actor_id'] == 'clockworks/tiktok-scraper'
           assert sources['youtube']['actor_id'] == 'constructive_calm/youtube-shorts-scraper-pro'
-          assert all(x['strict_scope_marker'] == v28.SOURCE_MARKER for x in sources.values())
+          for name, source in sources.items():
+              assert source['strict_scope_marker'] == v29.SOURCE_MARKER, source
+              assert source['max_items'] == 300, source
+              assert source['max_total_charge_usd'] == v29.SOURCE_CHARGE_CAPS_USD[name], source
 
-          # Prove that API visibility is truly 14 days, not just frontend copy.
-          visible_url = 'https://www.youtube.com/shorts/v28-ten-days'
-          hidden_url = 'https://www.youtube.com/shorts/v28-fifteen-days'
+          # Prove API visibility stays truly 14 days under the new V29 profile.
+          visible_url = 'https://www.youtube.com/shorts/v29-ten-days'
+          hidden_url = 'https://www.youtube.com/shorts/v29-fifteen-days'
           reason = v28.PASS_PREFIX + 'DIRECT: synthetic test'
           now = datetime.now(timezone.utc)
           with db_conn() as conn:
@@ -143,8 +164,8 @@ jobs:
                            hours_since_publish,views_per_hour,viral_score_v2,search_term,
                            ai_checked,ai_match,screening_profile,reason
                          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                      ('YouTube Shorts','v28_test',url,(now-timedelta(days=age)).isoformat(),8.0,
-                       10000,100,10,age*24,1000,80.0,'ai',1,1,v28.SCREENING_PROFILE,reason),
+                      ('YouTube Shorts','v29_test',url,(now-timedelta(days=age)).isoformat(),8.0,
+                       10000,100,10,age*24,1000,80.0,'ai',1,1,v29.SCREENING_PROFILE,reason),
                   )
               conn.commit()
           urls = {x['post_url'] for x in c.get('/api/radar').get_json()}
@@ -153,7 +174,7 @@ jobs:
           candidates = c.get('/api/radar/candidates').get_json()
           assert any(x['post_url'] == visible_url and x['platform'] == 'YouTube Shorts' for x in candidates)
 
-          print('V28 SINGLE RUNTIME + 14-DAY API + RENDER LIVENESS OK')
+          print('V29 SINGLE RUNTIME + HARD BUDGET + 14-DAY API + RENDER LIVENESS OK')
           PY
 
       - uses: actions/setup-node@v4
@@ -164,5 +185,6 @@ jobs:
           node --check static/app.js
           node --check static/scope_v24.js
           grep -q "3 ПЛАТФОРМЫ · 5 ТЕГОВ · 14 ДНЕЙ" templates/index.html
+          grep -q "HARD BUDGET" templates/index.html
           grep -q "Instagram + TikTok + YouTube" static/scope_v24.js
           grep -q "GEMINI СЛУШАЕТ РЕЧЬ" static/scope_v24.js
