@@ -1,8 +1,9 @@
 """Single authoritative production bootstrap for the final radar runtime.
 
 The battle-tested V27 stack remains the infrastructure/content reconstruction
-base. V28 supplies the three-platform speech/timing product behavior and V29
-adds the final hard <$5 spend guard without changing that product scope.
+base. V28 supplies the three-platform speech/timing product behavior, V29 adds
+the hard <$5 spend guard, and V30 closes the ten highest-risk production gaps
+found by the full adversarial audit without widening product scope.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from apify_start_compat import install_apify_start_compat
 from radar_discovery_v27 import install_v27_high_volume_discovery
 from radar_logs import add_radar_log, suppress_startup_logs
 
-RUNTIME_VERSION = "multiplatform_speech_v29_budget5"
+RUNTIME_VERSION = "multiplatform_speech_v30_audit10_budget5"
 PUBLIC_EDGE_PROFILE = RUNTIME_VERSION
 _APPLIED = False
 _CONTRACT = None
@@ -56,7 +57,7 @@ def _install_render_liveness(app):
 
 
 def activate_v27_runtime():
-    """Compose proven internal layers, then expose only final V29 behavior."""
+    """Compose proven internal layers, then expose only final V30 behavior."""
     global _APPLIED, _CONTRACT
     if _APPLIED:
         return dict(_CONTRACT or {"runtime": RUNTIME_VERSION})
@@ -120,21 +121,29 @@ def activate_v27_runtime():
         from radar_multiplatform_v28 import apply_multiplatform_v28
         v28_info = apply_multiplatform_v28()
 
-        # Apply the spend guard BEFORE importing the 14-day finish module so its
-        # imported profile constants are already the final V29 values.
+        # Apply the spend guard before importing the final DB/API layer so the
+        # imported profile constants already have the final identity.
         from radar_budget_v29 import apply_budget_v29, budget_breakdown_v29
         v29_info = apply_budget_v29()
 
-        # Automatic search must never start surprise paid refresh Actors after
-        # the three discovery runs. Explicit user-triggered detailed analysis is
-        # intentionally left refresh-capable outside this automatic run budget.
         from radar_budget_search_guard_v29 import apply_search_budget_guard_v29
         search_guard_info = apply_search_budget_guard_v29()
+
+        # V30 must be applied BEFORE radar_v28_finish is imported because it
+        # intentionally bumps the semantic screening profile after adding the
+        # fail-closed motion/static rules.
+        from radar_audit_v30 import apply_audit_v30
+        v30_info = apply_audit_v30()
 
         from radar_v28_finish import apply_v28_finish
         finish_info = apply_v28_finish()
 
-        final_info = {**dict(v28_info or {}), **dict(v29_info or {}), **dict(search_guard_info or {})}
+        final_info = {
+            **dict(v28_info or {}),
+            **dict(v29_info or {}),
+            **dict(search_guard_info or {}),
+            **dict(v30_info or {}),
+        }
         final_keep_limit = int(final_info.get("keep_limit") or budget.KEEP_LIMIT)
         final_budget = budget_breakdown_v29()
 
@@ -174,6 +183,19 @@ def activate_v27_runtime():
         "hard_total_target_usd": final_budget["hard_total_target_usd"],
         "apify_discovery_hard_cap_usd": final_budget["hard_apify_discovery_caps_usd"],
         "budget_headroom_usd": final_budget["reserved_headroom_usd"],
+        "audit_top10_closed": bool(final_info.get("audit_top10_closed")),
+        "durable_paid_preflight": bool(final_info.get("durable_paid_preflight")),
+        "ambiguous_actor_start_quarantine": bool(final_info.get("ambiguous_actor_start_quarantine")),
+        "manual_refresh_cap_usd": final_info.get("manual_refresh_cap_usd"),
+        "analysis_cache": bool(final_info.get("analysis_cache")),
+        "analysis_singleflight": bool(final_info.get("analysis_singleflight")),
+        "automatic_ai_tick_limit": final_info.get("automatic_ai_tick_limit"),
+        "snapshot_lookback_days": final_info.get("snapshot_lookback_days"),
+        "snapshot_post_limit": final_info.get("snapshot_post_limit"),
+        "safe_media_download": bool(final_info.get("safe_media_download")),
+        "motion_gate_fail_closed": bool(final_info.get("motion_gate_fail_closed")),
+        "cross_site_mutation_block": bool(final_info.get("cross_site_mutation_block")),
+        "new_run_debounce_seconds": final_info.get("new_run_debounce_seconds"),
         "legacy_startup_banners_suppressed": True,
         "render_fast_liveness": True,
         "apify_start_compat": True,
@@ -182,7 +204,7 @@ def activate_v27_runtime():
     _APPLIED = True
 
     add_radar_log(
-        "V29 RUNTIME READY: 3 platforms; speech/timing; discovery hard cap $2.80; no automatic paid refreshes; total target <$5.",
+        "V30 RUNTIME READY: audit top-10 closed; 3 platforms; 14 days; speech/timing; discovery hard cap $2.80; total target <$5.",
         stage="startup",
         details=dict(_CONTRACT),
     )
