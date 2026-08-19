@@ -14,52 +14,56 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
       - name: Compile Python
         run: python -m compileall -q .
-
-      - name: V29 budget product plus V19 edge hardening smoke
+      - name: V34 broad product plus V30/V19 hardening smoke
         env:
           SECRET_KEY: smoke-test
           PORT: '10000'
         run: |
           python - <<'PY'
           import subprocess
-          from datetime import datetime, timedelta, timezone
+          from datetime import datetime, timezone
 
           import app as app_module
           import gemini_service
+          import radar_audit_v30 as v30
+          import radar_broad_v34 as v34
           import radar_budget_v29 as v29
           import radar_cancel_v18 as cancel
           import radar_edge_v19 as edge
           import radar_hardening_v19 as hardening
           import radar_multiplatform_v28 as v28
           import radar_request_job as radar_job
-          import radar_runtime_v27 as runtime
           from cloud_state import load_radar_cancel_request, load_radar_job, save_radar_job
           from db import ResilientConnection, db_conn
           from static_video_gate import ffmpeg_executable, inspect_visual_motion
 
           c = app_module.app.test_client()
-          for path in ['/health','/api/status','/api/radar/status','/api/radar/job','/api/radar','/api/radar/candidates']:
+          for path in ['/health','/healthz','/api/status','/api/radar/status','/api/radar/job','/api/radar','/api/radar/candidates']:
               r = c.get(path)
               assert r.status_code == 200, (path, r.status_code, r.get_data(as_text=True))
 
           status = c.get('/api/status').get_json()
-          assert status['radar_runtime'] == v29.MODE_VERSION, status
-          assert status['radar_profile'] == v29.MODE_VERSION, status
-          assert status['edge_profile'] == v29.MODE_VERSION, status
-          assert app_module.PROFILE_VERSION == v29.SCREENING_PROFILE
-          assert hardening.PROFILE_VERSION == v29.SCREENING_PROFILE
-          assert app_module.RUNTIME_INFO['internal_screening_profile'] == v29.SCREENING_PROFILE
+          assert status['radar_runtime'] == v30.MODE_VERSION, status
+          assert status['radar_profile'] == v30.MODE_VERSION, status
+          assert status['edge_profile'] == v30.MODE_VERSION, status
+          assert status['radar_product_mode'] == v34.MODE_VERSION, status
+          assert status['radar_keep_limit'] == 100, status
+          assert status['radar_speech_required'] is False, status
+          assert status['radar_ai_role'] == 'enrichment_only', status
+          assert app_module.PROFILE_VERSION == v30.SCREENING_PROFILE
+          assert hardening.PROFILE_VERSION == v30.SCREENING_PROFILE
+          assert app_module.RUNTIME_INFO['internal_screening_profile'] == v30.SCREENING_PROFILE
           assert app_module.RUNTIME_INFO['internal_edge'] == edge.EDGE_PROFILE
-          assert status['radar_keep_limit'] == 180
+          assert app_module.RUNTIME_INFO['target_output_min'] == 50
+          assert app_module.RUNTIME_INFO['target_output_max'] == 100
+          assert app_module.RUNTIME_INFO['ai_enrich_limit'] == 20
           assert radar_job.RADAR_AI_ANALYZE_LIMIT == 150
 
-          # Hard spend contract: discovery cannot exceed $2.80 and the full design target is <$5.
+          # Spend contract remains unchanged by the broader output.
           b = v29.budget_breakdown_v29()
           assert b['hard_total_target_usd'] == 5.0, b
           assert b['hard_apify_discovery_caps_usd'] <= 2.80, b
@@ -70,7 +74,6 @@ jobs:
           assert b['gemini_analyze_limit'] == 150, b
           assert sum(b['source_caps_usd'].values()) <= 2.80, b
 
-          # SQLite lock/profile hardening survives V29.
           with db_conn() as conn:
               assert isinstance(conn, ResilientConnection)
               assert int(conn.execute('PRAGMA busy_timeout').fetchone()[0]) >= 60000
@@ -92,7 +95,7 @@ jobs:
           stopped = c.post('/api/radar/tick').get_json()
           assert stopped['active'] is False and stopped['phase'] == 'cancelled', stopped
 
-          # A stale pre-V29 queue resets before paid work and receives capped sources.
+          # Stale semantic profile resets before paid work and keeps capped sources.
           c.post('/api/radar/sync')
           stale = load_radar_job()
           stale['profile'] = 'old-v28-profile'
@@ -102,13 +105,13 @@ jobs:
           migrated = c.post('/api/radar/sync')
           assert migrated.status_code == 202
           migrated_job = load_radar_job()
-          assert migrated_job['profile'] == v29.SCREENING_PROFILE, migrated_job
+          assert migrated_job['profile'] == v30.SCREENING_PROFILE, migrated_job
           assert migrated_job['phase'] == 'queued', migrated_job
           assert set(migrated_job['sources']) == {'instagram','tiktok','youtube'}, migrated_job
           for name, source in migrated_job['sources'].items():
               assert source['max_items'] == 300, source
               assert source['max_total_charge_usd'] == v29.SOURCE_CHARGE_CAPS_USD[name], source
-              assert source['strict_scope_marker'] == v29.SOURCE_MARKER, source
+              assert source['strict_scope_marker'] == v30.SOURCE_MARKER, source
           c.post('/api/radar/stop')
 
           # Same backend error still has a finite retry circuit breaker.
@@ -122,7 +125,7 @@ jobs:
           assert guarded['retry_budget_exceeded'] is True, guarded
           assert load_radar_job()['phase'] == 'failed'
 
-          # Old-profile PASS cannot leak into current TOP.
+          # Old-profile row cannot leak into the current 14-day strict-tag pool.
           stale_url = 'https://example.com/old-pass'
           with db_conn() as conn:
               conn.execute(
@@ -132,12 +135,12 @@ jobs:
                        ai_checked,ai_match,screening_profile,reason
                      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                   ('Instagram Reels','old',stale_url,datetime.now(timezone.utc).isoformat(),8.0,
-                   999999,9999,999,1.0,999999,99.0,'ai',1,1,'old-profile','OLD_PASS'),
+                   999999,9999,999,1.0,999999,99.0,'funny',1,1,'old-profile','OLD_PASS'),
               )
               conn.commit()
           assert stale_url not in {x.get('post_url') for x in c.get('/api/radar').get_json()}
 
-          # Static card is rejected locally before speech Gemini.
+          # Objective invalid media remains a hard reject even in broad mode.
           ffmpeg = ffmpeg_executable()
           assert ffmpeg
           subprocess.run([
@@ -149,8 +152,13 @@ jobs:
           assert still.checked and still.is_static_image_video, still
           verdict = v28.classify_file_v28('/tmp/static.mp4', '#ai', 'Instagram Reels')
           assert verdict.reason.startswith('REJECT_STATIC_IMAGE'), verdict
+          assert v34.broad_matches(verdict) is False
 
-          # Production reconstruction locks remain untouched underneath V29.
+          # Semantic rejects are now adaptation metadata, not TOP deletion rules.
+          assert v34.broad_matches(v28._reject('NO_SPOKEN_DIALOGUE: synthetic')) is True
+          assert v34.broad_matches(v28._reject('TIMING_OR_MECHANIC_REJECT: synthetic', spoken=True)) is True
+
+          # Production reconstruction locks remain untouched.
           prod = gemini_service.production_system_prompt(False, 7.64)
           forensic = gemini_service.forensic_system_prompt(False, 7.64)
           audit = gemini_service.audit_system_prompt(7.64)
@@ -162,23 +170,30 @@ jobs:
           assert 'frame_zero_literal_match_ok' in audit
           assert 'explicit_duration_instruction_ok' in audit
 
-          print('V29 BUDGET PRODUCT + V19 EDGE HARDENING OK', runtime.RUNTIME_VERSION, b)
+          print('V34 BROAD + V30/V19 HARDENING OK', b)
           PY
 
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-
-      - name: Frontend contract
+      - name: Current frontend contract
         run: |
-          node --check static/app.js
-          node --check static/overlay_v15.js
-          node --check static/runtime.js
-          node --check static/scope_v24.js
-          grep -q "/api/radar/job" static/runtime.js
-          grep -q "/api/radar/stop" static/runtime.js
-          grep -q "id=\"stopRadar\"" templates/index.html
-          grep -q "screening_profile" db.py
-          grep -q "multiplatform_speech_v29_budget5" radar_budget_v29.py
-          grep -q "HARD BUDGET" templates/index.html
-          grep -q "#omni + #veo + #veo3 + #ai + #ии" templates/index.html
+          python - <<'PY'
+          import re, subprocess, tempfile
+          from pathlib import Path
+          import app
+          c = app.app.test_client()
+          root = c.get('/')
+          assert root.status_code == 200
+          html = root.get_data(as_text=True)
+          assert 'V34 BROAD TREND POOL' in html
+          assert 'id="stopRadar"' in html
+          assert '/static/' not in html
+          assert 'MutationObserver' not in html
+          script = re.search(r'<script>\s*(.*?)\s*</script>', html, re.S)
+          assert script
+          with tempfile.TemporaryDirectory() as td:
+              p = Path(td)/'frontend.js'
+              p.write_text(script.group(1), encoding='utf-8')
+              subprocess.run(['node','--check',str(p)], check=True)
+          PY
