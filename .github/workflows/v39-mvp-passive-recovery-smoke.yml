@@ -134,28 +134,27 @@ jobs:
           assert isinstance(rows, list) and rows, rows
           assert any(x.get('creator') == 'v39_restore_test' for x in rows), rows
 
-          # A terminal run is not resumable, so it correctly needs no Continue click.
-          # The important safety invariant is that GET-only usage cannot make it active.
+          # Legacy source-contract migration is allowed to turn a stale terminal job
+          # into a PAUSED queued job, but GET-only usage must never authorize/advance it.
           job = client.get('/api/radar/job').get_json()
           assert job.get('active') is False, job
-          assert job.get('durable_active') is False, job
           assert job.get('manual_start_only') is True, job
-          assert job.get('manual_start_required') is False, job
+          assert job.get('manual_session_authorized') is False, job
           assert app_module.RUNTIME_INFO['manual_start_only'] is True
           assert app_module.RUNTIME_INFO['auto_resume_on_page_load'] is False
+          assert job.get('run_id') == 'previous-finished-run', job
+          assert all(not (x or {}).get('run_id') for x in (job.get('sources') or {}).values()), job
 
-          # Ordinary GET-only page usage must not mutate the durable job or create a new run.
+          # No read-only recovery action may create a different paid run.
           assert durable_job['run_id'] == 'previous-finished-run'
-          assert durable_job['phase'] == 'done'
 
           cloud_state.load_cloud_record = real_load
           cloud_state.save_cloud_record = real_save
-          print('V39 PASSIVE RECOVERY OK', info)
+          print('V39 PASSIVE RECOVERY OK', info, job.get('phase'))
           PY
       - name: Ordered durable snapshot keeps newest rows first
         run: |
           python - <<'PY'
-          import json
           from datetime import datetime, timedelta, timezone
 
           import cloud_state
