@@ -14,6 +14,9 @@ import re
 
 from google import genai
 
+# Import-time patch only transforms the already-tested V33 HTML globals before its
+# installer runs later in the bootstrap. It does not add another browser runtime.
+import frontend_broad_v34  # noqa: F401
 import gemini_service
 import radar_multiplatform_v28 as v28
 from models import RadarAssessment
