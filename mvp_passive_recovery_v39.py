@@ -1,4 +1,4 @@
-"""V39 MVP durability: passive recovery + deterministic newest-first snapshots.
+"""V39 MVP durability: passive recovery + deterministic snapshots + prompt cache.
 
 A Render deploy starts with a fresh local SQLite file. V35 intentionally stopped the
 browser from auto-driving /sync or /tick, which is correct for spend safety, but it
@@ -6,13 +6,14 @@ also meant the normal GET-only UI could stay empty until the user explicitly
 started/resumed a search. The durable KVS snapshot already contains the previous
 TOP, so restoring it must be a read/recovery operation, never a search operation.
 
-V39 also closes a durability edge in the V30 snapshot writer: LIMIT 1000 without an
-ORDER BY can eventually preserve arbitrary/older rows when several runs coexist in
-the 14-day window. V39 makes the snapshot deterministic: newest posts first, then
-strongest score/views. It reuses the same KVS key/schema and does not widen budget.
+V39 also closes two durability edges:
+- V30 used LIMIT 1000 without ORDER BY, so several runs could preserve arbitrary
+  older rows. V39 snapshots newest posts first, then strongest score/views.
+- V30's production-analysis cache lived only in ephemeral SQLite. V39 persists the
+  latest completed prompt packages too, so a Render deploy does not force the same
+  selected Reel through paid forensic/Gemini generation again.
 
-This layer runs once during the production bootstrap, after V30 has installed its
-14-day snapshot merge and V23 has installed its latest-run freshness guard.
+The same KVS record/schema is extended rather than creating a second paid workflow.
 Startup recovery may read Apify KVS and write local SQLite only. It never
 creates/resumes a job, never ticks a job, never starts an Actor and never calls
 Gemini.
@@ -30,6 +31,7 @@ from db import db_conn
 from radar_logs import add_radar_log
 
 PROFILE = "mvp_passive_recovery_v39"
+ANALYSIS_CACHE_LIMIT = 30
 _APPLIED = False
 _LAST_INFO = None
 
@@ -38,16 +40,24 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _post_count() -> int:
+def _table_count(table: str) -> int:
     try:
         with db_conn() as conn:
-            return int(conn.execute("SELECT COUNT(*) FROM radar_posts").fetchone()[0] or 0)
+            return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)
     except Exception:
         return 0
 
 
+def _post_count() -> int:
+    return _table_count("radar_posts")
+
+
+def _analysis_count() -> int:
+    return _table_count("analyses")
+
+
 def save_ordered_snapshot_v39():
-    """Persist the most relevant 14-day recovery surface deterministically."""
+    """Persist the newest radar surface and reusable production prompt cache."""
     with db_conn() as conn:
         posts = [
             dict(row)
@@ -77,6 +87,16 @@ def save_ordered_snapshot_v39():
                 "SELECT * FROM radar_meta ORDER BY id DESC LIMIT 5"
             ).fetchall()
         ]
+        analyses = [
+            dict(row)
+            for row in conn.execute(
+                """SELECT * FROM analyses
+                   WHERE COALESCE(production_profile,'')=?
+                     AND COALESCE(source_fingerprint,'')<>''
+                   ORDER BY id DESC LIMIT ?""",
+                (v30.PRODUCTION_PROFILE_VERSION, ANALYSIS_CACHE_LIMIT),
+            ).fetchall()
+        ]
 
     payload = {
         "version": 39,
@@ -85,11 +105,40 @@ def save_ordered_snapshot_v39():
         "lookback_days": v30.SNAPSHOT_LOOKBACK_DAYS,
         "post_limit": v30.SNAPSHOT_POST_LIMIT,
         "snapshot_order": "published_at_desc_then_viral_score_then_views",
+        "analysis_cache_limit": ANALYSIS_CACHE_LIMIT,
         "posts": posts,
         "tracked_creators": creators,
         "radar_meta": meta,
+        "analyses_cache": analyses,
     }
     return cloud_state.save_cloud_record(cloud_state.RECORD_KEY, payload)
+
+
+def _restore_analysis_cache_v39(payload) -> int:
+    rows = (payload or {}).get("analyses_cache") or []
+    if not rows:
+        return 0
+    restored = 0
+    with db_conn() as conn:
+        allowed = {row[1] for row in conn.execute("PRAGMA table_info(analyses)").fetchall()}
+        for raw in rows[:ANALYSIS_CACHE_LIMIT]:
+            item = dict(raw or {})
+            if str(item.get("production_profile") or "") != v30.PRODUCTION_PROFILE_VERSION:
+                continue
+            if not str(item.get("source_fingerprint") or "").strip():
+                continue
+            keys = [key for key in item if key in allowed]
+            if not keys:
+                continue
+            placeholders = ",".join("?" for _ in keys)
+            columns = ",".join(keys)
+            conn.execute(
+                f"INSERT OR REPLACE INTO analyses({columns}) VALUES({placeholders})",
+                tuple(item[key] for key in keys),
+            )
+            restored += 1
+        conn.commit()
+    return restored
 
 
 def _install_ordered_snapshot_writer() -> None:
@@ -108,7 +157,9 @@ def install_passive_recovery_v39() -> dict:
     _install_ordered_snapshot_writer()
 
     before = _post_count()
+    analyses_before = _analysis_count()
     restored = False
+    analyses_restored = 0
     error = ""
 
     # The function referenced here is the FINAL patched restore chain:
@@ -117,10 +168,14 @@ def install_passive_recovery_v39() -> dict:
     try:
         if before <= 0:
             restored = bool(radar_job.restore_radar_snapshot_if_empty())
+        if analyses_before <= 0:
+            payload = cloud_state.load_cloud_record(cloud_state.RECORD_KEY)
+            analyses_restored = _restore_analysis_cache_v39(payload)
     except Exception as exc:
         error = str(exc)[:500]
 
     after = _post_count()
+    analyses_after = _analysis_count()
 
     # Avoid a duplicate cloud read on the first later /sync or /tick only when the
     # passive boot recovery already has a usable local cache. If KVS was temporarily
@@ -139,6 +194,10 @@ def install_passive_recovery_v39() -> dict:
         "posts_before": before,
         "posts_after": after,
         "local_cache_ready": after > 0,
+        "analyses_before": analyses_before,
+        "analyses_restored": analyses_restored,
+        "analyses_after": analyses_after,
+        "analysis_cache_limit": ANALYSIS_CACHE_LIMIT,
         "external_operation": "apify_kvs_read_only",
         "paid_discovery_started": False,
         "gemini_called": False,
@@ -153,20 +212,20 @@ def install_passive_recovery_v39() -> dict:
 
     if error:
         add_radar_log(
-            f"V39 passive recovery не смог восстановить локальный TOP: {error}",
+            f"V39 passive recovery не смог полностью восстановить MVP cache: {error}",
             level="WARN",
             stage="startup-recovery",
             details=info,
         )
-    elif restored:
+    elif restored or analyses_restored:
         add_radar_log(
-            f"V39 PASSIVE RECOVERY: восстановлено {after} radar rows из durable snapshot без запуска поиска.",
+            f"V39 PASSIVE RECOVERY: radar rows={after}, prompt cache restored={analyses_restored}; поиск не запускался.",
             stage="startup-recovery",
             details=info,
         )
     elif before > 0:
         add_radar_log(
-            f"V39 PASSIVE RECOVERY: локальный radar cache уже содержит {after} rows; cloud restore не нужен.",
+            f"V39 PASSIVE RECOVERY: локальный radar cache уже содержит {after} rows; cloud TOP restore не нужен.",
             stage="startup-recovery",
             details=info,
         )
@@ -183,6 +242,7 @@ def diagnostics() -> dict:
     if _LAST_INFO is not None:
         return dict(_LAST_INFO)
     count = _post_count()
+    analyses = _analysis_count()
     return {
         "profile": PROFILE,
         "attempted": False,
@@ -190,6 +250,10 @@ def diagnostics() -> dict:
         "posts_before": count,
         "posts_after": count,
         "local_cache_ready": count > 0,
+        "analyses_before": analyses,
+        "analyses_restored": 0,
+        "analyses_after": analyses,
+        "analysis_cache_limit": ANALYSIS_CACHE_LIMIT,
         "external_operation": "apify_kvs_read_only",
         "paid_discovery_started": False,
         "gemini_called": False,
