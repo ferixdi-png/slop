@@ -32,37 +32,36 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Compile
         run: python -m compileall -q app.py static_reliability_v31.py gunicorn.conf.py
-      - name: Verify legacy static tooling cannot control production boot
+      - name: Verify legacy static files are passive and production is self-contained
         run: |
           python - <<'PY'
           import runpy
           import app as app_module
-          from static_reliability_v31 import CRITICAL_ASSETS, install_static_reliability
+          from static_reliability_v31 import CRITICAL_ASSETS, static_health_payload
 
-          # Legacy assets may remain available for diagnostics/backward compatibility,
-          # but the current production worker must not install them automatically.
+          # Production Gunicorn must not install the obsolete V31 middleware.
           conf = runpy.run_path('gunicorn.conf.py')
           assert 'post_worker_init' not in conf, conf.keys()
           assert conf['bind'].startswith('0.0.0.0:')
           assert conf['timeout'] == 900
 
-          c = app_module.app.test_client()
-          root_before = c.get('/')
-          assert root_before.status_code == 200
-          html_before = root_before.get_data(as_text=True)
-          assert '/static/' not in html_before
-          assert root_before.headers['X-Frontend-Profile'] == 'frontend_v34_broad_fail_open'
-
-          # The old utility itself must remain harmless if explicitly invoked by a
-          # developer: it can serve legacy assets but may not alter the live root.
-          health = install_static_reliability(app_module.app)
+          # Legacy files may remain as passive compatibility/debug artifacts, but
+          # checking them must not mutate the live Flask app or register routes.
+          health = static_health_payload()
           assert health['ok'] is True, health
           assert set(CRITICAL_ASSETS) == set(health['assets']), health
           assert all(int(meta['bytes']) > 0 for meta in health['assets'].values()), health
 
-          root_after = c.get('/')
-          assert root_after.status_code == 200
-          assert root_after.get_data() == root_before.get_data()
-          assert '/static/' not in root_after.get_data(as_text=True)
-          print('LEGACY STATIC ISOLATED FROM PRODUCTION BOOT')
+          c = app_module.app.test_client()
+          root = c.get('/')
+          assert root.status_code == 200
+          html = root.get_data(as_text=True)
+          assert '/static/' not in html
+          assert root.headers['X-Frontend-Profile'] == 'frontend_v34_broad_fail_open'
+          assert c.get('/api/frontend-health').get_json()['external_static_dependencies'] == 0
+
+          # The legacy static health endpoint is intentionally absent from the live
+          # app because its installer is no longer part of production bootstrap.
+          assert c.get('/api/static-health').status_code == 404
+          print('LEGACY STATIC FILES PASSIVE; PRODUCTION BOOT IS SELF-CONTAINED')
           PY
