@@ -2,14 +2,14 @@
 
 V28 is the authoritative five-tag / fourteen-day scorer and already maintains the
 single DB-backed radar_momentum_history table. V34 must not calculate that history
-a second time. This overlay only checkpoints the finished V28 history and makes
-the broad TOP prefer measured current growth when it exists, otherwise lifetime
-views/hour.
+a second time. This overlay guarantees one authoritative score refresh immediately
+before final TOP construction, checkpoints the finished history, and makes the
+broad TOP prefer measured current growth when it exists, otherwise lifetime VPH.
 
 Architecture rules:
 - V28 owns five-tag/14-day scoring and DB observations;
 - V25 owns cloud/local checkpoint serialization for that same DB table;
-- V34 owns final broad ranking only;
+- V34 owns final refresh timing + broad ranking only;
 - persisted TOP rows must belong to the current V30 screening profile;
 - V35 manual-start is installed once by the final production bootstrap.
 """
@@ -17,6 +17,7 @@ Architecture rules:
 from __future__ import annotations
 
 import radar_broad_v34 as broad
+import radar_edge_v19 as edge
 import radar_momentum_cloud_v25 as cloud_momentum
 import radar_multiplatform_v28 as v28
 import radar_quality
@@ -26,6 +27,7 @@ from radar_logs import add_radar_log
 PROFILE = "momentum_v34_five_tags_14d"
 _APPLIED = False
 _BASE_REFRESH = None
+_BASE_FINALIZE = None
 
 
 def refresh_momentum_v34(conn):
@@ -44,6 +46,13 @@ def refresh_momentum_v34(conn):
             level="WARN",
             stage="momentum-cloud",
         )
+
+
+def finalize_with_momentum_v34(job):
+    """Refresh current velocity exactly once before the broad finalizer reads TOP."""
+    with db_conn() as conn:
+        refresh_momentum_v34(conn)
+    return _BASE_FINALIZE(job)
 
 
 def query_broad_by_current_velocity(limit=100):
@@ -87,7 +96,7 @@ def query_broad_by_current_velocity(limit=100):
 
 
 def apply_momentum_v34():
-    global _APPLIED, _BASE_REFRESH
+    global _APPLIED, _BASE_REFRESH, _BASE_FINALIZE
     if _APPLIED:
         return {
             "profile": PROFILE,
@@ -99,8 +108,10 @@ def apply_momentum_v34():
 
     _APPLIED = True
     _BASE_REFRESH = radar_quality.refresh_recent_scores_quality
+    _BASE_FINALIZE = edge._BASE_FINALIZE
     radar_quality.refresh_recent_scores_quality = refresh_momentum_v34
     broad._query_broad_rows = query_broad_by_current_velocity
+    edge._BASE_FINALIZE = finalize_with_momentum_v34
 
     info = {
         "profile": PROFILE,
@@ -110,13 +121,14 @@ def apply_momentum_v34():
         "scoring_owner": "radar_multiplatform_v28.refresh_scores_v28",
         "history_backend": "radar_momentum_history",
         "cloud_checkpoint": True,
+        "refresh_before_final_top": True,
         "current_profile_only": True,
         "duplicate_history_calculation": False,
         "manual_start_installed_here": False,
         "control_owner": "final_runtime_bootstrap",
     }
     add_radar_log(
-        "V34 MOMENTUM READY: V28 owns 5-tag/14-day scoring; V34 ranks current-profile TOP and checkpoints history once.",
+        "V34 MOMENTUM READY: one V28 5-tag/14-day refresh runs before final TOP; current-profile ranking only.",
         stage="startup",
         details=info,
     )
