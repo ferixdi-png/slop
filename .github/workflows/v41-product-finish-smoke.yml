@@ -1,0 +1,176 @@
+name: V41 Prompt Modal + TikTok Truth Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'product_finish_v41.py'
+      - 'gemini_overload_v40.py'
+      - 'frontend_failopen_v33.py'
+      - 'frontend_broad_v34.py'
+      - 'frontend_manual_start_v35.py'
+      - 'metrics_truth_v40.py'
+      - 'radar_broad_v34.py'
+      - 'radar_multiplatform_v28.py'
+      - '.github/workflows/v41-product-finish-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'product_finish_v41.py'
+      - 'gemini_overload_v40.py'
+      - '.github/workflows/v41-product-finish-smoke.yml'
+
+jobs:
+  v41-product-finish:
+    runs-on: ubuntu-latest
+    env:
+      DB_PATH: /tmp/slop-v41.sqlite
+      SECRET_KEY: v41-smoke
+      APIFY_API_TOKEN: ''
+      GEMINI_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - name: Compile V41 production surface
+        run: python -m compileall -q app.py product_finish_v41.py gemini_overload_v40.py
+      - name: Verify modal, universal prompt access and TikTok cleanup
+        run: |
+          rm -f /tmp/slop-v41.sqlite /tmp/slop-v41.sqlite-wal /tmp/slop-v41.sqlite-shm
+          python - <<'PY'
+          import subprocess
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          import app as app_module
+          import product_finish_v41 as v41
+          from db import db_conn
+
+          info = v41.diagnostics()
+          assert info['profile'] == 'product_finish_v41_prompt_modal_tiktok_truth', info
+          assert info['universal_visible_trend_prompt_access'] is True, info
+          assert info['prompt_pair_fields'] == ['photo_prompt', 'video_prompt'], info
+          assert info['video_prompt_includes_audio_voice_russian_speech'] is True, info
+          assert info['legacy_profile_gate_removed_for_visible_trends'] is True, info
+
+          # Clockworks-style TikTok truth: actor identity wins over a malformed link.
+          vid = '7534567890123456789'
+          clean = v41.canonicalize_tiktok_raw({
+              'id': vid,
+              'authorMeta': {'name': 'real.user', 'privateAccount': False},
+              'webVideoUrl': 'https://www.tiktok.com/t/ZBROKENSHORT/',
+          })
+          assert clean is not None, clean
+          assert clean['webVideoUrl'] == f'https://www.tiktok.com/@real.user/video/{vid}', clean
+          assert v41.is_canonical_tiktok_url(clean['webVideoUrl']) is True
+          assert v41.canonicalize_tiktok_raw({'errorCode':'POST_NOT_FOUND_OR_PRIVATE','id':vid,'authorMeta':{'name':'x'}}) is None
+          assert v41.canonicalize_tiktok_raw({'id':vid,'authorMeta':{'name':'x','privateAccount':True}}) is None
+          assert v41.canonicalize_tiktok_raw({'id':vid,'authorMeta':{'name':'x'},'isSlideshow':True}) is None
+          assert v41.broad_eligible_v41({
+              'platform':'TikTok','search_term':'ai','duration_sec':8.0,'reason':'',
+              'post_url':'https://www.tiktok.com/t/ZBROKENSHORT/'
+          }) is False
+          assert v41.broad_eligible_v41({
+              'platform':'TikTok','search_term':'ai','duration_sec':8.0,'reason':'',
+              'post_url':f'https://www.tiktok.com/@real.user/video/{vid}'
+          }) is True
+
+          c = app_module.app.test_client()
+          root = c.get('/')
+          assert root.status_code == 200
+          html = root.get_data(as_text=True)
+          assert 'id="promptModal"' in html
+          assert '>ПРОМПТЫ GEMINI</button>' in html
+          assert 'PHOTO PROMPT · FRAME 0' in html
+          assert 'VIDEO PROMPT · С ОЗВУЧКОЙ' in html
+          assert 'function openPromptModal()' in html
+          assert 'function closePromptModal()' in html
+          assert 'data-prompt-close' in html
+          assert "e.key==='Escape'" in html
+          assert 'id="analysisResult"' not in html
+          assert 'ОБНОВИТЬ ЦИФРЫ' in html
+          assert 'window.__V35_MANUAL_START__=true' in html
+          assert '/static/' not in html
+          assert html.count('<script>') == 1 and html.count('</script>') == 1
+
+          script = html.split('<script>',1)[1].split('</script>',1)[0]
+          Path('/tmp/v41-app.js').write_text(script, encoding='utf-8')
+          subprocess.run(['node','--check','/tmp/v41-app.js'], check=True)
+
+          # A trend that is visible under V34 but has obsolete legacy profile and
+          # ai_match=0 must still receive the new pair. This used to hit app.py's
+          # old gate and fail despite a visible button.
+          now = datetime.now(timezone.utc).isoformat()
+          with db_conn() as conn:
+              cur = conn.execute(
+                  '''INSERT INTO radar_posts(
+                     platform,creator,post_url,published_at,duration_sec,views,likes,comments,
+                     hours_since_publish,views_per_hour,viral_score_v2,search_term,
+                     ai_checked,ai_match,screening_profile,reason,hook,scene_description,caption
+                     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                  (
+                      'Instagram Reels','v41tester','https://www.instagram.com/reel/V41UNIVERSAL/',
+                      now,8.0,250000,4000,90,1.0,250000.0,92.0,'ai',
+                      0,0,'obsolete_profile','',
+                      'A fast visual surprise','One person performs a simple surprising action','synthetic test #ai'
+                  ),
+              )
+              first_id = cur.lastrowid
+              cur = conn.execute(
+                  '''INSERT INTO radar_posts(
+                     platform,creator,post_url,published_at,duration_sec,views,likes,comments,
+                     hours_since_publish,views_per_hour,viral_score_v2,search_term,
+                     ai_checked,ai_match,screening_profile,reason,hook,scene_description,caption
+                     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                  (
+                      'Instagram Reels','v41fallback','https://www.instagram.com/reel/V41FALLBACK/',
+                      now,8.0,200000,3000,70,1.0,200000.0,88.0,'ai',
+                      0,0,'obsolete_profile','',
+                      'Another visual surprise','Two people react to a simple action','synthetic fallback #ai'
+                  ),
+              )
+              second_id = cur.lastrowid
+              conn.commit()
+
+          top_urls = {x['post_url'] for x in c.get('/api/radar').get_json()}
+          assert 'https://www.instagram.com/reel/V41UNIVERSAL/' in top_urls, top_urls
+          assert 'https://www.instagram.com/reel/V41FALLBACK/' in top_urls, top_urls
+
+          old_dl = app_module.download_reel_for_analysis
+          old_meta = v41._generate_metadata_pair
+          try:
+              app_module.download_reel_for_analysis = lambda row: (_ for _ in ()).throw(RuntimeError('synthetic media unavailable'))
+              v41._generate_metadata_pair = lambda row: v41.PromptPairV41(
+                  photo_prompt='Ultra realistic Frame 0 smartphone photo prompt ' + ('x' * 80),
+                  video_prompt='Use Frame 0 and animate exact action. AUDIO / VOICE / RUSSIAN SPEECH: natural Russian line. ' + ('y' * 120),
+                  source_summary='synthetic metadata', confidence=90,
+              )
+              r = c.post(f'/api/radar/{first_id}/analyze', json={'owned_or_licensed':False,'prompt_pair_v41':True})
+              assert r.status_code == 200, r.get_data(as_text=True)
+              payload = r.get_json()
+              assert payload['source_mode'] == 'metadata_gemini', payload
+              assert payload['result']['photo_prompt'], payload
+              assert 'AUDIO / VOICE / RUSSIAN SPEECH' in payload['result']['video_prompt'], payload
+              assert payload['id'], payload
+
+              v41._generate_metadata_pair = lambda row: (_ for _ in ()).throw(RuntimeError('synthetic Gemini unavailable'))
+              r = c.post(f'/api/radar/{second_id}/analyze', json={'owned_or_licensed':False,'prompt_pair_v41':True})
+              assert r.status_code == 200, r.get_data(as_text=True)
+              payload = r.get_json()
+              assert payload['source_mode'] == 'local_fallback', payload
+              assert payload['result']['photo_prompt'], payload
+              assert 'AUDIO / VOICE / RUSSIAN SPEECH' in payload['result']['video_prompt'], payload
+              assert payload['warning'], payload
+          finally:
+              app_module.download_reel_for_analysis = old_dl
+              v41._generate_metadata_pair = old_meta
+
+          # V30 safety and V35 control remain in front of V41.
+          names = [getattr(fn,'__name__','') for fn in app_module.app.before_request_funcs.get(None,[])]
+          assert 'v30_before_request' in names, names
+          assert 'v41_prompt_access' in names, names
+          assert names.index('v30_before_request') < names.index('v41_prompt_access'), names
+
+          print('V41 PRODUCT FINISH OK')
+          PY
