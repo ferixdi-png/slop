@@ -1,14 +1,17 @@
-name: V27 Single Runtime Smoke
+name: V28 Single Runtime Smoke
 
 on:
   pull_request:
     paths:
       - 'app.py'
       - 'radar_runtime_v27.py'
-      - 'radar_discovery_v27.py'
+      - 'radar_multiplatform_v28.py'
+      - 'radar_v28_finish.py'
       - 'radar_logs.py'
       - 'radar_strict_scope_v27.py'
       - 'radar_edge_v19.py'
+      - 'templates/index.html'
+      - 'static/scope_v24.js'
       - 'gunicorn.conf.py'
       - '.github/workflows/v27-single-runtime-smoke.yml'
   push:
@@ -16,10 +19,13 @@ on:
     paths:
       - 'app.py'
       - 'radar_runtime_v27.py'
-      - 'radar_discovery_v27.py'
+      - 'radar_multiplatform_v28.py'
+      - 'radar_v28_finish.py'
       - 'radar_logs.py'
       - 'radar_strict_scope_v27.py'
       - 'radar_edge_v19.py'
+      - 'templates/index.html'
+      - 'static/scope_v24.js'
       - 'gunicorn.conf.py'
       - '.github/workflows/v27-single-runtime-smoke.yml'
 
@@ -34,8 +40,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Compile runtime
-        run: python -m compileall -q app.py radar_runtime_v27.py radar_discovery_v27.py radar_logs.py radar_strict_scope_v27.py gunicorn.conf.py
-      - name: Verify one authoritative V27 bootstrap
+        run: python -m compileall -q app.py radar_runtime_v27.py radar_multiplatform_v28.py radar_v28_finish.py radar_strict_scope_v27.py gunicorn.conf.py
+      - name: Verify one authoritative V28 bootstrap
         env:
           SECRET_KEY: smoke-test
           PORT: '10000'
@@ -44,6 +50,7 @@ jobs:
           import contextlib
           import io
           import runpy
+          from datetime import datetime, timedelta, timezone
 
           stdout = io.StringIO()
           with contextlib.redirect_stdout(stdout):
@@ -52,85 +59,110 @@ jobs:
           startup = stdout.getvalue()
           startup_lines = [line for line in startup.splitlines() if '[startup]' in line]
           assert len(startup_lines) == 1, startup
-          assert 'V27 RUNTIME READY' in startup_lines[0], startup
+          assert 'V28 RUNTIME READY' in startup_lines[0], startup
 
           banned = (
-              'GLOBAL AI v9',
-              'BUDGET AI v11',
-              'HIGH-FREQ AI v13',
-              'DIALOGUE-ONLY v15',
-              'DIALOGUE MOTION v16',
-              'V17 READY',
-              'V19 HARDENING READY',
-              'SOURCE AGGREGATION v20 READY',
-              'OMNI/VEO V21 READY',
-              'OMNI/VEO V22 READY',
-              'V24 READY',
-              'V25 READY',
-              'FRESH RUN V23 READY',
-              'V20 EDGE GUARDS READY',
+              'GLOBAL AI v9', 'BUDGET AI v11', 'HIGH-FREQ AI v13', 'DIALOGUE-ONLY v15',
+              'DIALOGUE MOTION v16', 'V17 READY', 'V19 HARDENING READY',
+              'SOURCE AGGREGATION v20 READY', 'OMNI/VEO V21 READY', 'OMNI/VEO V22 READY',
+              'V24 READY', 'V25 READY', 'FRESH RUN V23 READY', 'V20 EDGE GUARDS READY',
+              'V27 RUNTIME READY',
           )
           for marker in banned:
               assert marker not in startup, (marker, startup)
 
+          import radar_hardening_v19 as hardening
+          import radar_multiplatform_v28 as v28
           import radar_request_job as radar_job
           import radar_runtime_v27 as runtime
-          import radar_strict_scope_v27 as v27
+          import radar_v28_finish as finish
+          from db import db_conn
 
           assert runtime._APPLIED is True
           assert runtime._LIVENESS_INSTALLED is True
-          assert v27._APPLIED is True
-          assert app_module.RADAR_RUNTIME == v27.MODE_VERSION
-          assert app_module.EDGE_PROFILE == v27.MODE_VERSION
+          assert v28._APPLIED is True
+          assert finish._APPLIED is True
+          assert app_module.RADAR_RUNTIME == v28.MODE_VERSION
+          assert app_module.EDGE_PROFILE == v28.MODE_VERSION
+          assert app_module.PROFILE_VERSION == v28.SCREENING_PROFILE
+          assert hardening.PROFILE_VERSION == v28.SCREENING_PROFILE
           assert app_module.RADAR_MAX_DURATION_SEC == 15.05
           assert app_module.KEEP_LIMIT == 180
 
           c = app_module.app.test_client()
           status = c.get('/api/status').get_json()
-          assert status['radar_runtime'] == v27.MODE_VERSION, status
-          assert status['radar_profile'] == v27.MODE_VERSION, status
-          assert status['edge_profile'] == v27.MODE_VERSION, status
-          assert status['radar_mode'] == v27.MODE_VERSION, status
-          assert status['radar_hashtags'] == ['omni', 'veo', 'veo3'], status
+          assert status['radar_runtime'] == v28.MODE_VERSION, status
+          assert status['radar_profile'] == v28.MODE_VERSION, status
+          assert status['edge_profile'] == v28.MODE_VERSION, status
+          assert status['radar_mode'] == v28.MODE_VERSION, status
+          assert status['radar_platforms'] == ['Instagram Reels', 'TikTok', 'YouTube Shorts'], status
+          assert status['radar_hashtags'] == ['omni', 'veo', 'veo3', 'ai', 'ии'], status
+          assert status['radar_lookback_days'] == 14, status
+          assert status['radar_speech_required'] is True, status
           assert status['radar_source_max_duration_sec'] == 15.05, status
           assert status['radar_compressed_target_sec'] == 10.0, status
+          assert status['runtime_info']['v28_14day_api'] is True, status
+          assert status['runtime_info']['youtube_direct_gemini'] is True, status
           assert status['runtime_info']['legacy_startup_banners_suppressed'] is True, status
           assert status['runtime_info']['render_fast_liveness'] is True, status
-          assert status['runtime_info']['discovery_actor'] == 'apify/instagram-scraper', status
-          assert status['runtime_info']['discovery_results_per_tag'] == 250, status
 
-          # CRITICAL Render contract: liveness must survive a completely broken
-          # SQLite read path. HEAD / is what Render has been probing in prod.
+          # CRITICAL Render liveness remains DB-independent.
           original_db_conn = app_module.db_conn
           def broken_db_conn():
               raise RuntimeError('synthetic SQLite outage')
           app_module.db_conn = broken_db_conn
           try:
-              root_head = c.head('/')
-              assert root_head.status_code == 200, root_head.get_data(as_text=True)
-              healthz_head = c.head('/healthz')
-              assert healthz_head.status_code == 200, healthz_head.get_data(as_text=True)
-              healthz_get = c.get('/healthz')
-              assert healthz_get.status_code == 200, healthz_get.get_data(as_text=True)
-              assert healthz_get.get_json()['runtime'] == v27.MODE_VERSION
+              assert c.head('/').status_code == 200
+              assert c.head('/healthz').status_code == 200
+              health = c.get('/healthz')
+              assert health.status_code == 200
+              assert health.get_json()['runtime'] == v28.MODE_VERSION
           finally:
               app_module.db_conn = original_db_conn
 
-          # Explicit Render bind contract.
           gunicorn_conf = runpy.run_path('gunicorn.conf.py')
           assert gunicorn_conf['bind'] == '0.0.0.0:10000', gunicorn_conf['bind']
 
           sources = radar_job._build_sources()
-          assert set(sources) == {'hashtag_omni', 'hashtag_veo', 'hashtag_veo3'}, sources
-          for tag in ('omni', 'veo', 'veo3'):
-              source = sources[f'hashtag_{tag}']
-              assert source.get('strict_scope_marker') == v27.STRICT_SOURCE_MARKER, source
-              assert source.get('actor_id') == 'apify/instagram-scraper', source
-              payload = source.get('input') or {}
-              assert payload.get('directUrls') == [f'https://www.instagram.com/explore/tags/{tag}/'], payload
-              assert payload.get('resultsType') == 'reels', payload
-              assert payload.get('resultsLimit') == 250, payload
-              assert payload.get('onlyPostsNewerThan') == '7 days', payload
+          assert set(sources) == {'instagram', 'tiktok', 'youtube'}, sources
+          assert sources['instagram']['actor_id'] == 'apify/instagram-scraper'
+          assert sources['tiktok']['actor_id'] == 'clockworks/tiktok-scraper'
+          assert sources['youtube']['actor_id'] == 'constructive_calm/youtube-shorts-scraper-pro'
+          assert all(x['strict_scope_marker'] == v28.SOURCE_MARKER for x in sources.values())
 
-          print('V27 SINGLE RUNTIME + HIGH-VOLUME DISCOVERY + RENDER LIVENESS OK')
+          # Prove that API visibility is truly 14 days, not just frontend copy.
+          visible_url = 'https://www.youtube.com/shorts/v28-ten-days'
+          hidden_url = 'https://www.youtube.com/shorts/v28-fifteen-days'
+          reason = v28.PASS_PREFIX + 'DIRECT: synthetic test'
+          now = datetime.now(timezone.utc)
+          with db_conn() as conn:
+              for url, age in [(visible_url, 10), (hidden_url, 15)]:
+                  conn.execute(
+                      """INSERT OR REPLACE INTO radar_posts(
+                           platform,creator,post_url,published_at,duration_sec,views,likes,comments,
+                           hours_since_publish,views_per_hour,viral_score_v2,search_term,
+                           ai_checked,ai_match,screening_profile,reason
+                         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      ('YouTube Shorts','v28_test',url,(now-timedelta(days=age)).isoformat(),8.0,
+                       10000,100,10,age*24,1000,80.0,'ai',1,1,v28.SCREENING_PROFILE,reason),
+                  )
+              conn.commit()
+          urls = {x['post_url'] for x in c.get('/api/radar').get_json()}
+          assert visible_url in urls, urls
+          assert hidden_url not in urls, urls
+          candidates = c.get('/api/radar/candidates').get_json()
+          assert any(x['post_url'] == visible_url and x['platform'] == 'YouTube Shorts' for x in candidates)
+
+          print('V28 SINGLE RUNTIME + 14-DAY API + RENDER LIVENESS OK')
           PY
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Frontend contract
+        run: |
+          node --check static/app.js
+          node --check static/scope_v24.js
+          grep -q "3 ПЛАТФОРМЫ · 5 ТЕГОВ · 14 ДНЕЙ" templates/index.html
+          grep -q "Instagram + TikTok + YouTube" static/scope_v24.js
+          grep -q "GEMINI СЛУШАЕТ РЕЧЬ" static/scope_v24.js
