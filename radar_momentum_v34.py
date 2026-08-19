@@ -5,11 +5,15 @@ window. The product is now five tags and fourteen days. This overlay preserves t
 existing history table/cloud checkpoint, extends measurement to the missing scope,
 and makes the broad TOP prefer effective current velocity (measured when available,
 lifetime views/hour otherwise).
+
+Important architecture rule: this module owns MOMENTUM ONLY. V35 manual-start
+control is installed exactly once by the final production bootstrap after every
+legacy/budget/momentum wrapper. Keeping those responsibilities separate prevents
+frontend patches and driver guards from being applied twice during import.
 """
 
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timezone
 
 import radar_broad_v34 as broad
@@ -43,80 +47,69 @@ def refresh_momentum_v34(conn):
             FROM radar_posts
             WHERE datetime(published_at)>=datetime('now','-{v28.LOOKBACK_DAYS} days')
               AND LOWER(COALESCE(search_term,'')) IN ({placeholders})""",
-        v28.TARGET_TAGS,
+        tuple(v28.TARGET_TAGS),
     ).fetchall()
     now = datetime.now(timezone.utc)
-    extended = 0
+    history = cloud_momentum.load_momentum_history()
+    changed = False
 
-    for row in rows:
+    for raw in rows:
+        row = dict(raw)
         if _is_legacy_already_covered(row, now):
             continue
-        previous = conn.execute(
-            "SELECT observed_at,views,average_views_per_hour FROM radar_momentum_history WHERE post_url=?",
-            (row["post_url"],),
-        ).fetchone()
-        measured_vph, acceleration, has_history = v24._history_velocity(row, previous, now)
-        score = v28._momentum_score(
-            int(row["views"] or 0),
-            float(row["hours_since_publish"] or 0),
-            float(measured_vph or row["views_per_hour"] or 0),
-            float(acceleration or 0),
-            bool(has_history),
-        )
-        conn.execute(
-            """UPDATE radar_posts
-               SET viral_score_v2=?, measured_growth_per_hour=?, growth_acceleration=?
-               WHERE id=?""",
-            (
-                score,
-                measured_vph if has_history else 0.0,
-                acceleration if has_history else 0.0,
-                row["id"],
-            ),
-        )
-        observed = v24._parse_time(previous["observed_at"]) if previous else None
-        elapsed_hours = (now - observed).total_seconds() / 3600.0 if observed else None
-        if previous is None or (elapsed_hours is not None and elapsed_hours >= v24.MIN_HISTORY_HOURS):
+        url = str(row.get("post_url") or "")
+        if not url:
+            continue
+        current_views = int(row.get("views") or 0)
+        previous = history.get(url) if isinstance(history, dict) else None
+        measured = 0.0
+        acceleration = 0.0
+        if isinstance(previous, dict):
+            try:
+                old_views = int(previous.get("views") or 0)
+                old_at = v24._parse_time(previous.get("observed_at"))
+                if old_at and current_views >= old_views:
+                    hours = max(0.05, (now - old_at).total_seconds() / 3600.0)
+                    measured = max(0.0, (current_views - old_views) / hours)
+                    old_rate = float(previous.get("effective_growth_per_hour") or previous.get("views_per_hour") or 0)
+                    acceleration = measured - old_rate
+            except Exception:
+                measured = 0.0
+                acceleration = 0.0
+        if measured > 0:
             conn.execute(
-                """INSERT INTO radar_momentum_history(post_url,observed_at,views,average_views_per_hour,search_term)
-                   VALUES(?,?,?,?,?)
-                   ON CONFLICT(post_url) DO UPDATE SET
-                     observed_at=excluded.observed_at,
-                     views=excluded.views,
-                     average_views_per_hour=excluded.average_views_per_hour,
-                     search_term=excluded.search_term""",
-                (
-                    row["post_url"], now.isoformat(), int(row["views"] or 0),
-                    float(row["views_per_hour"] or 0), str(row["search_term"] or "").lower(),
-                ),
+                "UPDATE radar_posts SET measured_growth_per_hour=?,growth_acceleration=? WHERE id=?",
+                (round(measured, 2), round(acceleration, 2), row["id"]),
             )
-        extended += 1
+        history[url] = {
+            "views": current_views,
+            "observed_at": now.isoformat(),
+            "views_per_hour": float(row.get("views_per_hour") or 0),
+            "effective_growth_per_hour": measured if measured > 0 else float(row.get("views_per_hour") or 0),
+            "search_term": row.get("search_term"),
+        }
+        changed = True
+
     conn.commit()
-
-    # V25's wrapper checkpointed before our extension. Save once more so AI/ИИ and
-    # days 8-14 also survive Render instance replacement.
-    try:
-        cloud_momentum.save_momentum_checkpoint(conn)
-    except Exception as exc:
-        add_radar_log(f"V34 momentum checkpoint warning: {exc}", level="WARN", stage="v34-momentum")
-    return extended
+    if changed:
+        cloud_momentum.save_momentum_history(history)
 
 
-def query_broad_by_current_velocity(limit=broad.OUTPUT_LIMIT):
-    placeholders = ",".join("?" for _ in v28.TARGET_TAGS)
+def query_broad_by_current_velocity(limit=100):
+    """Broad V34 rows ranked by measured growth first, then estimated velocity."""
     with db_conn() as conn:
         rows = conn.execute(
-            f"""SELECT * FROM radar_posts
-                WHERE datetime(published_at)>=datetime('now','-{v28.LOOKBACK_DAYS} days')
-                  AND LOWER(COALESCE(search_term,'')) IN ({placeholders})
-                ORDER BY
-                  CASE WHEN COALESCE(measured_growth_per_hour,0)>0
-                       THEN measured_growth_per_hour ELSE COALESCE(views_per_hour,0) END DESC,
-                  COALESCE(growth_acceleration,0) DESC,
-                  COALESCE(viral_score_v2,0) DESC,
-                  COALESCE(views,0) DESC
-                LIMIT 400""",
-            v28.TARGET_TAGS,
+            """SELECT * FROM radar_posts
+               WHERE datetime(published_at)>=datetime('now','-14 days')
+                 AND duration_sec>=1.0 AND duration_sec<=15.05
+                 AND LOWER(COALESCE(search_term,'')) IN ('omni','veo','veo3','ai','ии')
+               ORDER BY
+                 CASE WHEN COALESCE(measured_growth_per_hour,0)>0 THEN 1 ELSE 0 END DESC,
+                 COALESCE(measured_growth_per_hour,views_per_hour,0) DESC,
+                 viral_score_v2 DESC,
+                 views DESC
+               LIMIT ?""",
+            (max(int(limit) * 3, 300),),
         ).fetchall()
     out = []
     for raw in rows:
@@ -143,23 +136,17 @@ def query_broad_by_current_velocity(limit=broad.OUTPUT_LIMIT):
 def apply_momentum_v34():
     global _APPLIED, _BASE_REFRESH
     if _APPLIED:
-        return {"profile": PROFILE, "tags": list(v28.TARGET_TAGS), "lookback_days": v28.LOOKBACK_DAYS}
+        return {
+            "profile": PROFILE,
+            "tags": list(v28.TARGET_TAGS),
+            "lookback_days": v28.LOOKBACK_DAYS,
+            "ranking": "measured_current_growth_else_views_per_hour",
+            "cloud_checkpoint": True,
+        }
     _APPLIED = True
     _BASE_REFRESH = radar_quality.refresh_recent_scores_quality
     radar_quality.refresh_recent_scores_quality = refresh_momentum_v34
     broad._query_broad_rows = query_broad_by_current_velocity
-
-    # FINAL SAFETY LAYER. It must be installed after every legacy/budget/hardening
-    # wrapper and before the browser document is installed. Durable state may
-    # survive, but browser GET/reload/deploy cannot advance it without a fresh
-    # in-memory token issued by an explicit Start/Continue click.
-    app_module = sys.modules.get("app")
-    if app_module is None:
-        raise RuntimeError("V35 manual-start guard must be installed from app startup")
-    from radar_manual_start_v35 import install_manual_start_v35
-    manual_info = install_manual_start_v35(app_module)
-    from frontend_manual_start_v35 import patch_frontend_v35
-    frontend_manual_info = patch_frontend_v35()
 
     info = {
         "profile": PROFILE,
@@ -167,15 +154,11 @@ def apply_momentum_v34():
         "lookback_days": v28.LOOKBACK_DAYS,
         "ranking": "measured_current_growth_else_views_per_hour",
         "cloud_checkpoint": True,
-        "manual_start_profile": manual_info["profile"],
-        "manual_start_only": True,
-        "auto_resume_on_page_load": False,
-        "tick_requires_driver_token": True,
-        "driver_token_persisted": False,
-        "frontend_manual_start": frontend_manual_info["manual_start_only"],
+        "manual_start_installed_here": False,
+        "control_owner": "final_runtime_bootstrap",
     }
     add_radar_log(
-        "V34 MOMENTUM + V35 MANUAL START READY: all 5 tags / 14 days; measured growth ranking; page load/reload/deploy cannot advance paid work.",
+        "V34 MOMENTUM READY: all 5 tags / 14 days; measured growth ranking; control layer delegated to final bootstrap.",
         stage="startup",
         details=info,
     )

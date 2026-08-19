@@ -1,9 +1,10 @@
 """Single authoritative production bootstrap for the final radar runtime.
 
-V30 remains the durable/budget/safety contract. V34 changes the product output:
+V30 remains the durable/budget/safety contract. V34 changes product output:
 momentum decides which 50-100 candidates are visible and Gemini enriches them
-instead of deleting strong videos for missing speech or imperfect timing. V33
-remains the fail-open single browser runtime.
+instead of deleting strong videos. V35 makes every search manual-start-only.
+V36 makes production prompt generation reliable for private Apify media and for
+all broad trend candidates, not only the old ai_match=1 subset.
 """
 
 from __future__ import annotations
@@ -16,12 +17,14 @@ from apify_start_compat import install_apify_start_compat
 from radar_discovery_v27 import install_v27_high_volume_discovery
 from radar_logs import add_radar_log, suppress_startup_logs
 
-# Keep this persistence identity stable. An active paid V30 discovery must resume
-# after deploy; V34 is a ranking/output overlay on the same durable candidate set.
+# Persistence identity deliberately remains V30 so deploys do not invalidate a
+# paid durable search. V34/V35/V36 are product/control/reliability overlays.
 RUNTIME_VERSION = "multiplatform_speech_v30_audit10_budget5"
 PUBLIC_EDGE_PROFILE = RUNTIME_VERSION
 PRODUCT_MODE = "multiplatform_broad_v34_trendpool100"
-FRONTEND_PROFILE = "frontend_v33_fail_open_single_runtime"
+FRONTEND_PROFILE = "frontend_v34_broad_fail_open"
+CONTROL_MODE = "manual_start_only_v35"
+PROMPT_MODE = "production_prompts_v36_authenticated_media"
 _APPLIED = False
 _CONTRACT = None
 _LIVENESS_INSTALLED = False
@@ -49,6 +52,8 @@ def _install_render_liveness(app):
             "ok": True,
             "runtime": RUNTIME_VERSION,
             "product_mode": PRODUCT_MODE,
+            "control_mode": CONTROL_MODE,
+            "prompt_mode": PROMPT_MODE,
             "frontend_profile": FRONTEND_PROFILE,
             "pid": __import__("os").getpid(),
         }, 200, {"Cache-Control": "no-store"}
@@ -65,7 +70,7 @@ def _install_render_liveness(app):
 
 
 def activate_v27_runtime():
-    """Compose proven backend layers, then expose V34 broad output + V33 UI."""
+    """Compose proven backend layers, then expose the final V34/V35/V36 product."""
     global _APPLIED, _CONTRACT
     if _APPLIED:
         return dict(_CONTRACT or {"runtime": RUNTIME_VERSION, "product_mode": PRODUCT_MODE})
@@ -145,20 +150,31 @@ def activate_v27_runtime():
         from radar_broad_v34 import apply_broad_v34
         v34_info = apply_broad_v34()
 
-        # Extend actual cross-run view-growth measurement from the historical
-        # 3-tag/7-day helper to the full 5-tag/14-day V34 product scope.
+        # Full 5-tag / 14-day cross-run measured view growth.
         from radar_momentum_v34 import apply_momentum_v34
         momentum_info = apply_momentum_v34()
 
-        # V33 remains the proven one-runtime fail-open browser architecture. Its
-        # globals were transformed to V34 product copy by frontend_broad_v34.
+        # V35 MUST be installed after every backend wrapper so it is the final
+        # authority over create/resume/tick. Opening/F5/deploy cannot advance work.
+        from radar_manual_start_v35 import install_manual_start_v35
+        manual_info = install_manual_start_v35(app_module)
+
+        # Patch the already-built V34 single-runtime HTML before it is served.
+        from frontend_manual_start_v35 import patch_frontend_v35
+        manual_frontend_info = patch_frontend_v35()
+
+        # V36 is intentionally after V30 media hardening. It keeps all V30 safety
+        # checks but adds scoped Apify auth and broad-candidate prompt access.
+        from prompt_reliability_v36 import install_prompt_reliability_v36
+        prompt_info = install_prompt_reliability_v36(app_module)
+
+        # One fail-open browser runtime only. Its globals already contain V34+V35.
         from frontend_failopen_v33 import install_frontend_v33
         frontend_info = install_frontend_v33(app_module.app)
 
         final_keep_limit = int(v34_info.get("target_output_max") or v30_info.get("keep_limit") or budget.KEEP_LIMIT)
         final_budget = budget_breakdown_v29()
 
-        # Persistence/screening profile stays V30; visible product behavior is V34.
         app_module.PROFILE_VERSION = v30_info["screening_profile"]
         app_module.PRODUCTION_PROFILE_VERSION = PRODUCTION_PROFILE_VERSION
         app_module.KEEP_LIMIT = final_keep_limit
@@ -173,6 +189,8 @@ def activate_v27_runtime():
         "runtime": RUNTIME_VERSION,
         "profile": RUNTIME_VERSION,
         "product_mode": PRODUCT_MODE,
+        "control_mode": CONTROL_MODE,
+        "prompt_mode": PROMPT_MODE,
         "internal_screening_profile": v30_info["screening_profile"],
         "edge_profile": PUBLIC_EDGE_PROFILE,
         "production_profile": app_module.PRODUCTION_PROFILE_VERSION,
@@ -188,6 +206,12 @@ def activate_v27_runtime():
         "parallel_polling_layers": frontend_info.get("parallel_polling_layers", 0),
         "runtime_error_surface": bool(frontend_info.get("runtime_error_surface")),
         "root_db_dependency": bool(frontend_info.get("root_db_dependency", False)),
+        "manual_start_only": bool(manual_info.get("manual_start_only")),
+        "auto_resume_on_page_load": bool(manual_info.get("auto_resume_on_page_load", False)),
+        "tick_requires_driver_token": bool(manual_info.get("tick_requires_driver_token")),
+        "driver_token_persisted": bool(manual_info.get("driver_token_persisted", False)),
+        "deploy_resume_policy": manual_info.get("deploy_resume_policy"),
+        "frontend_manual_start_only": bool(manual_frontend_info.get("manual_start_only")),
         "platforms": v30_info["platforms"],
         "hashtags": v30_info["hashtags"],
         "lookback_days": v30_info["lookback_days"],
@@ -234,6 +258,12 @@ def activate_v27_runtime():
         "motion_gate_fail_closed": bool(v30_info.get("motion_gate_fail_closed")),
         "cross_site_mutation_block": bool(v30_info.get("cross_site_mutation_block")),
         "new_run_debounce_seconds": v30_info.get("new_run_debounce_seconds"),
+        "apify_private_media_auth": prompt_info.get("apify_private_media_auth"),
+        "apify_signed_record_fallback": bool(prompt_info.get("apify_signed_record_fallback")),
+        "broad_candidate_prompt_access": bool(prompt_info.get("broad_candidate_prompt_access")),
+        "analysis_cache_for_broad_candidates": bool(prompt_info.get("analysis_cache_for_broad_candidates")),
+        "prompt_token_in_url": bool(prompt_info.get("token_in_url")),
+        "redirect_token_forwarding": bool(prompt_info.get("redirect_token_forwarding")),
         "legacy_startup_banners_suppressed": True,
         "render_fast_liveness": True,
         "apify_start_compat": True,
@@ -242,7 +272,7 @@ def activate_v27_runtime():
     _APPLIED = True
 
     add_radar_log(
-        "V30 RUNTIME READY + V34 BROAD PRODUCT + V33 FAIL-OPEN FRONTEND: 50-100 momentum candidates visible; Gemini enrichment only; YouTube current Interactions schema; 5-tag/14-day measured growth ranking; hard budget unchanged.",
+        "V30 RUNTIME READY + V34 BROAD + V35 MANUAL START + V36 PROMPTS: 50-100 momentum candidates; no auto-resume; private Apify media authenticated; broad candidates can generate production prompts; hard budget unchanged.",
         stage="startup",
         details=dict(_CONTRACT),
     )
