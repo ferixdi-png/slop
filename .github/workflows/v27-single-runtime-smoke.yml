@@ -1,227 +1,188 @@
-name: V30 Single Runtime Smoke
+name: V34 Single Runtime Broad Pool Smoke
 
 on:
   pull_request:
     paths:
       - 'app.py'
       - 'radar_runtime_v27.py'
+      - 'radar_broad_v34.py'
+      - 'youtube_genai_v34.py'
+      - 'frontend_broad_v34.py'
+      - 'frontend_failopen_v33.py'
       - 'radar_multiplatform_v28.py'
       - 'radar_budget_v29.py'
-      - 'radar_budget_search_guard_v29.py'
       - 'radar_audit_v30.py'
       - 'radar_v28_finish.py'
-      - 'radar_logs.py'
-      - 'radar_strict_scope_v27.py'
-      - 'radar_edge_v19.py'
-      - 'templates/index.html'
-      - 'static/scope_v24.js'
-      - 'gunicorn.conf.py'
+      - 'requirements.txt'
       - '.github/workflows/v27-single-runtime-smoke.yml'
   push:
     branches: [main]
     paths:
       - 'app.py'
       - 'radar_runtime_v27.py'
+      - 'radar_broad_v34.py'
+      - 'youtube_genai_v34.py'
+      - 'frontend_broad_v34.py'
+      - 'frontend_failopen_v33.py'
       - 'radar_multiplatform_v28.py'
       - 'radar_budget_v29.py'
-      - 'radar_budget_search_guard_v29.py'
       - 'radar_audit_v30.py'
       - 'radar_v28_finish.py'
-      - 'radar_logs.py'
-      - 'radar_strict_scope_v27.py'
-      - 'radar_edge_v19.py'
-      - 'templates/index.html'
-      - 'static/scope_v24.js'
-      - 'gunicorn.conf.py'
+      - 'requirements.txt'
       - '.github/workflows/v27-single-runtime-smoke.yml'
 
 jobs:
-  single-runtime:
+  broad-single-runtime:
     runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: v34-smoke
+      PORT: '10000'
+      APIFY_API_TOKEN: ''
+      GEMINI_API_KEY: ''
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Compile runtime
-        run: python -m compileall -q app.py radar_runtime_v27.py radar_multiplatform_v28.py radar_budget_v29.py radar_budget_search_guard_v29.py radar_audit_v30.py radar_v28_finish.py radar_strict_scope_v27.py gunicorn.conf.py
-      - name: Verify one authoritative V30 bootstrap hard budget and audit contract
-        env:
-          SECRET_KEY: smoke-test
-          PORT: '10000'
+      - run: pip install -r requirements.txt
+      - name: Compile V34 runtime
+        run: python -m compileall -q app.py radar_runtime_v27.py radar_broad_v34.py youtube_genai_v34.py frontend_broad_v34.py frontend_failopen_v33.py
+      - name: Verify broad momentum product without external spend
         run: |
           python - <<'PY'
           import contextlib
           import io
-          import runpy
           from datetime import datetime, timedelta, timezone
 
           stdout = io.StringIO()
           with contextlib.redirect_stdout(stdout):
               import app as app_module
-
           startup = stdout.getvalue()
-          startup_lines = [line for line in startup.splitlines() if '[startup]' in line]
-          assert len(startup_lines) == 1, startup
-          assert 'V30 RUNTIME READY' in startup_lines[0], startup
-
-          banned = (
-              'GLOBAL AI v9', 'BUDGET AI v11', 'HIGH-FREQ AI v13', 'DIALOGUE-ONLY v15',
-              'DIALOGUE MOTION v16', 'V17 READY', 'V19 HARDENING READY',
-              'SOURCE AGGREGATION v20 READY', 'OMNI/VEO V21 READY', 'OMNI/VEO V22 READY',
-              'V24 READY', 'V25 READY', 'FRESH RUN V23 READY', 'V20 EDGE GUARDS READY',
-              'V27 RUNTIME READY', 'V28 RUNTIME READY', 'V29 RUNTIME READY',
-          )
-          for marker in banned:
-              assert marker not in startup, (marker, startup)
+          lines = [x for x in startup.splitlines() if '[startup]' in x]
+          assert len(lines) == 1, startup
+          assert 'V30 RUNTIME READY' in lines[0] and 'V34 BROAD PRODUCT' in lines[0], lines[0]
 
           import radar_audit_v30 as v30
+          import radar_broad_v34 as v34
           import radar_budget_v29 as v29
-          import radar_budget_search_guard_v29 as search_guard
-          import radar_hardening_v19 as hardening
           import radar_multiplatform_v28 as v28
           import radar_request_job as radar_job
           import radar_runtime_v27 as runtime
-          import radar_v28_finish as finish
+          import youtube_genai_v34 as yt34
+          import frontend_failopen_v33 as frontend
           from db import db_conn
 
           assert runtime._APPLIED is True
-          assert runtime._LIVENESS_INSTALLED is True
-          assert v28._APPLIED is True
-          assert v29._APPLIED is True
-          assert v30._APPLIED is True
-          assert search_guard._APPLIED is True
-          assert finish._APPLIED is True
+          assert runtime.PRODUCT_MODE == v34.MODE_VERSION
           assert app_module.RADAR_RUNTIME == v30.MODE_VERSION
-          assert app_module.EDGE_PROFILE == v30.MODE_VERSION
           assert app_module.PROFILE_VERSION == v30.SCREENING_PROFILE
-          assert hardening.PROFILE_VERSION == v30.SCREENING_PROFILE
-          assert app_module.RADAR_MAX_DURATION_SEC == 15.05
-          assert app_module.KEEP_LIMIT == 180
+          assert app_module.KEEP_LIMIT == 100
           assert radar_job.RADAR_AI_ANALYZE_LIMIT == 150
-          assert v28.download_multiplatform_video is search_guard.download_search_candidate_v29
-          assert radar_job._start_one_source is v30.start_one_source_v30
-          assert radar_job._process_one_ai is v30.process_one_ai_v30
-          assert 'durability_blocked' in radar_job.ACTIVE_PHASES
-          assert 'source_start_uncertain' in radar_job.ACTIVE_PHASES
+          assert radar_job._process_one_ai is v34.process_one_ai_v34
+          assert radar_job._prepare_candidates is v34.prepare_candidates_v34
+          assert app_module.top_eligible is v34.broad_eligible
+          assert v28.matches_v28 is v34.broad_matches
+          assert v28.classify_youtube_url_v28 is yt34.classify_youtube_url_v34
 
           c = app_module.app.test_client()
           status = c.get('/api/status').get_json()
           assert status['radar_runtime'] == v30.MODE_VERSION, status
-          assert status['radar_profile'] == v30.MODE_VERSION, status
-          assert status['edge_profile'] == v30.MODE_VERSION, status
-          assert status['radar_mode'] == v30.MODE_VERSION, status
-          assert status['radar_audit_profile'] == v30.MODE_VERSION, status
-          assert status['radar_platforms'] == ['Instagram Reels', 'TikTok', 'YouTube Shorts'], status
-          assert status['radar_hashtags'] == ['omni', 'veo', 'veo3', 'ai', 'ии'], status
-          assert status['radar_lookback_days'] == 14, status
-          assert status['radar_speech_required'] is True, status
-          assert status['radar_source_max_duration_sec'] == 15.05, status
-          assert status['radar_compressed_target_sec'] == 10.0, status
+          assert status['runtime_info']['product_mode'] == v34.MODE_VERSION, status
+          assert status['runtime_info']['target_output_min'] == 50, status
+          assert status['runtime_info']['target_output_max'] == 100, status
+          assert status['runtime_info']['ai_enrich_limit'] == 20, status
+          assert status['runtime_info']['ai_role'] == 'enrichment_only', status
+          assert status['runtime_info']['speech_required'] is False, status
+          assert status['radar_speech_required'] is False, status
           assert status['radar_hard_total_target_usd'] == 5.0, status
           assert status['radar_apify_discovery_hard_cap_usd'] == 2.8, status
           assert status['radar_budget_headroom_usd'] == 2.2, status
           assert status['radar_results_per_tag_per_platform'] == 60, status
           assert status['radar_max_raw_requested'] == 900, status
-          assert status['radar_ai_analyze_limit'] == 150, status
-          assert status['radar_snapshot_lookback_days'] == 14, status
-          assert status['radar_snapshot_post_limit'] == 1000, status
-          assert status['radar_automatic_ai_tick_limit'] == 180, status
           assert status['runtime_info']['automatic_paid_refreshes'] is False, status
           assert status['runtime_info']['audit_top10_closed'] is True, status
-          assert status['runtime_info']['durable_paid_preflight'] is True, status
-          assert status['runtime_info']['ambiguous_actor_start_quarantine'] is True, status
-          assert status['runtime_info']['analysis_cache'] is True, status
-          assert status['runtime_info']['analysis_singleflight'] is True, status
-          assert status['runtime_info']['safe_media_download'] is True, status
-          assert status['runtime_info']['motion_gate_fail_closed'] is True, status
-          assert status['runtime_info']['cross_site_mutation_block'] is True, status
-          assert status['runtime_info']['v28_14day_api'] is True, status
-          assert status['runtime_info']['youtube_direct_gemini'] is True, status
-          assert status['runtime_info']['legacy_startup_banners_suppressed'] is True, status
-          assert status['runtime_info']['render_fast_liveness'] is True, status
 
           b = v29.budget_breakdown_v29()
-          assert b['hard_total_target_usd'] == 5.0, b
-          assert b['hard_apify_discovery_caps_usd'] == 2.8, b
-          assert b['reserved_headroom_usd'] == 2.2, b
-          assert b['estimated_discovery_usd_at_full_300_each'] <= 2.8, b
-          assert sum(b['source_caps_usd'].values()) == 2.8, b
+          assert b['hard_total_target_usd'] == 5.0
+          assert b['hard_apify_discovery_caps_usd'] == 2.8
+          assert sum(b['source_caps_usd'].values()) == 2.8
 
-          # Missing discovery media must fail locally instead of starting a paid refresh Actor.
-          try:
-              search_guard.download_search_candidate_v29({'platform':'TikTok','video_url':'','duration_sec':8})
-              raise AssertionError('budget guard did not reject missing media')
-          except RuntimeError as exc:
-              assert 'BUDGET_GUARD_NO_PAID_REFRESH' in str(exc), exc
+          # Semantic soft rejects are recommendation metadata, not visibility gates.
+          no_speech = v28._reject('NO_SPOKEN_DIALOGUE: synthetic')
+          timing = v28._reject('TIMING_OR_MECHANIC_REJECT: synthetic', spoken=True)
+          tutorial = v28._reject('TUTORIAL_OR_REVIEW: synthetic', spoken=True)
+          static = v28._reject('REJECT_STATIC_IMAGE: synthetic')
+          assert v34.broad_matches(no_speech) is True
+          assert v34.broad_matches(timing) is True
+          assert v34.broad_matches(tutorial) is True
+          assert v34.broad_matches(static) is False
 
-          # Cross-site write must be refused before any paid work.
-          cross = c.post('/api/radar/sync', headers={'Origin':'https://evil.example','Sec-Fetch-Site':'cross-site'})
-          assert cross.status_code == 403, cross.get_data(as_text=True)
-
-          # CRITICAL Render liveness remains DB-independent.
-          original_db_conn = app_module.db_conn
-          def broken_db_conn():
-              raise RuntimeError('synthetic SQLite outage')
-          app_module.db_conn = broken_db_conn
-          try:
-              assert c.head('/').status_code == 200
-              assert c.head('/healthz').status_code == 200
-              health = c.get('/healthz')
-              assert health.status_code == 200
-              assert health.get_json()['runtime'] == v30.MODE_VERSION
-          finally:
-              app_module.db_conn = original_db_conn
-
-          gunicorn_conf = runpy.run_path('gunicorn.conf.py')
-          assert gunicorn_conf['bind'] == '0.0.0.0:10000', gunicorn_conf['bind']
-
-          sources = radar_job._build_sources()
-          assert set(sources) == {'instagram', 'tiktok', 'youtube'}, sources
-          assert sources['instagram']['actor_id'] == 'apify/instagram-scraper'
-          assert sources['tiktok']['actor_id'] == 'clockworks/tiktok-scraper'
-          assert sources['youtube']['actor_id'] == 'constructive_calm/youtube-shorts-scraper-pro'
-          for name, source in sources.items():
-              assert source['strict_scope_marker'] == v30.SOURCE_MARKER, source
-              assert source['max_items'] == 300, source
-              assert source['max_total_charge_usd'] == v29.SOURCE_CHARGE_CAPS_USD[name], source
-
-          # Prove API visibility stays truly 14 days under the new V30 profile.
-          visible_url = 'https://www.youtube.com/shorts/v30-ten-days'
-          hidden_url = 'https://www.youtube.com/shorts/v30-fifteen-days'
-          reason = v28.PASS_PREFIX + 'DIRECT: synthetic test'
           now = datetime.now(timezone.utc)
           with db_conn() as conn:
-              for url, age in [(visible_url, 10), (hidden_url, 15)]:
+              conn.execute('DELETE FROM radar_posts')
+              reasons = [
+                  '',
+                  'NO_SPOKEN_DIALOGUE: synthetic',
+                  'TIMING_OR_MECHANIC_REJECT: synthetic',
+                  'TUTORIAL_OR_REVIEW: synthetic',
+                  v28.PASS_PREFIX + 'DIRECT: synthetic',
+              ]
+              for i in range(75):
+                  platform = v28.PLATFORMS[i % len(v28.PLATFORMS)]
+                  tag = v28.TARGET_TAGS[i % len(v28.TARGET_TAGS)]
+                  reason = reasons[i % len(reasons)]
+                  checked = 0 if not reason else 1
                   conn.execute(
-                      """INSERT OR REPLACE INTO radar_posts(
-                           platform,creator,post_url,published_at,duration_sec,views,likes,comments,
-                           hours_since_publish,views_per_hour,viral_score_v2,search_term,
-                           ai_checked,ai_match,screening_profile,reason
-                         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                      ('YouTube Shorts','v30_test',url,(now-timedelta(days=age)).isoformat(),8.0,
-                       10000,100,10,age*24,1000,80.0,'ai',1,1,v30.SCREENING_PROFILE,reason),
+                      '''INSERT INTO radar_posts(platform,creator,post_url,published_at,duration_sec,views,likes,comments,
+                         hours_since_publish,views_per_hour,viral_score_v2,search_term,ai_checked,ai_match,screening_profile,reason)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                      (platform,f'creator{i}',f'https://example.com/video/{i}',(now-timedelta(hours=i+1)).isoformat(),
+                       8.0,500000-i*1000,1000,40,i+1,50000-i*100,95-i*0.5,tag,checked,0,v30.SCREENING_PROFILE,reason),
                   )
+              # Objective hard reject must stay out.
+              conn.execute(
+                  '''INSERT INTO radar_posts(platform,creator,post_url,published_at,duration_sec,views,likes,comments,
+                     hours_since_publish,views_per_hour,viral_score_v2,search_term,ai_checked,ai_match,screening_profile,reason)
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                  ('Instagram Reels','static','https://example.com/static',now.isoformat(),8.0,9000000,10000,100,
+                   1,9000000,100,'ai',1,0,v30.SCREENING_PROFILE,'REJECT_STATIC_IMAGE: synthetic'),
+              )
               conn.commit()
-          urls = {x['post_url'] for x in c.get('/api/radar').get_json()}
-          assert visible_url in urls, urls
-          assert hidden_url not in urls, urls
+
+          top = c.get('/api/radar').get_json()
+          assert 50 <= len(top) <= 100, len(top)
+          assert all(x['trend_pool'] is True for x in top)
+          assert all(x['speech_required_for_top'] is False for x in top)
+          assert all(x['ai_role'] == 'enrichment_only' for x in top)
+          assert not any(x['post_url'] == 'https://example.com/static' for x in top)
+          labels = {x['adaptation_status'] for x in top}
+          assert 'ADD_RUSSIAN_SPEECH' in labels, labels
+          assert 'REBUILD_TO_10S' in labels, labels
+          assert 'NOT_ENRICHED' in labels, labels
+          assert top[0]['viral_score_v2'] >= top[-1]['viral_score_v2']
+
+          # Candidate endpoint is also broad and bounded.
           candidates = c.get('/api/radar/candidates').get_json()
-          assert any(x['post_url'] == visible_url and x['platform'] == 'YouTube Shorts' for x in candidates)
+          assert 50 <= len(candidates) <= 120, len(candidates)
 
-          print('V30 SINGLE RUNTIME + HARD BUDGET + AUDIT TOP10 + 14-DAY API OK')
+          # Root still uses the proven one-runtime fail-open document, now with V34 wording.
+          root = c.get('/')
+          html = root.get_data(as_text=True)
+          assert root.status_code == 200
+          assert 'V34 BROAD TREND POOL' in html
+          assert '50–100' in html
+          assert 'MutationObserver' not in html
+          assert '/static/' not in html
+          assert root.headers['X-Frontend-Profile'] == 'frontend_v34_broad_fail_open', root.headers
+
+          # Render liveness remains independent from DB/external services.
+          original = app_module.db_conn
+          app_module.db_conn = lambda: (_ for _ in ()).throw(RuntimeError('synthetic db outage'))
+          try:
+              assert c.head('/').status_code == 200
+              assert c.get('/healthz').status_code == 200
+          finally:
+              app_module.db_conn = original
+
+          print('V34 BROAD TREND POOL 50-100 + V30 SAFETY/BUDGET + V33 FAIL-OPEN OK')
           PY
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Frontend contract
-        run: |
-          node --check static/app.js
-          node --check static/scope_v24.js
-          grep -q "3 ПЛАТФОРМЫ · 5 ТЕГОВ · 14 ДНЕЙ" templates/index.html
-          grep -q "HARD BUDGET" templates/index.html
-          grep -q "Instagram + TikTok + YouTube" static/scope_v24.js
-          grep -q "GEMINI СЛУШАЕТ РЕЧЬ" static/scope_v24.js

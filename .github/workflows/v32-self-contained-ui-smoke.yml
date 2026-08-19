@@ -1,15 +1,19 @@
-name: V33 Fail-Open Browser Smoke
+name: V34 Fail-Open Browser Smoke
 
 on:
   pull_request:
     paths:
       - 'frontend_failopen_v33.py'
+      - 'frontend_broad_v34.py'
+      - 'youtube_genai_v34.py'
       - 'radar_runtime_v27.py'
       - '.github/workflows/v32-self-contained-ui-smoke.yml'
   push:
     branches: [main]
     paths:
       - 'frontend_failopen_v33.py'
+      - 'frontend_broad_v34.py'
+      - 'youtube_genai_v34.py'
       - 'radar_runtime_v27.py'
       - '.github/workflows/v32-self-contained-ui-smoke.yml'
 
@@ -17,7 +21,7 @@ jobs:
   fail-open-browser:
     runs-on: ubuntu-latest
     env:
-      SECRET_KEY: v33-smoke
+      SECRET_KEY: v34-browser-smoke
       APIFY_API_TOKEN: ''
       GEMINI_API_KEY: ''
       PORT: '10000'
@@ -32,7 +36,7 @@ jobs:
       - run: pip install -r requirements.txt playwright
       - name: Compile and static fail-open contract
         run: |
-          python -m compileall -q app.py frontend_failopen_v33.py radar_runtime_v27.py
+          python -m compileall -q app.py frontend_failopen_v33.py frontend_broad_v34.py radar_runtime_v27.py
           python - <<'PY'
           import re
           import subprocess
@@ -40,7 +44,7 @@ jobs:
           from pathlib import Path
 
           import app as app_module
-          from frontend_failopen_v33 import HTML
+          import radar_broad_v34 as v34
 
           c = app_module.app.test_client()
           root = c.get('/')
@@ -48,18 +52,18 @@ jobs:
           body = root.get_data()
           html = body.decode('utf-8')
           assert len(body) > 20_000, len(body)
-          assert root.headers['X-Frontend-Profile'] == 'frontend_v33_fail_open_single_runtime'
+          assert root.headers['X-Frontend-Profile'] == 'frontend_v34_broad_fail_open', root.headers
           assert root.headers['Cache-Control'].startswith('no-store')
           assert '/static/' not in html
           assert html.count('<script>') == 1
           assert html.count('</script>') == 1
           assert 'MutationObserver' not in html
           assert 'setInterval(' not in html
-          assert 'V33 FAIL-OPEN SINGLE RUNTIME' in html
-          assert 'Даже без JavaScript эта страница остаётся видимой' in html
+          assert 'V34 BROAD TREND POOL' in html
+          assert '50–100' in html
           assert 'id="appShell"' in html
 
-          # Root must remain available if SQLite is unavailable.
+          # Root remains fail-open and independent of SQLite.
           original_db = app_module.db_conn
           def explode_db(*args, **kwargs):
               raise RuntimeError('ROOT_MUST_NOT_TOUCH_DB')
@@ -75,7 +79,7 @@ jobs:
           assert health.status_code == 200
           payload = health.get_json()
           assert payload['ok'] is True, payload
-          assert payload['profile'] == 'frontend_v33_fail_open_single_runtime', payload
+          assert payload['profile'] == 'frontend_v34_broad_fail_open', payload
           assert payload['fail_open_dom'] is True, payload
           assert payload['single_js_runtime'] is True, payload
           assert payload['legacy_client_scripts'] == 0, payload
@@ -87,6 +91,7 @@ jobs:
 
           runtime = app_module.RUNTIME_INFO
           assert runtime['frontend_profile'] == payload['profile'], runtime
+          assert runtime['product_mode'] == v34.MODE_VERSION, runtime
           assert runtime['fail_open_dom'] is True, runtime
           assert runtime['single_js_runtime'] is True, runtime
           assert runtime['legacy_client_scripts'] == 0, runtime
@@ -96,17 +101,17 @@ jobs:
           script = re.search(r'<script>\s*(.*?)\s*</script>', html, re.S)
           assert script, 'single JS block missing'
           with tempfile.TemporaryDirectory() as td:
-              js = Path(td) / 'frontend-v33.js'
+              js = Path(td) / 'frontend-v34.js'
               js.write_text(script.group(1), encoding='utf-8')
               subprocess.run(['node', '--check', str(js)], check=True)
-          print('V33 STATIC FAIL-OPEN CONTRACT OK', payload)
+          print('V34 STATIC FAIL-OPEN CONTRACT OK', payload)
           PY
       - name: Install Chromium
         run: python -m playwright install --with-deps chromium
       - name: Real Chromium + Gunicorn stability
         run: |
           set -euo pipefail
-          gunicorn app:app --bind 0.0.0.0:10000 --workers 1 --threads 4 --timeout 900 >/tmp/v33-gunicorn.log 2>&1 &
+          gunicorn app:app --bind 0.0.0.0:10000 --workers 1 --threads 4 --timeout 900 >/tmp/v34-gunicorn.log 2>&1 &
           PID=$!
           trap 'kill $PID >/dev/null 2>&1 || true' EXIT
           for i in $(seq 1 60); do
@@ -118,48 +123,45 @@ jobs:
           from playwright.sync_api import sync_playwright
 
           api_requests = []
-          initial_page_errors = []
+          page_errors = []
           with sync_playwright() as p:
               browser = p.chromium.launch()
               context = browser.new_context(viewport={'width': 1440, 'height': 1000})
               page = context.new_page()
               page.on('request', lambda r: api_requests.append(r.url) if '/api/' in r.url else None)
-              page.on('pageerror', lambda e: initial_page_errors.append(str(e)))
+              page.on('pageerror', lambda e: page_errors.append(str(e)))
               response = page.goto('http://127.0.0.1:10000/', wait_until='domcontentloaded', timeout=30000)
               assert response and response.status == 200
-              page.wait_for_function('window.__V33_LOADED__ === true', timeout=10000)
+              page.wait_for_function('window.__V34_LOADED__ === true', timeout=10000)
               hero = page.locator('h1')
               shell = page.locator('#appShell')
               assert hero.is_visible(), 'hero not visible after boot'
               assert shell.is_visible(), 'shell not visible after boot'
               box = shell.bounding_box()
               assert box and box['width'] > 900 and box['height'] > 600, box
-              assert 'V33 · fail-open single runtime · JS готов' in page.locator('#runtimePill').inner_text()
+              assert 'V34' in page.locator('#runtimePill').inner_text()
               page.wait_for_timeout(12000)
               assert hero.is_visible(), 'hero disappeared after polling'
               assert shell.is_visible(), 'shell disappeared after polling'
               assert len(api_requests) <= 20, f'excessive API polling: {len(api_requests)} {api_requests}'
-              assert not initial_page_errors, initial_page_errors
+              assert not page_errors, page_errors
 
-              # Network loss is a normal Render/browser failure mode. UI must remain.
               context.set_offline(True)
               page.wait_for_timeout(10000)
               assert hero.is_visible(), 'hero disappeared while offline'
               assert shell.is_visible(), 'shell disappeared while offline'
               context.set_offline(False)
 
-              # An arbitrary later JS exception must surface visibly without blanking DOM.
-              before = len(initial_page_errors)
-              page.evaluate("setTimeout(() => { throw new Error('V33_SYNTHETIC_RUNTIME_ERROR') }, 0)")
+              before = len(page_errors)
+              page.evaluate("setTimeout(() => { throw new Error('V34_SYNTHETIC_RUNTIME_ERROR') }, 0)")
               page.wait_for_timeout(800)
-              assert len(initial_page_errors) > before, initial_page_errors
+              assert len(page_errors) > before, page_errors
               assert page.locator('#runtimeError').is_visible(), 'runtime error not surfaced'
-              assert 'V33_SYNTHETIC_RUNTIME_ERROR' in page.locator('#runtimeError').inner_text()
+              assert 'V34_SYNTHETIC_RUNTIME_ERROR' in page.locator('#runtimeError').inner_text()
               assert hero.is_visible(), 'hero disappeared after runtime exception'
               assert shell.is_visible(), 'shell disappeared after runtime exception'
-              page.screenshot(path='/tmp/v33-final.png', full_page=True)
               browser.close()
-          print('V33 CHROMIUM FAIL-OPEN OK; API requests:', len(api_requests))
+          print('V34 CHROMIUM FAIL-OPEN OK; API requests:', len(api_requests))
           PY
           kill -0 $PID
           echo 'Gunicorn + real Chromium stayed healthy.'

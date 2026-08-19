@@ -1,8 +1,9 @@
 """Single authoritative production bootstrap for the final radar runtime.
 
-The V30 search/screening/budget contract stays authoritative. V33 replaces the
-browser compatibility stack with one fail-open frontend runtime: one HTML, one
-CSS block, one JS block, no MutationObserver and no parallel legacy polling.
+V30 remains the durable/budget/safety contract. V34 changes the product output:
+momentum decides which 50-100 candidates are visible and Gemini enriches them
+instead of deleting strong videos for missing speech or imperfect timing. V33
+remains the fail-open single browser runtime.
 """
 
 from __future__ import annotations
@@ -15,10 +16,11 @@ from apify_start_compat import install_apify_start_compat
 from radar_discovery_v27 import install_v27_high_volume_discovery
 from radar_logs import add_radar_log, suppress_startup_logs
 
-# IMPORTANT: do not change this semantic identity for frontend-only releases.
-# Existing durable paid runs must resume after deploy instead of being migrated.
+# Keep this persistence identity stable. An active paid V30 discovery must resume
+# after deploy; V34 is a ranking/output overlay on the same durable candidate set.
 RUNTIME_VERSION = "multiplatform_speech_v30_audit10_budget5"
 PUBLIC_EDGE_PROFILE = RUNTIME_VERSION
+PRODUCT_MODE = "multiplatform_broad_v34_trendpool100"
 FRONTEND_PROFILE = "frontend_v33_fail_open_single_runtime"
 _APPLIED = False
 _CONTRACT = None
@@ -37,6 +39,7 @@ def _install_render_liveness(app):
             return "", 200, {
                 "Cache-Control": "no-store",
                 "X-Radar-Runtime": RUNTIME_VERSION,
+                "X-Radar-Product": PRODUCT_MODE,
                 "X-Frontend-Profile": FRONTEND_PROFILE,
             }
         return None
@@ -45,6 +48,7 @@ def _install_render_liveness(app):
         return {
             "ok": True,
             "runtime": RUNTIME_VERSION,
+            "product_mode": PRODUCT_MODE,
             "frontend_profile": FRONTEND_PROFILE,
             "pid": __import__("os").getpid(),
         }, 200, {"Cache-Control": "no-store"}
@@ -61,10 +65,10 @@ def _install_render_liveness(app):
 
 
 def activate_v27_runtime():
-    """Compose proven backend layers, then expose V30 + V33 frontend reliability."""
+    """Compose proven backend layers, then expose V34 broad output + V33 UI."""
     global _APPLIED, _CONTRACT
     if _APPLIED:
-        return dict(_CONTRACT or {"runtime": RUNTIME_VERSION})
+        return dict(_CONTRACT or {"runtime": RUNTIME_VERSION, "product_mode": PRODUCT_MODE})
 
     app_module = sys.modules.get("app")
     if app_module is None:
@@ -92,15 +96,11 @@ def activate_v27_runtime():
         apply_dialogue_first_overrides()
         app_module.top_eligible = top_eligible_dialogue
 
-        from overlay_cleanplate_v15 import (
-            PRODUCTION_PROFILE_VERSION,
-            apply_overlay_cleanplate_overrides,
-        )
+        from overlay_cleanplate_v15 import PRODUCTION_PROFILE_VERSION, apply_overlay_cleanplate_overrides
         apply_overlay_cleanplate_overrides()
 
         from radar_resilient_v17 import apply_resilient_v17_overrides
         apply_resilient_v17_overrides()
-
         app_module.tick_job = budget.wrap_tick_job(app_module.tick_job)
 
         from radar_hardening_v19 import apply_hardening_v19
@@ -137,21 +137,29 @@ def activate_v27_runtime():
         from radar_v28_finish import apply_v28_finish
         finish_info = apply_v28_finish()
 
-        # V33 is intentionally last. Unlike V32 it does NOT bundle the old browser
-        # scripts. It supplies a clean fail-open page with a single client runtime.
+        # Current google-genai Interactions adapter for public YouTube URLs.
+        from youtube_genai_v34 import install_youtube_v34
+        youtube_info = install_youtube_v34()
+
+        # V34 broad product: momentum is the visibility gate; AI is enrichment only.
+        from radar_broad_v34 import apply_broad_v34
+        v34_info = apply_broad_v34()
+
+        # Extend actual cross-run view-growth measurement from the historical
+        # 3-tag/7-day helper to the full 5-tag/14-day V34 product scope.
+        from radar_momentum_v34 import apply_momentum_v34
+        momentum_info = apply_momentum_v34()
+
+        # V33 remains the proven one-runtime fail-open browser architecture. Its
+        # globals were transformed to V34 product copy by frontend_broad_v34.
         from frontend_failopen_v33 import install_frontend_v33
         frontend_info = install_frontend_v33(app_module.app)
 
-        final_info = {
-            **dict(v28_info or {}),
-            **dict(v29_info or {}),
-            **dict(search_guard_info or {}),
-            **dict(v30_info or {}),
-        }
-        final_keep_limit = int(final_info.get("keep_limit") or budget.KEEP_LIMIT)
+        final_keep_limit = int(v34_info.get("target_output_max") or v30_info.get("keep_limit") or budget.KEEP_LIMIT)
         final_budget = budget_breakdown_v29()
 
-        app_module.PROFILE_VERSION = final_info["screening_profile"]
+        # Persistence/screening profile stays V30; visible product behavior is V34.
+        app_module.PROFILE_VERSION = v30_info["screening_profile"]
         app_module.PRODUCTION_PROFILE_VERSION = PRODUCTION_PROFILE_VERSION
         app_module.KEEP_LIMIT = final_keep_limit
         app_module.BUDGET_INFO = final_budget
@@ -164,7 +172,8 @@ def activate_v27_runtime():
     _CONTRACT = {
         "runtime": RUNTIME_VERSION,
         "profile": RUNTIME_VERSION,
-        "internal_screening_profile": final_info["screening_profile"],
+        "product_mode": PRODUCT_MODE,
+        "internal_screening_profile": v30_info["screening_profile"],
         "edge_profile": PUBLIC_EDGE_PROFILE,
         "production_profile": app_module.PRODUCTION_PROFILE_VERSION,
         "frontend_profile": frontend_info.get("profile", FRONTEND_PROFILE),
@@ -179,17 +188,30 @@ def activate_v27_runtime():
         "parallel_polling_layers": frontend_info.get("parallel_polling_layers", 0),
         "runtime_error_surface": bool(frontend_info.get("runtime_error_surface")),
         "root_db_dependency": bool(frontend_info.get("root_db_dependency", False)),
-        "platforms": final_info["platforms"],
-        "hashtags": final_info["hashtags"],
-        "lookback_days": final_info["lookback_days"],
-        "results_per_tag_per_platform": final_info["results_per_tag_per_platform"],
-        "max_raw_requested": final_info["max_raw_requested"],
-        "analyze_limit": final_info["analyze_limit"],
+        "platforms": v30_info["platforms"],
+        "hashtags": v30_info["hashtags"],
+        "lookback_days": v30_info["lookback_days"],
+        "results_per_tag_per_platform": v30_info["results_per_tag_per_platform"],
+        "max_raw_requested": v30_info["max_raw_requested"],
+        "analyze_limit": v30_info["analyze_limit"],
         "keep_limit": final_keep_limit,
-        "speech_required": True,
+        "target_output_min": v34_info["target_output_min"],
+        "target_output_max": v34_info["target_output_max"],
+        "ai_enrich_limit": v34_info["ai_enrich_limit"],
+        "ai_role": "enrichment_only",
+        "speech_required": False,
+        "no_speech_policy": "keep_and_add_russian_speech",
+        "timing_reject_policy": "keep_and_rewrite_to_10s",
+        "ai_error_policy": "keep_for_manual_review",
         "strict_actual_hashtag": True,
-        "youtube_direct_gemini": bool(final_info.get("youtube_direct_gemini")),
-        "automatic_paid_refreshes": bool(final_info.get("automatic_paid_refreshes", False)),
+        "youtube_direct_gemini": True,
+        "youtube_interactions_schema": youtube_info["youtube_interactions_schema"],
+        "youtube_failure_policy": youtube_info["youtube_failure_policy"],
+        "momentum_profile": momentum_info["profile"],
+        "momentum_ranking": momentum_info["ranking"],
+        "momentum_scope_tags": momentum_info["tags"],
+        "momentum_scope_days": momentum_info["lookback_days"],
+        "automatic_paid_refreshes": False,
         "v28_14day_api": bool(finish_info.get("v28_14day_api")),
         "direct_max_duration_sec": DIRECT_MAX_DURATION_SEC,
         "source_max_duration_sec": SOURCE_MAX_DURATION_SEC,
@@ -199,19 +221,19 @@ def activate_v27_runtime():
         "hard_total_target_usd": final_budget["hard_total_target_usd"],
         "apify_discovery_hard_cap_usd": final_budget["hard_apify_discovery_caps_usd"],
         "budget_headroom_usd": final_budget["reserved_headroom_usd"],
-        "audit_top10_closed": bool(final_info.get("audit_top10_closed")),
-        "durable_paid_preflight": bool(final_info.get("durable_paid_preflight")),
-        "ambiguous_actor_start_quarantine": bool(final_info.get("ambiguous_actor_start_quarantine")),
-        "manual_refresh_cap_usd": final_info.get("manual_refresh_cap_usd"),
-        "analysis_cache": bool(final_info.get("analysis_cache")),
-        "analysis_singleflight": bool(final_info.get("analysis_singleflight")),
-        "automatic_ai_tick_limit": final_info.get("automatic_ai_tick_limit"),
-        "snapshot_lookback_days": final_info.get("snapshot_lookback_days"),
-        "snapshot_post_limit": final_info.get("snapshot_post_limit"),
-        "safe_media_download": bool(final_info.get("safe_media_download")),
-        "motion_gate_fail_closed": bool(final_info.get("motion_gate_fail_closed")),
-        "cross_site_mutation_block": bool(final_info.get("cross_site_mutation_block")),
-        "new_run_debounce_seconds": final_info.get("new_run_debounce_seconds"),
+        "audit_top10_closed": bool(v30_info.get("audit_top10_closed")),
+        "durable_paid_preflight": bool(v30_info.get("durable_paid_preflight")),
+        "ambiguous_actor_start_quarantine": bool(v30_info.get("ambiguous_actor_start_quarantine")),
+        "manual_refresh_cap_usd": v30_info.get("manual_refresh_cap_usd"),
+        "analysis_cache": bool(v30_info.get("analysis_cache")),
+        "analysis_singleflight": bool(v30_info.get("analysis_singleflight")),
+        "automatic_ai_tick_limit": v30_info.get("automatic_ai_tick_limit"),
+        "snapshot_lookback_days": v30_info.get("snapshot_lookback_days"),
+        "snapshot_post_limit": v30_info.get("snapshot_post_limit"),
+        "safe_media_download": bool(v30_info.get("safe_media_download")),
+        "motion_gate_fail_closed": bool(v30_info.get("motion_gate_fail_closed")),
+        "cross_site_mutation_block": bool(v30_info.get("cross_site_mutation_block")),
+        "new_run_debounce_seconds": v30_info.get("new_run_debounce_seconds"),
         "legacy_startup_banners_suppressed": True,
         "render_fast_liveness": True,
         "apify_start_compat": True,
@@ -220,7 +242,7 @@ def activate_v27_runtime():
     _APPLIED = True
 
     add_radar_log(
-        "V30 RUNTIME READY + V33 FAIL-OPEN FRONTEND READY: one HTML/CSS/JS runtime; no legacy browser stack; no MutationObserver; V30 paid/search contract unchanged.",
+        "V30 RUNTIME READY + V34 BROAD PRODUCT + V33 FAIL-OPEN FRONTEND: 50-100 momentum candidates visible; Gemini enrichment only; YouTube current Interactions schema; 5-tag/14-day measured growth ranking; hard budget unchanged.",
         stage="startup",
         details=dict(_CONTRACT),
     )
