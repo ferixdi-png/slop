@@ -52,6 +52,12 @@ def patch_frontend_v35() -> dict:
     )
     html = _replace_once(
         html,
+        "if(!r.ok)throw new Error(data?.error||data?.message||`HTTP ${r.status} · ${url}`);",
+        "if(!r.ok){const err=new Error(data?.error||data?.message||`HTTP ${r.status} · ${url}`);err.status=r.status;err.payload=data;throw err;}",
+        "http-status-on-error",
+    )
+    html = _replace_once(
+        html,
         "  if(!s)return;const pct=Math.max(0,Math.min(100,Number(s.progress||0)));$('radarProgressPct').textContent=`${pct}%`;$('radarProgressBar').style.width=`${pct}%`;$('radarStage').textContent=s.label||'Радар';$('radarStatusMessage').textContent=s.message||'';$('radarEta').textContent=(s.stage==='done'?'ГОТОВО':s.stage==='error'?'ОШИБКА':eta(s.eta_seconds));",
         "  if(!s)return;const paused=Boolean(job?.paused||job?.manual_start_required);const pct=Math.max(0,Math.min(100,Number(s.progress||0)));$('radarProgressPct').textContent=`${pct}%`;$('radarProgressBar').style.width=`${pct}%`;if(paused){$('radarStage').textContent='Поиск приостановлен';$('radarStatusMessage').textContent=job?.message||'Незавершённый поиск сохранён. Для продолжения нажмите кнопку вручную.';$('radarEta').textContent='—';}else{$('radarStage').textContent=s.label||'Радар';$('radarStatusMessage').textContent=s.message||'';$('radarEta').textContent=(s.stage==='done'?'ГОТОВО':s.stage==='error'?'ОШИБКА':eta(s.eta_seconds));}",
         "paused-status",
@@ -67,6 +73,12 @@ def patch_frontend_v35() -> dict:
         "    if(jobR.status==='fulfilled'&&jobR.value?.active&&!state.stopRequested){state.driveEnabled=true;scheduleDrive(300);}",
         "    /* V35 invariant: read-only refresh NEVER arms or resumes the tick driver. */",
         "remove-auto-drive",
+    )
+    html = _replace_once(
+        html,
+        "async function driveOnce(){\n  if(state.driveBusy||state.stopRequested||!state.driveEnabled)return;if(!claimLease()){scheduleDrive(3000);return;}state.driveBusy=true;renewLease();\n  try{const d=await api('/api/radar/tick',{method:'POST'},160000);state.consecutiveDriveErrors=0;renewLease();state.driveEnabled=Boolean(d?.active);await refreshCore();await refreshLists(true);if(state.driveEnabled)scheduleDrive(d?.busy?1800:(d?.transient_error?6000:2200));else releaseLease();}\n  catch(e){state.consecutiveDriveErrors+=1;showRuntimeError(`Tick ${state.consecutiveDriveErrors}/6: ${e.message}`);if(state.consecutiveDriveErrors>=6){state.driveEnabled=false;releaseLease();}else scheduleDrive(Math.min(12000,2500+state.consecutiveDriveErrors*1500));}\n  finally{state.driveBusy=false;}\n}",
+        "async function driveOnce(){\n  if(state.driveBusy||state.stopRequested||!state.driveEnabled)return;if(!claimLease()){scheduleDrive(3000);return;}state.driveBusy=true;renewLease();\n  try{const d=await api('/api/radar/tick',{method:'POST'},160000);state.consecutiveDriveErrors=0;renewLease();state.driveEnabled=Boolean(d?.active);await refreshCore();await refreshLists(true);if(state.driveEnabled)scheduleDrive(d?.busy?1800:(d?.transient_error?6000:2200));else releaseLease();}\n  catch(e){if(Number(e?.status)===409){state.driveEnabled=false;state.driverToken='';state.manualSessionStarted=false;state.consecutiveDriveErrors=0;releaseLease();clearRuntimeError(true);await refreshCore();await refreshLists(true);return;}state.consecutiveDriveErrors+=1;showRuntimeError(`Tick ${state.consecutiveDriveErrors}/6: ${e.message}`);if(state.consecutiveDriveErrors>=6){state.driveEnabled=false;releaseLease();}else scheduleDrive(Math.min(12000,2500+state.consecutiveDriveErrors*1500));}\n  finally{state.driveBusy=false;}\n}",
+        "stop-on-auth-loss",
     )
     html = _replace_once(
         html,
@@ -122,4 +134,5 @@ def patch_frontend_v35() -> dict:
         "auto_tick_on_load": False,
         "auto_diagnostics_on_load": False,
         "driver_token_storage": "memory_only",
+        "auth_loss_policy": "stop_driver_on_first_409",
     }
