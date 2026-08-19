@@ -35,6 +35,7 @@ jobs:
           import radar_cancel_v18 as cancel
           import radar_edge_v19 as edge
           import radar_hardening_v19 as hardening
+          import radar_manual_start_v35 as manual
           import radar_multiplatform_v28 as v28
           import radar_request_job as radar_job
           from cloud_state import load_radar_cancel_request, load_radar_job, save_radar_job
@@ -54,6 +55,10 @@ jobs:
           assert status['radar_keep_limit'] == 100, status
           assert status['radar_speech_required'] is False, status
           assert status['radar_ai_role'] == 'enrichment_only', status
+          assert status['radar_manual_start_only'] is True, status
+          assert status['radar_auto_resume_on_page_load'] is False, status
+          assert status['radar_tick_requires_driver_token'] is True, status
+          assert status['radar_driver_token_persisted'] is False, status
           assert app_module.PROFILE_VERSION == v30.SCREENING_PROFILE
           assert hardening.PROFILE_VERSION == v30.SCREENING_PROFILE
           assert app_module.RUNTIME_INFO['internal_screening_profile'] == v30.SCREENING_PROFILE
@@ -80,10 +85,17 @@ jobs:
               cols = {row[1] for row in conn.execute('PRAGMA table_info(radar_posts)').fetchall()}
               assert {'screening_profile','platform','measured_growth_per_hour','growth_acceleration'} <= cols
 
-          # Durable STOP marker still wins without waiting for a long tick.
+          # Durable STOP marker still wins. V35 requires the token that was issued
+          # by this explicit Start call before a tick is allowed to advance state.
           started = c.post('/api/radar/sync')
           assert started.status_code == 202, started.get_data(as_text=True)
-          run_id = started.get_json()['run_id']
+          started_payload = started.get_json()
+          run_id = started_payload['run_id']
+          driver_token = started_payload.get('driver_token')
+          assert driver_token, started_payload
+          assert started_payload['active'] is True, started_payload
+          assert started_payload['manual_session_authorized'] is True, started_payload
+          tick_headers = {manual.TOKEN_HEADER: driver_token}
           assert radar_job._tick_lock.acquire(blocking=False)
           try:
               pending, code = cancel.cancel_active_job(wait_seconds=0)
@@ -92,7 +104,9 @@ jobs:
               assert marker and marker['run_id'] == run_id, marker
           finally:
               radar_job._tick_lock.release()
-          stopped = c.post('/api/radar/tick').get_json()
+          stopped_response = c.post('/api/radar/tick', headers=tick_headers)
+          assert stopped_response.status_code == 200, stopped_response.get_data(as_text=True)
+          stopped = stopped_response.get_json()
           assert stopped['active'] is False and stopped['phase'] == 'cancelled', stopped
 
           # Stale semantic profile resets before paid work and keeps capped sources.
@@ -104,6 +118,7 @@ jobs:
           save_radar_job(stale)
           migrated = c.post('/api/radar/sync')
           assert migrated.status_code == 202
+          assert migrated.get_json().get('driver_token'), migrated.get_data(as_text=True)
           migrated_job = load_radar_job()
           assert migrated_job['profile'] == v30.SCREENING_PROFILE, migrated_job
           assert migrated_job['phase'] == 'queued', migrated_job
@@ -170,7 +185,7 @@ jobs:
           assert 'frame_zero_literal_match_ok' in audit
           assert 'explicit_duration_instruction_ok' in audit
 
-          print('V34 BROAD + V30/V19 HARDENING OK', b)
+          print('V35 MANUAL START + V34 BROAD + V30/V19 HARDENING OK', b)
           PY
 
       - uses: actions/setup-node@v4
@@ -187,6 +202,11 @@ jobs:
           assert root.status_code == 200
           html = root.get_data(as_text=True)
           assert 'V34 BROAD TREND POOL' in html
+          assert 'MANUAL START ONLY' in html
+          assert 'window.__V35_MANUAL_START__=true' in html
+          assert 'X-Radar-Driver-Token' in html
+          assert "setTimeout(checkApis,600)" not in html
+          assert "jobR.value?.active&&!state.stopRequested){state.driveEnabled=true" not in html
           assert 'id="stopRadar"' in html
           assert '/static/' not in html
           assert 'MutationObserver' not in html

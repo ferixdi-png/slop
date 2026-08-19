@@ -1,4 +1,5 @@
 name: V35 Manual Start Only Smoke
+# verification branch trigger
 
 on:
   push:
@@ -47,7 +48,6 @@ jobs:
 
           c = app_module.app.test_client()
 
-          # Simulate an unfinished durable job from an older tab/deploy.
           run_id = 'v35-regression-unfinished'
           save_radar_job({
               'version': 5,
@@ -76,7 +76,6 @@ jobs:
           assert payload['auto_resume_on_page_load'] is False, payload
           assert payload['tick_requires_driver_token'] is True, payload
 
-          # Unauthorized tick must be blocked BEFORE the captured base tick runs.
           called = {'tick': 0}
           original_tick = guard._BASE_APP_TICK
           def forbidden_tick():
@@ -93,7 +92,6 @@ jobs:
           finally:
               guard._BASE_APP_TICK = original_tick
 
-          # Explicit Start/Continue is the only token issuer.
           original_start = guard._BASE_APP_START
           original_tick = guard._BASE_APP_TICK
           guard._BASE_APP_START = lambda: ({
@@ -110,7 +108,11 @@ jobs:
               data = started.get_json()
               token = data.get('driver_token')
               assert token and len(token) >= 32, data
+              assert data['active'] is True, data
               assert data['manual_session_authorized'] is True, data
+              assert guard._token_valid(token, run_id) is True
+              assert guard._token_valid(token + 'tamper', run_id) is False
+              assert guard._token_valid(token, run_id + '-other') is False
 
               authorized_truth = c.get('/api/radar/job', headers={guard.TOKEN_HEADER: token}).get_json()
               assert authorized_truth['active'] is True, authorized_truth
@@ -131,12 +133,13 @@ jobs:
           assert 'read-only refresh NEVER arms or resumes the tick driver' in html
           assert "setTimeout(checkApis,600)" not in html
           assert "jobR.value?.active&&!state.stopRequested){state.driveEnabled=true" not in html
+          assert 'Number(e?.status)===409' in html
           assert 'MANUAL START ONLY' in html
           print('V35 SERVER MANUAL-START CONTRACT OK')
           PY
 
-      - name: Install Chromium
-        run: python -m playwright install --with-deps chromium
+      - name: Verify system Chrome
+        run: google-chrome --version
 
       - name: Real browser opens read-only and sends zero POSTs
         run: |
@@ -155,14 +158,12 @@ jobs:
           requests = []
           errors = []
           with sync_playwright() as p:
-              browser = p.chromium.launch()
+              browser = p.chromium.launch(channel='chrome')
               context = browser.new_context(viewport={'width': 1440, 'height': 1000})
               page = context.new_page()
               page.on('request', lambda r: requests.append((r.method, r.url)) if '/api/' in r.url else None)
               page.on('pageerror', lambda e: errors.append(str(e)))
 
-              # Simulate the exact dangerous condition: server reports an unfinished
-              # durable run, but this newly-opened tab has no driver token.
               page.route('**/api/radar/job', lambda route: route.fulfill(
                   status=200,
                   content_type='application/json',
