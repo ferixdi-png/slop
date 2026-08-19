@@ -1,10 +1,10 @@
 """Single authoritative production bootstrap for the final radar runtime.
 
-V30 remains the durable/budget/safety contract. V34 changes product output:
-momentum decides which 50-100 candidates are visible and Gemini enriches them
-instead of deleting strong videos. V35 makes every search manual-start-only.
-V36 makes production prompt generation reliable for private Apify media and for
-all broad trend candidates, not only the old ai_match=1 subset.
+V30 remains the durable/budget/safety persistence contract. V34 exposes a broad
+50-100 momentum pool, V35 makes work manual-start-only, V36 hardens production
+prompts, V38 makes structured Gemini screening reliable, V39 restores durable
+TOP/prompt cache passively, and V40 makes public view metrics auditable while
+handling temporary Gemini overload without turning it into an internal 500.
 """
 
 from __future__ import annotations
@@ -17,14 +17,17 @@ from apify_start_compat import install_apify_start_compat
 from radar_discovery_v27 import install_v27_high_volume_discovery
 from radar_logs import add_radar_log, suppress_startup_logs
 
-# Persistence identity deliberately remains V30 so deploys do not invalidate a
-# paid durable search. V34/V35/V36 are product/control/reliability overlays.
+# Persistence identity deliberately remains V30 so deploys do not invalidate or
+# duplicate a paid durable search. Later versions are product/control/reliability
+# overlays and must not change this semantic job identity.
 RUNTIME_VERSION = "multiplatform_speech_v30_audit10_budget5"
 PUBLIC_EDGE_PROFILE = RUNTIME_VERSION
 PRODUCT_MODE = "multiplatform_broad_v34_trendpool100"
 FRONTEND_PROFILE = "frontend_v34_broad_fail_open"
 CONTROL_MODE = "manual_start_only_v35"
 PROMPT_MODE = "production_prompts_v36_authenticated_media"
+METRICS_MODE = "metrics_truth_v40_public_counts"
+GEMINI_RELIABILITY_MODE = "gemini_overload_v40"
 _APPLIED = False
 _CONTRACT = None
 _LIVENESS_INSTALLED = False
@@ -54,6 +57,8 @@ def _install_render_liveness(app):
             "product_mode": PRODUCT_MODE,
             "control_mode": CONTROL_MODE,
             "prompt_mode": PROMPT_MODE,
+            "metrics_mode": METRICS_MODE,
+            "gemini_reliability_mode": GEMINI_RELIABILITY_MODE,
             "frontend_profile": FRONTEND_PROFILE,
             "pid": __import__("os").getpid(),
         }, 200, {"Cache-Control": "no-store"}
@@ -70,7 +75,7 @@ def _install_render_liveness(app):
 
 
 def activate_v27_runtime():
-    """Compose proven backend layers, then expose the final V34/V35/V36 product."""
+    """Compose every production layer once, in dependency order."""
     global _APPLIED, _CONTRACT
     if _APPLIED:
         return dict(_CONTRACT or {"runtime": RUNTIME_VERSION, "product_mode": PRODUCT_MODE})
@@ -139,6 +144,13 @@ def activate_v27_runtime():
         from radar_audit_v30 import apply_audit_v30
         v30_info = apply_audit_v30()
 
+        # V38 must be explicitly installed after V30 captured its base classifier.
+        # V38 also activates V39 passive read-only recovery. Previous tests could
+        # import diagnostics without proving this production activation; V40 makes
+        # the bootstrap authoritative.
+        from radar_json_headroom_v38 import install_json_headroom_v38
+        v38_info = install_json_headroom_v38()
+
         from radar_v28_finish import apply_v28_finish
         finish_info = apply_v28_finish()
 
@@ -154,7 +166,7 @@ def activate_v27_runtime():
         from radar_momentum_v34 import apply_momentum_v34
         momentum_info = apply_momentum_v34()
 
-        # V35 MUST be installed after every backend wrapper so it is the final
+        # V35 MUST be installed after every backend work wrapper so it is the final
         # authority over create/resume/tick. Opening/F5/deploy cannot advance work.
         from radar_manual_start_v35 import install_manual_start_v35
         manual_info = install_manual_start_v35(app_module)
@@ -168,7 +180,18 @@ def activate_v27_runtime():
         from prompt_reliability_v36 import install_prompt_reliability_v36
         prompt_info = install_prompt_reliability_v36(app_module)
 
-        # One fail-open browser runtime only. Its globals already contain V34+V35.
+        # V40 metric truth is installed after V34 momentum + V35 HTML patch so it
+        # can guard metric-history provenance and patch the actual final HTML. It
+        # never starts a paid refresh automatically; one-item refresh is user-only.
+        from metrics_truth_v40 import install_metrics_truth_v40
+        metrics_info = install_metrics_truth_v40(app_module.app)
+
+        # Temporary Gemini high-demand failures get bounded stage retries and, if
+        # still unavailable, a truthful HTTP 503 rather than an internal 500.
+        from gemini_overload_v40 import install_gemini_overload_v40
+        overload_info = install_gemini_overload_v40(app_module.app)
+
+        # One fail-open browser runtime only. Its globals already contain V34+V35+V40.
         from frontend_failopen_v33 import install_frontend_v33
         frontend_info = install_frontend_v33(app_module.app)
 
@@ -185,12 +208,15 @@ def activate_v27_runtime():
         app_module.EDGE_PROFILE = PUBLIC_EDGE_PROFILE
         app_module.RADAR_MAX_DURATION_SEC = SOURCE_MAX_DURATION_SEC
 
+    passive_recovery = dict(v38_info.get("passive_recovery") or {})
     _CONTRACT = {
         "runtime": RUNTIME_VERSION,
         "profile": RUNTIME_VERSION,
         "product_mode": PRODUCT_MODE,
         "control_mode": CONTROL_MODE,
         "prompt_mode": PROMPT_MODE,
+        "metrics_mode": METRICS_MODE,
+        "gemini_reliability_mode": GEMINI_RELIABILITY_MODE,
         "internal_screening_profile": v30_info["screening_profile"],
         "edge_profile": PUBLIC_EDGE_PROFILE,
         "production_profile": app_module.PRODUCTION_PROFILE_VERSION,
@@ -264,6 +290,28 @@ def activate_v27_runtime():
         "analysis_cache_for_broad_candidates": bool(prompt_info.get("analysis_cache_for_broad_candidates")),
         "prompt_token_in_url": bool(prompt_info.get("token_in_url")),
         "redirect_token_forwarding": bool(prompt_info.get("redirect_token_forwarding")),
+        "structured_output_max_tokens": v38_info.get("structured_output_max_tokens"),
+        "v38_installed": True,
+        "passive_recovery_profile": passive_recovery.get("profile"),
+        "passive_recovery_active": True,
+        "passive_recovery_paid_discovery_started": bool(passive_recovery.get("paid_discovery_started", False)),
+        "durable_prompt_cache_limit": passive_recovery.get("analysis_cache_limit"),
+        "metrics_profile": metrics_info.get("profile"),
+        "instagram_views_metric": metrics_info.get("instagram_views"),
+        "instagram_views_deprecated_fallback": metrics_info.get("instagram_deprecated_fallback"),
+        "tiktok_views_metric": metrics_info.get("tiktok_views"),
+        "youtube_views_metric": metrics_info.get("youtube_views"),
+        "metrics_timestamped": bool(metrics_info.get("metrics_timestamped")),
+        "stale_metric_overwrite_blocked": bool(metrics_info.get("stale_metric_overwrite_blocked")),
+        "momentum_metric_source_guard": bool(metrics_info.get("momentum_metric_source_guard")),
+        "manual_metric_refresh": bool(metrics_info.get("manual_metric_refresh")),
+        "automatic_metric_refresh": bool(metrics_info.get("automatic_metric_refresh", False)),
+        "manual_metric_refresh_hard_cap_usd": metrics_info.get("manual_metric_refresh_hard_cap_usd"),
+        "gemini_overload_profile": overload_info.get("profile"),
+        "gemini_transient_retry_delays_seconds": overload_info.get("retry_delays_seconds"),
+        "gemini_transient_max_extra_attempts": overload_info.get("max_extra_attempts"),
+        "gemini_validation_errors_retried": bool(overload_info.get("validation_errors_retried")),
+        "gemini_final_overload_http": overload_info.get("final_http_status"),
         "legacy_startup_banners_suppressed": True,
         "render_fast_liveness": True,
         "apify_start_compat": True,
@@ -272,7 +320,7 @@ def activate_v27_runtime():
     _APPLIED = True
 
     add_radar_log(
-        "V30 RUNTIME READY + V34 BROAD + V35 MANUAL START + V36 PROMPTS: 50-100 momentum candidates; no auto-resume; private Apify media authenticated; broad candidates can generate production prompts; hard budget unchanged.",
+        "V40 MVP READY: V38/V39 explicitly active; public platform view metrics are timestamped/provenanced; metric-source changes cannot fake momentum; manual one-item metric refresh only; transient Gemini overload gets bounded retry + HTTP 503; hard search budget unchanged.",
         stage="startup",
         details=dict(_CONTRACT),
     )

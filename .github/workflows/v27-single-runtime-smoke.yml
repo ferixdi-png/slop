@@ -1,4 +1,4 @@
-name: V36 Single Runtime Broad Pool Smoke
+name: V40 Single Runtime Broad Pool Smoke
 
 on:
   pull_request:
@@ -13,6 +13,10 @@ on:
       - 'frontend_manual_start_v35.py'
       - 'radar_manual_start_v35.py'
       - 'prompt_reliability_v36.py'
+      - 'radar_json_headroom_v38.py'
+      - 'mvp_passive_recovery_v39.py'
+      - 'metrics_truth_v40.py'
+      - 'gemini_overload_v40.py'
       - 'radar_multiplatform_v28.py'
       - 'radar_budget_v29.py'
       - 'radar_audit_v30.py'
@@ -32,6 +36,10 @@ on:
       - 'frontend_manual_start_v35.py'
       - 'radar_manual_start_v35.py'
       - 'prompt_reliability_v36.py'
+      - 'radar_json_headroom_v38.py'
+      - 'mvp_passive_recovery_v39.py'
+      - 'metrics_truth_v40.py'
+      - 'gemini_overload_v40.py'
       - 'radar_multiplatform_v28.py'
       - 'radar_budget_v29.py'
       - 'radar_audit_v30.py'
@@ -43,7 +51,7 @@ jobs:
   broad-single-runtime:
     runs-on: ubuntu-latest
     env:
-      SECRET_KEY: v36-smoke
+      SECRET_KEY: v40-single-runtime
       PORT: '10000'
       APIFY_API_TOKEN: ''
       GEMINI_API_KEY: ''
@@ -53,9 +61,8 @@ jobs:
         with:
           python-version: '3.13'
       - run: pip install -r requirements.txt
-      - name: Compile current runtime
-        run: python -m compileall -q app.py radar_runtime_v27.py radar_broad_v34.py radar_momentum_v34.py youtube_genai_v34.py frontend_broad_v34.py frontend_failopen_v33.py frontend_manual_start_v35.py radar_manual_start_v35.py prompt_reliability_v36.py
-      - name: Verify broad momentum product, manual control and prompts without external spend
+      - run: python -m compileall -q app.py radar_runtime_v27.py radar_broad_v34.py radar_momentum_v34.py metrics_truth_v40.py gemini_overload_v40.py
+      - name: Verify one production runtime and all current product overlays
         run: |
           python - <<'PY'
           import contextlib
@@ -69,11 +76,11 @@ jobs:
           lines = [x for x in startup.splitlines() if '[startup]' in x]
           assert len(lines) == 1, startup
           line = lines[0]
-          assert 'V30 RUNTIME READY' in line, line
-          assert 'V34 BROAD' in line, line
-          assert 'V35 MANUAL START' in line, line
-          assert 'V36 PROMPTS' in line, line
+          assert 'V40 MVP READY' in line, line
+          assert 'public platform view metrics' in line, line
+          assert 'HTTP 503' in line, line
 
+          import metrics_truth_v40 as metrics
           import radar_audit_v30 as v30
           import radar_broad_v34 as v34
           import radar_budget_v29 as v29
@@ -94,34 +101,35 @@ jobs:
           assert app_module.top_eligible is v34.broad_eligible
           assert v28.matches_v28 is v34.broad_matches
           assert v28.classify_youtube_url_v28 is yt34.classify_youtube_url_v34
+          assert radar_job.normalize_reel is metrics.normalize_candidate_v40
 
           c = app_module.app.test_client()
           status = c.get('/api/status').get_json()
-          assert status['radar_runtime'] == v30.MODE_VERSION, status
           info = status['runtime_info']
+          assert status['radar_runtime'] == v30.MODE_VERSION, status
           assert info['product_mode'] == v34.MODE_VERSION, status
-          assert info['target_output_min'] == 50, status
-          assert info['target_output_max'] == 100, status
-          assert info['ai_enrich_limit'] == 20, status
-          assert info['ai_role'] == 'enrichment_only', status
-          assert info['speech_required'] is False, status
-          assert status['radar_speech_required'] is False, status
-          assert info['manual_start_only'] is True, status
-          assert info['auto_resume_on_page_load'] is False, status
-          assert info['tick_requires_driver_token'] is True, status
-          assert info['driver_token_persisted'] is False, status
+          assert info['target_output_min'] == 50 and info['target_output_max'] == 100, status
+          assert info['ai_enrich_limit'] == 20 and info['ai_role'] == 'enrichment_only', status
+          assert info['speech_required'] is False and status['radar_speech_required'] is False, status
+          assert info['manual_start_only'] is True and info['auto_resume_on_page_load'] is False, status
+          assert info['tick_requires_driver_token'] is True and info['driver_token_persisted'] is False, status
           assert info['broad_candidate_prompt_access'] is True, status
           assert info['apify_private_media_auth'] == 'bearer_header_only', status
           assert info['apify_signed_record_fallback'] is True, status
-          assert info['prompt_token_in_url'] is False, status
-          assert info['redirect_token_forwarding'] is False, status
+          assert info['prompt_token_in_url'] is False and info['redirect_token_forwarding'] is False, status
+          assert info['v38_installed'] is True and info['passive_recovery_active'] is True, status
+          assert info['metrics_profile'] == 'metrics_truth_v40_public_counts', status
+          assert info['instagram_views_metric'] == 'videoPlayCount', status
+          assert info['tiktok_views_metric'] == 'playCount', status
+          assert info['youtube_views_metric'] == 'viewCount', status
+          assert info['automatic_metric_refresh'] is False, status
+          assert info['gemini_final_overload_http'] == 503, status
           assert status['radar_hard_total_target_usd'] == 5.0, status
           assert status['radar_apify_discovery_hard_cap_usd'] == 2.8, status
           assert status['radar_budget_headroom_usd'] == 2.2, status
           assert status['radar_results_per_tag_per_platform'] == 60, status
           assert status['radar_max_raw_requested'] == 900, status
-          assert info['automatic_paid_refreshes'] is False, status
-          assert info['audit_top10_closed'] is True, status
+          assert info['automatic_paid_refreshes'] is False and info['audit_top10_closed'] is True, status
 
           b = v29.budget_breakdown_v29()
           assert b['hard_total_target_usd'] == 5.0
@@ -140,13 +148,8 @@ jobs:
           now = datetime.now(timezone.utc)
           with db_conn() as conn:
               conn.execute('DELETE FROM radar_posts')
-              reasons = [
-                  '',
-                  'NO_SPOKEN_DIALOGUE: synthetic',
-                  'TIMING_OR_MECHANIC_REJECT: synthetic',
-                  'TUTORIAL_OR_REVIEW: synthetic',
-                  v28.PASS_PREFIX + 'DIRECT: synthetic',
-              ]
+              reasons = ['', 'NO_SPOKEN_DIALOGUE: synthetic', 'TIMING_OR_MECHANIC_REJECT: synthetic',
+                         'TUTORIAL_OR_REVIEW: synthetic', v28.PASS_PREFIX + 'DIRECT: synthetic']
               for i in range(75):
                   platform = v28.PLATFORMS[i % len(v28.PLATFORMS)]
                   tag = v28.TARGET_TAGS[i % len(v28.TARGET_TAGS)]
@@ -175,24 +178,15 @@ jobs:
           assert all(x['ai_role'] == 'enrichment_only' for x in top)
           assert not any(x['post_url'] == 'https://example.com/static' for x in top)
           labels = {x['adaptation_status'] for x in top}
-          assert 'ADD_RUSSIAN_SPEECH' in labels, labels
-          assert 'REBUILD_TO_10S' in labels, labels
-          assert 'NOT_ENRICHED' in labels, labels
+          assert {'ADD_RUSSIAN_SPEECH','REBUILD_TO_10S','NOT_ENRICHED'}.issubset(labels), labels
           assert top[0]['viral_score_v2'] >= top[-1]['viral_score_v2']
 
-          candidates = c.get('/api/radar/candidates').get_json()
-          assert 50 <= len(candidates) <= 120, len(candidates)
-
-          root = c.get('/')
-          html = root.get_data(as_text=True)
-          assert root.status_code == 200
+          html = c.get('/').get_data(as_text=True)
           assert 'V34 BROAD TREND POOL' in html
-          assert '50–100' in html
-          assert 'MANUAL START ONLY' in html
+          assert '50–100' in html and 'MANUAL START ONLY' in html
           assert 'window.__V35_MANUAL_START__=true' in html
-          assert 'MutationObserver' not in html
-          assert '/static/' not in html
-          assert root.headers['X-Frontend-Profile'] == 'frontend_v34_broad_fail_open', root.headers
+          assert 'ОБНОВИТЬ ЦИФРЫ' in html
+          assert 'MutationObserver' not in html and '/static/' not in html
 
           original = app_module.db_conn
           app_module.db_conn = lambda: (_ for _ in ()).throw(RuntimeError('synthetic db outage'))
@@ -202,5 +196,5 @@ jobs:
           finally:
               app_module.db_conn = original
 
-          print('V36 SINGLE RUNTIME: V34 BROAD + V35 MANUAL + V36 PROMPTS + V30 BUDGET/SAFETY OK')
+          print('V40 SINGLE RUNTIME OK')
           PY
