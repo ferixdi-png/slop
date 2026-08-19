@@ -130,7 +130,7 @@ jobs:
           assert 'healthCheckPath: /healthz' in render
           requirements = Path('requirements.txt').read_text('utf-8')
           assert 'apify-client==1.12.1' in requirements
-          assert 'google-genai<3.0,>=2.9' in requirements
+          assert 'google-genai>=2.9,<3.0' in requirements
 
           print('FINAL MVP CONTRACT OK')
           PY
