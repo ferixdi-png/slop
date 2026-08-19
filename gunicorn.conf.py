@@ -1,6 +1,7 @@
 # Loaded automatically by Gunicorn from ./gunicorn.conf.py even when the Render
 # service was created manually and its Start Command is still just `gunicorn app:app ...`.
 # This keeps one authoritative live log stream in Render → Logs.
+# Verification branch only: final V29 hard-budget + no-paid-refresh check.
 
 import os
 
