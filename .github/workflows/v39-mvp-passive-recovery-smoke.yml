@@ -124,6 +124,7 @@ jobs:
           assert info['paid_discovery_started'] is False, info
           assert info['gemini_called'] is False, info
           assert info['job_advanced'] is False, info
+          assert info['snapshot_writer'] == 'newest_first_v39', info
           assert radar_job._snapshot_checked is True
 
           client = app_module.app.test_client()
@@ -133,9 +134,13 @@ jobs:
           assert isinstance(rows, list) and rows, rows
           assert any(x.get('creator') == 'v39_restore_test' for x in rows), rows
 
+          # A terminal run is not resumable, so it correctly needs no Continue click.
+          # The important safety invariant is that GET-only usage cannot make it active.
           job = client.get('/api/radar/job').get_json()
-          assert job.get('manual_start_required') is True, job
           assert job.get('active') is False, job
+          assert job.get('durable_active') is False, job
+          assert job.get('manual_start_only') is True, job
+          assert job.get('manual_start_required') is False, job
           assert app_module.RUNTIME_INFO['manual_start_only'] is True
           assert app_module.RUNTIME_INFO['auto_resume_on_page_load'] is False
 
@@ -147,6 +152,50 @@ jobs:
           cloud_state.save_cloud_record = real_save
           print('V39 PASSIVE RECOVERY OK', info)
           PY
+      - name: Ordered durable snapshot keeps newest rows first
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import datetime, timedelta, timezone
+
+          import cloud_state
+          from db import db_conn
+          import mvp_passive_recovery_v39 as v39
+
+          now = datetime.now(timezone.utc)
+          with db_conn() as conn:
+              conn.execute('DELETE FROM radar_posts')
+              for i, hours in enumerate([72, 2, 24], start=1):
+                  conn.execute(
+                      """INSERT INTO radar_posts(
+                         platform,creator,post_url,published_at,duration_sec,views,likes,comments,
+                         hours_since_publish,views_per_hour,search_term,caption,ai_match,
+                         characters_json,viral_score_v2,screening_profile)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      (
+                          'TikTok', f'order_{i}', f'https://example.com/{i}',
+                          (now - timedelta(hours=hours)).isoformat(), 9.0,
+                          1000 * i, 10, 1, float(hours), 100.0, 'ai', '#ai', 1,
+                          '[]', 50.0 + i, 'multiplatform_speech_v30_audit10_budget5',
+                      ),
+                  )
+              conn.commit()
+
+          captured = {}
+          real_save = cloud_state.save_cloud_record
+          cloud_state.save_cloud_record = lambda key, payload: captured.setdefault('payload', payload) is not None
+          try:
+              assert v39.save_ordered_snapshot_v39() is True
+          finally:
+              cloud_state.save_cloud_record = real_save
+
+          creators = [x['creator'] for x in captured['payload']['posts']]
+          assert creators[:3] == ['order_2', 'order_3', 'order_1'], creators
+          assert captured['payload']['lookback_days'] == 14
+          assert captured['payload']['post_limit'] == 1000
+          assert captured['payload']['snapshot_order'] == 'published_at_desc_then_viral_score_then_views'
+          print('V39 ORDERED SNAPSHOT OK', creators)
+          PY
       - name: Recovery module contains no paid-work entrypoint
         run: |
           python - <<'PY'
@@ -156,5 +205,6 @@ jobs:
           for token in forbidden:
               assert token not in text, token
           assert 'restore_radar_snapshot_if_empty()' in text
-          print('V39 RECOVERY IS PASSIVE ONLY')
+          assert 'ORDER BY datetime(published_at) DESC' in text
+          print('V39 RECOVERY IS PASSIVE; SNAPSHOT IS DETERMINISTIC')
           PY
