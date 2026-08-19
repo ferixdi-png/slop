@@ -96,14 +96,11 @@ def activate_v27_runtime():
         from radar_resilient_v17 import apply_resilient_v17_overrides
         apply_resilient_v17_overrides()
 
-        # Keep monthly budget wrapper inside hardening exactly as in the proven stack.
         app_module.tick_job = budget.wrap_tick_job(app_module.tick_job)
 
         from radar_hardening_v19 import apply_hardening_v19
         apply_hardening_v19()
 
-        # Compatibility edge layer transitively composes source aggregation,
-        # fresh-run isolation, momentum and strict V27 reconstruction behavior.
         from radar_edge_v19 import apply_edge_guards
         edge_info = apply_edge_guards()
 
@@ -119,11 +116,11 @@ def activate_v27_runtime():
         if not V27_APPLIED:
             raise RuntimeError("V27 reconstruction base did not activate during final bootstrap")
 
-        # Keep the proven V27 Instagram high-volume adapter as an internal stage,
-        # then replace its final discovery/screening scope with V28.
         install_v27_high_volume_discovery()
         from radar_multiplatform_v28 import apply_multiplatform_v28
         v28_info = apply_multiplatform_v28()
+        from radar_v28_finish import apply_v28_finish
+        finish_info = apply_v28_finish()
 
         final_keep_limit = int(v28_info.get("keep_limit") or budget.KEEP_LIMIT)
         final_budget = budget.budget_breakdown()
@@ -154,6 +151,7 @@ def activate_v27_runtime():
         "speech_required": True,
         "strict_actual_hashtag": True,
         "youtube_direct_gemini": bool(v28_info.get("youtube_direct_gemini")),
+        "v28_14day_api": bool(finish_info.get("v28_14day_api")),
         "direct_max_duration_sec": DIRECT_MAX_DURATION_SEC,
         "source_max_duration_sec": SOURCE_MAX_DURATION_SEC,
         "compressed_target_sec": COMPRESSED_TARGET_SEC,
