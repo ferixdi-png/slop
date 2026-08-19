@@ -125,10 +125,16 @@ def activate_v27_runtime():
         from radar_budget_v29 import apply_budget_v29, budget_breakdown_v29
         v29_info = apply_budget_v29()
 
+        # Automatic search must never start surprise paid refresh Actors after
+        # the three discovery runs. Explicit user-triggered detailed analysis is
+        # intentionally left refresh-capable outside this automatic run budget.
+        from radar_budget_search_guard_v29 import apply_search_budget_guard_v29
+        search_guard_info = apply_search_budget_guard_v29()
+
         from radar_v28_finish import apply_v28_finish
         finish_info = apply_v28_finish()
 
-        final_info = {**dict(v28_info or {}), **dict(v29_info or {})}
+        final_info = {**dict(v28_info or {}), **dict(v29_info or {}), **dict(search_guard_info or {})}
         final_keep_limit = int(final_info.get("keep_limit") or budget.KEEP_LIMIT)
         final_budget = budget_breakdown_v29()
 
@@ -158,6 +164,7 @@ def activate_v27_runtime():
         "speech_required": True,
         "strict_actual_hashtag": True,
         "youtube_direct_gemini": bool(final_info.get("youtube_direct_gemini")),
+        "automatic_paid_refreshes": bool(final_info.get("automatic_paid_refreshes", False)),
         "v28_14day_api": bool(finish_info.get("v28_14day_api")),
         "direct_max_duration_sec": DIRECT_MAX_DURATION_SEC,
         "source_max_duration_sec": SOURCE_MAX_DURATION_SEC,
@@ -175,7 +182,7 @@ def activate_v27_runtime():
     _APPLIED = True
 
     add_radar_log(
-        "V29 RUNTIME READY: Instagram + TikTok + YouTube; 14 дней; speech/timing; Apify discovery hard cap $2.80; total target <$5.",
+        "V29 RUNTIME READY: 3 platforms; speech/timing; discovery hard cap $2.80; no automatic paid refreshes; total target <$5.",
         stage="startup",
         details=dict(_CONTRACT),
     )
