@@ -34,35 +34,10 @@ jobs:
       - run: pip install -r requirements.txt playwright
       - name: Verify system Chrome
         run: google-chrome --version
-      - name: Seed two visible trends
-        run: |
-          rm -f /tmp/slop-v41-browser.sqlite /tmp/slop-v41-browser.sqlite-wal /tmp/slop-v41-browser.sqlite-shm
-          python - <<'PY'
-          from datetime import datetime, timezone
-          import app as app_module
-          from db import db_conn
-
-          now = datetime.now(timezone.utc).isoformat()
-          with db_conn() as conn:
-              for i in (1,2):
-                  conn.execute(
-                      '''INSERT INTO radar_posts(
-                         platform,creator,post_url,published_at,duration_sec,views,likes,comments,
-                         hours_since_publish,views_per_hour,viral_score_v2,search_term,
-                         ai_checked,ai_match,screening_profile,reason,hook,scene_description,caption
-                         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                      (
-                          'Instagram Reels',f'browser{i}',f'https://www.instagram.com/reel/V41BROWSER{i}/',
-                          now,8.0,300000-i*10000,5000,100,1.0,250000-i*10000,95-i,'ai',
-                          0,0,app_module.PROFILE_VERSION,'',f'Browser trend {i}',
-                          f'Visible synthetic browser trend {i}','synthetic browser #ai'
-                      ),
-                  )
-              conn.commit()
-          PY
       - name: Click, copy, close and reopen modal in real Chrome
         run: |
           set -euo pipefail
+          rm -f /tmp/slop-v41-browser.sqlite /tmp/slop-v41-browser.sqlite-wal /tmp/slop-v41-browser.sqlite-shm
           gunicorn app:app --bind 0.0.0.0:10000 --workers 1 --threads 4 --timeout 900 >/tmp/v41-browser-gunicorn.log 2>&1 &
           PID=$!
           trap 'kill $PID >/dev/null 2>&1 || true' EXIT
@@ -78,6 +53,60 @@ jobs:
           page_errors = []
           api_posts = []
           analyze_calls = {'n': 0}
+
+          radar_rows = [
+              {
+                  'id': 1001,
+                  'platform': 'Instagram Reels',
+                  'creator': 'browser1',
+                  'post_url': 'https://www.instagram.com/reel/V41BROWSER1/',
+                  'duration_sec': 8.0,
+                  'views': 290000,
+                  'likes': 5000,
+                  'comments': 100,
+                  'hours_since_publish': 1.0,
+                  'views_per_hour': 250000,
+                  'measured_growth_per_hour': 0,
+                  'viral_score_v2': 94,
+                  'search_term': 'ai',
+                  'hook': 'Browser trend 1',
+                  'scene_description': 'Visible synthetic browser trend 1',
+                  'adaptation_label': 'ТРЕНД-КАНДИДАТ',
+                  'adaptation_status': 'NOT_ENRICHED',
+                  'trend_pool': True,
+                  'speech_required_for_top': False,
+                  'ai_role': 'enrichment_only',
+              },
+              {
+                  'id': 1002,
+                  'platform': 'Instagram Reels',
+                  'creator': 'browser2',
+                  'post_url': 'https://www.instagram.com/reel/V41BROWSER2/',
+                  'duration_sec': 8.0,
+                  'views': 280000,
+                  'likes': 4800,
+                  'comments': 90,
+                  'hours_since_publish': 1.2,
+                  'views_per_hour': 230000,
+                  'measured_growth_per_hour': 0,
+                  'viral_score_v2': 92,
+                  'search_term': 'ai',
+                  'hook': 'Browser trend 2',
+                  'scene_description': 'Visible synthetic browser trend 2',
+                  'adaptation_label': 'ТРЕНД-КАНДИДАТ',
+                  'adaptation_status': 'NOT_ENRICHED',
+                  'trend_pool': True,
+                  'speech_required_for_top': False,
+                  'ai_role': 'enrichment_only',
+              },
+          ]
+
+          def radar_route(route):
+              route.fulfill(
+                  status=200,
+                  content_type='application/json',
+                  body=json.dumps(radar_rows, ensure_ascii=False),
+              )
 
           def analyze_route(route):
               analyze_calls['n'] += 1
@@ -105,13 +134,14 @@ jobs:
               page = context.new_page()
               page.on('pageerror', lambda e: page_errors.append(str(e)))
               page.on('request', lambda r: api_posts.append(r.url) if r.method.upper()=='POST' and '/api/' in r.url else None)
+              page.route('**/api/radar', radar_route)
               page.route('**/api/radar/*/analyze', analyze_route)
 
               response = page.goto('http://127.0.0.1:10000/', wait_until='domcontentloaded', timeout=30000)
               assert response and response.status == 200
               page.wait_for_function('window.__V35_MANUAL_START__ === true', timeout=10000)
               page.locator('[data-analyze]').first.wait_for(state='visible', timeout=10000)
-              assert page.locator('[data-analyze]').count() >= 2
+              assert page.locator('[data-analyze]').count() == 2
               assert api_posts == [], api_posts
               assert not page.locator('#promptModal').is_visible()
 
@@ -129,7 +159,7 @@ jobs:
               clipboard = page.evaluate('navigator.clipboard.readText()')
               assert 'PHOTO PROMPT BROWSER 1' in clipboard, clipboard
 
-              # Close by X, then open a different trend without navigation/scroll target.
+              # Close by X, then open a different trend without navigation.
               page.locator('[data-prompt-close]').click()
               assert not page.locator('#promptModal').is_visible()
               page.locator('[data-analyze]').nth(1).click()
