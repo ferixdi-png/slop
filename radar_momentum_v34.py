@@ -9,6 +9,7 @@ lifetime views/hour otherwise).
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timezone
 
 import radar_broad_v34 as broad
@@ -147,15 +148,34 @@ def apply_momentum_v34():
     _BASE_REFRESH = radar_quality.refresh_recent_scores_quality
     radar_quality.refresh_recent_scores_quality = refresh_momentum_v34
     broad._query_broad_rows = query_broad_by_current_velocity
+
+    # FINAL SAFETY LAYER. It must be installed after every legacy/budget/hardening
+    # wrapper and before the browser document is installed. Durable state may
+    # survive, but browser GET/reload/deploy cannot advance it without a fresh
+    # in-memory token issued by an explicit Start/Continue click.
+    app_module = sys.modules.get("app")
+    if app_module is None:
+        raise RuntimeError("V35 manual-start guard must be installed from app startup")
+    from radar_manual_start_v35 import install_manual_start_v35
+    manual_info = install_manual_start_v35(app_module)
+    from frontend_manual_start_v35 import patch_frontend_v35
+    frontend_manual_info = patch_frontend_v35()
+
     info = {
         "profile": PROFILE,
         "tags": list(v28.TARGET_TAGS),
         "lookback_days": v28.LOOKBACK_DAYS,
         "ranking": "measured_current_growth_else_views_per_hour",
         "cloud_checkpoint": True,
+        "manual_start_profile": manual_info["profile"],
+        "manual_start_only": True,
+        "auto_resume_on_page_load": False,
+        "tick_requires_driver_token": True,
+        "driver_token_persisted": False,
+        "frontend_manual_start": frontend_manual_info["manual_start_only"],
     }
     add_radar_log(
-        "V34 MOMENTUM READY: all 5 tags / 14 days; measured current growth outranks fallback velocity.",
+        "V34 MOMENTUM + V35 MANUAL START READY: all 5 tags / 14 days; measured growth ranking; page load/reload/deploy cannot advance paid work.",
         stage="startup",
         details=info,
     )
