@@ -1,0 +1,62 @@
+name: Render Runtime Probe
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  render-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PORT: '10000'
+      SECRET_KEY: runtime-probe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Start exact Render command and probe
+        run: |
+          set -euxo pipefail
+          gunicorn app:app --workers 1 --threads 4 --timeout 900 > /tmp/gunicorn.log 2>&1 &
+          echo $! > /tmp/gunicorn.pid
+          ready=0
+          for i in $(seq 1 60); do
+            if curl -fsS --max-time 2 http://127.0.0.1:10000/healthz >/tmp/healthz.json; then
+              ready=1
+              break
+            fi
+            if ! kill -0 "$(cat /tmp/gunicorn.pid)" 2>/dev/null; then
+              cat /tmp/gunicorn.log
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          curl -fsSI --max-time 3 http://127.0.0.1:10000/ >/tmp/head.txt
+          curl -fsS --max-time 3 http://127.0.0.1:10000/healthz >/tmp/healthz2.json
+          curl -fsS --max-time 5 http://127.0.0.1:10000/api/status >/tmp/status.json
+          grep -q '200 OK' /tmp/head.txt
+          python - <<'PY'
+          import json
+          h=json.load(open('/tmp/healthz2.json'))
+          s=json.load(open('/tmp/status.json'))
+          assert h['ok'] is True, h
+          assert h['runtime']=='omni_veo_veo3_v27_strict_compress10', h
+          assert s['radar_runtime']=='omni_veo_veo3_v27_strict_compress10', s
+          print('HTTP contract OK')
+          PY
+      - name: Prove process stays alive 45s
+        run: |
+          set -euxo pipefail
+          sleep 45
+          kill -0 "$(cat /tmp/gunicorn.pid)"
+          curl -fsS --max-time 3 http://127.0.0.1:10000/healthz
+          tail -n 100 /tmp/gunicorn.log
+      - name: Dump logs on failure
+        if: failure()
+        run: cat /tmp/gunicorn.log || true
