@@ -68,7 +68,7 @@ const $ = (id) => document.getElementById(id);
 const PROFILE = 'frontend_v33_fail_open_single_runtime';
 const LEASE_KEY = 'trend-radar-driver-v33';
 const CLIENT_ID = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') ? globalThis.crypto.randomUUID() : `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const state = { refreshBusy:false, listsBusy:false, driveBusy:false, driveEnabled:false, stopRequested:false, active:false, lastListsAt:0, consecutiveDriveErrors:0, destroyed:false };
+const state = { refreshBusy:false, listsBusy:false, driveBusy:false, driveEnabled:false, stopRequested:false, active:false, lastListsAt:0, consecutiveDriveErrors:0, destroyed:false, stickyRuntimeError:false };
 let refreshTimer = null;
 let driveTimer = null;
 
@@ -76,10 +76,10 @@ function esc(v=''){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt
 function num(v){const n=Number(v||0);if(n>=1e6)return (n/1e6).toFixed(n>=1e7?0:1)+' млн';if(n>=1e3)return (n/1e3).toFixed(n>=1e5?0:1)+' тыс';return Math.round(n).toLocaleString('ru-RU');}
 function eta(v){const s=Number(v);if(!Number.isFinite(s)||s<0)return '—';if(s<60)return `≈ ${Math.ceil(s)} сек`;return `≈ ${Math.ceil(s/60)} мин`;}
 function nowLabel(){return new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
-function showRuntimeError(message){const el=$('runtimeError');if(!el)return;el.hidden=false;el.textContent=String(message||'Неизвестная ошибка интерфейса');const pill=$('runtimePill');if(pill){pill.className='runtime-pill bad';pill.textContent='V33 · ошибка динамики · статический интерфейс сохранён';}}
-function clearRuntimeError(){const el=$('runtimeError');if(el){el.hidden=true;el.textContent='';}}
-window.addEventListener('error',e=>showRuntimeError(`JavaScript: ${e.message||'ошибка выполнения'}`));
-window.addEventListener('unhandledrejection',e=>showRuntimeError(`Promise: ${e.reason?.message||e.reason||'ошибка выполнения'}`));
+function showRuntimeError(message,sticky=false){if(sticky)state.stickyRuntimeError=true;const el=$('runtimeError');if(!el)return;el.hidden=false;el.textContent=String(message||'Неизвестная ошибка интерфейса');const pill=$('runtimePill');if(pill){pill.className='runtime-pill bad';pill.textContent=sticky?'V33 · runtime fault зафиксирован · интерфейс сохранён':'V33 · связь/динамика восстанавливается · интерфейс сохранён';}}
+function clearRuntimeError(force=false){if(state.stickyRuntimeError&&!force)return;if(force)state.stickyRuntimeError=false;const el=$('runtimeError');if(el){el.hidden=true;el.textContent='';}const pill=$('runtimePill');if(pill){pill.className='runtime-pill';pill.textContent='V33 · fail-open single runtime · JS готов';}}
+window.addEventListener('error',e=>showRuntimeError(`JavaScript: ${e.message||'ошибка выполнения'}`,true));
+window.addEventListener('unhandledrejection',e=>showRuntimeError(`Promise: ${e.reason?.message||e.reason||'ошибка выполнения'}`,true));
 
 async function api(url, options={}, timeoutMs=20000){
   const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),timeoutMs);
@@ -112,8 +112,10 @@ async function refreshCore(){
   if(state.refreshBusy||state.destroyed)return;state.refreshBusy=true;
   try{
     const [statusR,radarR,jobR]=await Promise.allSettled([api('/api/status'),api('/api/radar/status'),api('/api/radar/job')]);
+    const fulfilled=[statusR,radarR,jobR].filter(x=>x.status==='fulfilled').length;
     if(statusR.status==='fulfilled')paintService(statusR.value);if(radarR.status==='fulfilled')paintStatus(radarR.value,jobR.status==='fulfilled'?jobR.value:null);else if(jobR.status==='fulfilled')paintStatus({stage:jobR.value?.active?'running':'idle',label:jobR.value?.active?'Поиск выполняется':'Готов к поиску',message:jobR.value?.message||'',progress:0},jobR.value);
-    if(jobR.status==='fulfilled'&&jobR.value?.active&&!state.stopRequested){state.driveEnabled=true;scheduleDrive(300);}clearRuntimeError();
+    if(jobR.status==='fulfilled'&&jobR.value?.active&&!state.stopRequested){state.driveEnabled=true;scheduleDrive(300);}
+    if(fulfilled===0){const first=[statusR,radarR,jobR].find(x=>x.status==='rejected');showRuntimeError(`Связь с сервером временно потеряна: ${first?.reason?.message||'нет ответа'}`);}else clearRuntimeError();
   }catch(e){showRuntimeError(`Обновление статуса: ${e.message}`);}finally{state.refreshBusy=false;scheduleRefresh();}
 }
 
