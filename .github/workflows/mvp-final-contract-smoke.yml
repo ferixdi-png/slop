@@ -10,6 +10,8 @@ on:
       - 'prompt_reliability_v36.py'
       - 'radar_json_headroom_v38.py'
       - 'mvp_passive_recovery_v39.py'
+      - 'metrics_truth_v40.py'
+      - 'gemini_overload_v40.py'
       - 'render.yaml'
       - 'requirements.txt'
       - '.github/workflows/mvp-final-contract-smoke.yml'
@@ -23,6 +25,8 @@ on:
       - 'prompt_reliability_v36.py'
       - 'radar_json_headroom_v38.py'
       - 'mvp_passive_recovery_v39.py'
+      - 'metrics_truth_v40.py'
+      - 'gemini_overload_v40.py'
       - 'render.yaml'
       - 'requirements.txt'
       - '.github/workflows/mvp-final-contract-smoke.yml'
@@ -42,7 +46,7 @@ jobs:
           python-version: '3.13'
       - run: pip install -r requirements.txt
       - name: Compile production surface
-        run: python -m compileall -q app.py radar_runtime_v27.py radar_broad_v34.py radar_manual_start_v35.py prompt_reliability_v36.py radar_json_headroom_v38.py mvp_passive_recovery_v39.py
+        run: python -m compileall -q app.py radar_runtime_v27.py radar_broad_v34.py radar_manual_start_v35.py prompt_reliability_v36.py radar_json_headroom_v38.py mvp_passive_recovery_v39.py metrics_truth_v40.py gemini_overload_v40.py
       - name: Assert final MVP product contract
         run: |
           rm -f /tmp/slop-final-mvp.sqlite /tmp/slop-final-mvp.sqlite-wal /tmp/slop-final-mvp.sqlite-shm
@@ -100,6 +104,14 @@ jobs:
           assert info['mutation_observers'] == 0, info
           assert info['parallel_polling_layers'] == 0, info
 
+          # V38/V39 activation must be evidenced by the authoritative bootstrap
+          # contract, not by importing a module whose default diagnostics look sane.
+          assert info['v38_installed'] is True, info
+          assert info['structured_output_max_tokens'] == 1024, info
+          assert info['passive_recovery_active'] is True, info
+          assert info['passive_recovery_paid_discovery_started'] is False, info
+          assert info['durable_prompt_cache_limit'] == 30, info
+
           v38_info = v38.diagnostics()
           assert v38_info['structured_output_max_tokens'] == 1024, v38_info
           assert v38_info['automatic_retry_added'] is False, v38_info
@@ -113,6 +125,25 @@ jobs:
           assert recovery['gemini_called'] is False, recovery
           assert recovery['job_advanced'] is False, recovery
 
+          # V40 view-count truth: the displayed/ranked metric definition is explicit.
+          assert info['metrics_profile'] == 'metrics_truth_v40_public_counts', info
+          assert info['instagram_views_metric'] == 'videoPlayCount', info
+          assert info['instagram_views_deprecated_fallback'] == 'videoViewCount', info
+          assert info['tiktok_views_metric'] == 'playCount', info
+          assert info['youtube_views_metric'] == 'viewCount', info
+          assert info['metrics_timestamped'] is True, info
+          assert info['stale_metric_overwrite_blocked'] is True, info
+          assert info['momentum_metric_source_guard'] is True, info
+          assert info['manual_metric_refresh'] is True, info
+          assert info['automatic_metric_refresh'] is False, info
+          assert float(info['manual_metric_refresh_hard_cap_usd']) == 0.12, info
+
+          # V40 production Gemini overload policy is bounded and transparent.
+          assert info['gemini_overload_profile'] == 'gemini_overload_v40', info
+          assert info['gemini_transient_max_extra_attempts'] == 2, info
+          assert info['gemini_validation_errors_retried'] is False, info
+          assert info['gemini_final_overload_http'] == 503, info
+
           c = app_module.app.test_client()
           health = c.get('/healthz')
           assert health.status_code == 200, health.get_data(as_text=True)
@@ -120,10 +151,14 @@ jobs:
           assert hp['ok'] is True, hp
           assert hp['control_mode'] == 'manual_start_only_v35', hp
           assert hp['prompt_mode'] == 'production_prompts_v36_authenticated_media', hp
+          assert hp['metrics_mode'] == 'metrics_truth_v40_public_counts', hp
+          assert hp['gemini_reliability_mode'] == 'gemini_overload_v40', hp
           root = c.get('/')
           assert root.status_code == 200
           html = root.get_data(as_text=True)
           assert 'window.__V35_MANUAL_START__=true' in html
+          assert 'ОБНОВИТЬ ЦИФРЫ' in html
+          assert 'function metricAge(' in html
           assert '/static/' not in html
 
           render = Path('render.yaml').read_text('utf-8')
@@ -132,5 +167,5 @@ jobs:
           assert 'apify-client==1.12.1' in requirements
           assert 'google-genai>=2.9,<3.0' in requirements
 
-          print('FINAL MVP CONTRACT OK')
+          print('FINAL MVP CONTRACT V40 OK')
           PY
