@@ -21,6 +21,7 @@ import frontend_failopen_v33 as v33
 import gemini_service
 import radar_multiplatform_v28 as v28
 from models import RadarAssessment
+from radar_json_headroom_v38 import install_json_headroom_v38
 
 
 # Flask executes after_request handlers in reverse registration order. V34 is
@@ -102,10 +103,15 @@ def classify_youtube_url_v34(url, caption, measured):
 
 
 def install_youtube_v34():
+    # Runtime imports/calls this only after V30 has installed its fail-closed local
+    # classifier wrapper. V38 therefore replaces the captured Gemini base safely
+    # without bypassing V30 motion, budget or media guards.
+    json_headroom_info = install_json_headroom_v38()
     v28.classify_youtube_url_v28 = classify_youtube_url_v34
     return {
         "youtube_interactions_schema": "google-genai-2.x-current",
         "youtube_url_input": True,
         "youtube_failure_policy": "keep_as_ai_unverified",
         "v34_public_response_authoritative": True,
+        "local_file_json_headroom": json_headroom_info,
     }
