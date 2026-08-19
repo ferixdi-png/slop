@@ -6,7 +6,7 @@
 
   const originalRadarCard = window.radarCard;
   if (typeof originalRadarCard === 'function') {
-    window.radarCard = function v28RadarCard(row, index) {
+    window.radarCard = function v29RadarCard(row, index) {
       const copy = {...(row || {})};
       const measured = Number(copy.measured_growth_per_hour || 0);
       if (measured > 0) copy.views_per_hour = measured;
@@ -48,10 +48,10 @@
     if (brand) brand.textContent = 'Instagram · TikTok · YouTube';
 
     const sideNote = document.querySelector('.side-note');
-    if (sideNote) sideNote.textContent = '1. Новый поиск очищает предыдущий TOP и мету. 2. Ищем последние 14 дней только по реальным #omni, #veo, #veo3, #ai и #ии. 3. Каждый кандидат обязательно слушает Gemini: без слышимой речи — REJECT. 4. До 10.05 сек сохраняем исходный речевой тайминг; 10.05–15.05 сек проходит только если обязательные реплики и действия естественно укладываются ровно в 10 секунд. 5. Ranking ставит наверх самый быстрый рост просмотров.';
+    if (sideNote) sideNote.textContent = '1. Новый поиск очищает предыдущий TOP и мету. 2. Ищем последние 14 дней только по реальным #omni, #veo, #veo3, #ai и #ии. 3. Каждый кандидат обязательно слушает Gemini: без слышимой речи — REJECT. 4. До 10.05 сек сохраняем исходный речевой тайминг; 10.05–15.05 сек проходит только если обязательные реплики и действия естественно укладываются ровно в 10 секунд. 5. Apify discovery физически ограничен $2.80, общий целевой бюджет полного поиска — меньше $5.';
 
     const eyebrow = document.querySelector('header .eyebrow');
-    if (eyebrow) eyebrow.textContent = 'V28 MULTIPLATFORM SPEECH RADAR';
+    if (eyebrow) eyebrow.textContent = 'V29 MULTIPLATFORM · HARD BUDGET <$5';
     const hero = document.querySelector('header h1 span');
     if (hero) hero.textContent = 'Instagram + TikTok + YouTube.';
 
@@ -62,20 +62,20 @@
       const muted = section.querySelector('.muted');
       if (step) step.textContent = '3 ПЛАТФОРМЫ · 5 ТЕГОВ · 14 ДНЕЙ';
       if (h2) h2.textContent = '#omni + #veo + #veo3 + #ai + #ии · только видео с речью · исходник до 15.05 сек';
-      if (muted) muted.textContent = 'strict hashtag в самом посте · Gemini слушает речь и проверяет тайминг';
+      if (muted) muted.textContent = 'до 60 результатов на тег/платформу · Apify hard cap $2.80 · общий target <$5';
     }
 
     const geminiMeta = document.getElementById('geminiApiMeta');
     if (geminiMeta) geminiMeta.textContent = 'Обязательный speech + timing gate и production-анализ выбранного видео';
     const apiMeta = document.getElementById('apifyApiMeta');
-    if (apiMeta) apiMeta.textContent = 'Instagram Reels + TikTok + YouTube Shorts · #omni / #veo / #veo3 / #ai / #ии';
+    if (apiMeta) apiMeta.textContent = 'Hard caps: Instagram $0.85 · TikTok $1.15 · YouTube $0.80';
 
     const intro = document.querySelector('.radar-intro');
     if (intro) {
       const title = intro.querySelector('b');
       const text = intro.querySelector('span');
-      if (title) title.textContent = 'Один радар на три платформы. В TOP — только ролики с реальной речью.';
-      if (text) text.textContent = 'Apify собирает Instagram Reels, TikTok и YouTube Shorts за последние 14 дней. Source-feed не является доказательством: #omni, #veo, #veo3, #ai или #ии обязан реально присутствовать в самом посте. После strict hashtag/date/duration/motion фильтра Gemini обязательно слушает каждый кандидат. Без слышимой речи ролик отклоняется. Для ≤10.05 сек Gemini подтверждает возможность сохранить речь, спикеров, паузы, действия и реакцию в фактической длительности. Для 10.05–15.05 сек PASS возможен только если всю обязательную разговорную механику можно естественно пересобрать ровно в 10.00 сек без глобального ускорения и торопливой речи.';
+      if (title) title.textContent = 'Три платформы сохранены, но расход теперь физически ограничен.';
+      if (text) text.textContent = 'На каждый из пяти тегов запрашивается максимум 60 результатов на платформу — до 300 Instagram, 300 TikTok и 300 YouTube записей. Каждый discovery Actor получает и maxItems, и собственный maxTotalChargeUsd: $0.85 / $1.15 / $0.80. Суммарный Apify discovery hard cap — $2.80, ещё $2.20 остаётся запасом до общего target <$5. После strict hashtag/date/duration/motion фильтра Gemini слушает только лучшие кандидаты; максимум 150 speech/timing проверок за run.';
     }
 
     const mini = [...document.querySelectorAll('.section-mini-title')];
@@ -88,8 +88,8 @@
     if (mini[1]) {
       const b = mini[1].querySelector('b');
       const span = mini[1].querySelector('span');
-      if (b) b.textContent = 'ПУЛ КАНДИДАТОВ V28';
-      if (span) span.textContent = '#omni · #veo · #veo3 · #ai · #ии · до 420 speech/timing проверок Gemini за run';
+      if (b) b.textContent = 'ПУЛ КАНДИДАТОВ V29';
+      if (span) span.textContent = '#omni · #veo · #veo3 · #ai · #ии · до 900 raw · максимум 150 speech/timing проверок Gemini';
     }
   }
 
