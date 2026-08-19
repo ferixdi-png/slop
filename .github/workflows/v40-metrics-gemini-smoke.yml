@@ -39,13 +39,11 @@ jobs:
         with:
           python-version: '3.13'
       - run: pip install -r requirements.txt
-      - name: Compile V40
-        run: python -m compileall -q app.py radar_runtime_v27.py metrics_truth_v40.py gemini_overload_v40.py
-      - name: Verify canonical platform metrics, freshness and overload policy
+      - run: python -m compileall -q app.py radar_runtime_v27.py metrics_truth_v40.py gemini_overload_v40.py
+      - name: Verify metric truth, freshness, momentum provenance and overload policy
         run: |
           rm -f /tmp/slop-v40.sqlite /tmp/slop-v40.sqlite-wal /tmp/slop-v40.sqlite-shm
           python - <<'PY'
-          import os
           from datetime import datetime, timedelta, timezone
           from unittest.mock import patch
 
@@ -55,15 +53,11 @@ jobs:
           from db import db_conn
 
           info = app_module.RUNTIME_INFO
-
-          # V38/V39 must be truly activated by the production bootstrap, not merely
-          # importable as standalone diagnostic modules.
           assert info['v38_installed'] is True, info
           assert info['structured_output_max_tokens'] == 1024, info
           assert info['passive_recovery_active'] is True, info
           assert info['passive_recovery_paid_discovery_started'] is False, info
           assert info['durable_prompt_cache_limit'] == 30, info
-
           assert info['metrics_profile'] == 'metrics_truth_v40_public_counts', info
           assert info['instagram_views_metric'] == 'videoPlayCount', info
           assert info['tiktok_views_metric'] == 'playCount', info
@@ -74,109 +68,76 @@ jobs:
           assert info['manual_metric_refresh'] is True, info
           assert info['automatic_metric_refresh'] is False, info
 
-          # The exact Instagram mismatch class: deprecated videoViewCount must never
-          # beat the current public videoPlayCount when both are present.
+          # Exact production mismatch class: public play count must beat deprecated view count.
           v, src, quality = metrics.extract_views_metric(
-              {'videoPlayCount': 1_200_000, 'videoViewCount': 70_000},
-              'Instagram Reels',
+              {'videoPlayCount': 1_200_000, 'videoViewCount': 70_000}, 'Instagram Reels'
           )
-          assert v == 1_200_000, (v, src, quality)
-          assert src == 'instagram.videoPlayCount', (v, src, quality)
-          assert quality == 'public_exact', (v, src, quality)
-
+          assert (v, src, quality) == (1_200_000, 'instagram.videoPlayCount', 'public_exact')
           v, src, quality = metrics.extract_views_metric({'videoViewCount': 70_000}, 'Instagram Reels')
-          assert v == 70_000 and src == 'instagram.videoViewCount'
-          assert quality == 'deprecated_fallback'
-
+          assert (v, src, quality) == (70_000, 'instagram.videoViewCount', 'deprecated_fallback')
           assert metrics.extract_views_metric({'playCount': 876543}, 'TikTok')[0:2] == (876543, 'tiktok.playCount')
           assert metrics.extract_views_metric({'viewCount': 765432}, 'YouTube Shorts')[0:2] == (765432, 'youtube.viewCount')
 
-          # A newer observation must not be overwritten later by an older snapshot/
-          # actor timestamp. This directly protects displayed counts and ranking.
           now = datetime.now(timezone.utc)
+          url = 'https://www.instagram.com/reel/V40METRIC/'
           with db_conn() as conn:
               conn.execute(
                   """INSERT INTO radar_posts(
-                    platform,creator,post_url,published_at,duration_sec,views,likes,comments,
-                    hours_since_publish,views_per_hour,search_term,screening_profile,
-                    metrics_updated_at,views_metric_source,views_metric_quality
-                  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                  (
-                      'Instagram Reels','tester','https://www.instagram.com/reel/V40METRIC/',
-                      (now-timedelta(hours=3)).isoformat(),8.0,1_200_000,5000,100,
-                      3.0,400000.0,'ai',app_module.PROFILE_VERSION,
-                      now.isoformat(),'instagram.videoPlayCount','public_exact',
-                  ),
+                     platform,creator,post_url,published_at,duration_sec,views,likes,comments,
+                     hours_since_publish,views_per_hour,search_term,screening_profile,
+                     ai_checked,ai_match,reason,metrics_updated_at,views_metric_source,views_metric_quality
+                     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  ('Instagram Reels','tester',url,(now-timedelta(hours=3)).isoformat(),8.0,
+                   1_200_000,5000,100,3.0,400000.0,'ai',app_module.PROFILE_VERSION,
+                   1,1,'PASS_SPEECH_TIMING_V28: synthetic',now.isoformat(),
+                   'instagram.videoPlayCount','public_exact'),
               )
               conn.commit()
               older = {
-                  'post_url':'https://www.instagram.com/reel/V40METRIC/',
-                  'video_url':'','preview_url':'','published_at':(now-timedelta(hours=3)).isoformat(),
-                  'duration_sec':8.0,'views':70_000,'likes':400,'comments':20,
-                  'hours_since_publish':3.0,'views_per_hour':23333.0,'followers_count':0,
-                  'creator_usual_views':0,'anomaly_multiplier':0,'follower_reach':0,
-                  'like_rate':0,'comment_rate':0,'viral_score_v2':50,'search_term':'ai','caption':'',
+                  'post_url':url,'video_url':'','preview_url':'','published_at':(now-timedelta(hours=3)).isoformat(),
+                  'duration_sec':8.0,'views':70_000,'likes':400,'comments':20,'hours_since_publish':3.0,
+                  'views_per_hour':23333.0,'followers_count':0,'creator_usual_views':0,'anomaly_multiplier':0,
+                  'follower_reach':0,'like_rate':0,'comment_rate':0,'viral_score_v2':50,'search_term':'ai','caption':'',
                   'metrics_updated_at':(now-timedelta(hours=1)).isoformat(),
                   'views_metric_source':'instagram.videoViewCount','views_metric_quality':'deprecated_fallback',
               }
               metrics.update_metrics_only_v40(conn, older)
               conn.commit()
-              row = conn.execute(
-                  "SELECT views,metrics_updated_at,views_metric_source FROM radar_posts WHERE post_url=?",
-                  ('https://www.instagram.com/reel/V40METRIC/',),
-              ).fetchone()
-              assert row['views'] == 1_200_000, dict(row)
-              assert row['views_metric_source'] == 'instagram.videoPlayCount', dict(row)
+              row = conn.execute('SELECT views,views_metric_source FROM radar_posts WHERE post_url=?',(url,)).fetchone()
+              assert row['views'] == 1_200_000 and row['views_metric_source'] == 'instagram.videoPlayCount', dict(row)
 
-          # Source-definition changes must reset history before measured acceleration.
-          with db_conn() as conn:
               conn.execute(
                   """INSERT OR REPLACE INTO radar_momentum_history(
                      post_url,observed_at,views,average_views_per_hour,search_term,views_metric_source
                      ) VALUES(?,?,?,?,?,?)""",
-                  (
-                      'https://www.instagram.com/reel/V40METRIC/',
-                      (now-timedelta(hours=2)).isoformat(),70_000,35000.0,'ai','instagram.videoViewCount',
-                  ),
+                  (url,(now-timedelta(hours=2)).isoformat(),70_000,35000.0,'ai','instagram.videoViewCount'),
               )
               conn.commit()
               metrics.refresh_metric_aware_momentum_v40(conn)
-              row = conn.execute(
-                  "SELECT measured_growth_per_hour,growth_acceleration FROM radar_posts WHERE post_url=?",
-                  ('https://www.instagram.com/reel/V40METRIC/',),
-              ).fetchone()
+              row = conn.execute('SELECT measured_growth_per_hour,growth_acceleration FROM radar_posts WHERE post_url=?',(url,)).fetchone()
               assert float(row['measured_growth_per_hour'] or 0) == 0.0, dict(row)
               assert float(row['growth_acceleration'] or 0) == 0.0, dict(row)
-              hist = conn.execute(
-                  "SELECT views_metric_source FROM radar_momentum_history WHERE post_url=?",
-                  ('https://www.instagram.com/reel/V40METRIC/',),
-              ).fetchone()
-              assert hist and hist['views_metric_source'] == 'instagram.videoPlayCount', dict(hist or {})
+              hist = conn.execute('SELECT views_metric_source FROM radar_momentum_history WHERE post_url=?',(url,)).fetchone()
+              assert hist['views_metric_source'] == 'instagram.videoPlayCount', dict(hist)
 
           c = app_module.app.test_client()
-          radar = c.get('/api/radar')
-          assert radar.status_code == 200
-          rows = radar.get_json()
-          found = next(x for x in rows if x.get('post_url') == 'https://www.instagram.com/reel/V40METRIC/')
+          rows = c.get('/api/radar').get_json()
+          found = next(x for x in rows if x.get('post_url') == url)
           assert found['views'] == 1_200_000, found
           assert found['views_are_public_platform_count'] is True, found
           assert found['views_metric_provenance'] == 'instagram.videoPlayCount', found
           assert isinstance(found.get('metrics_age_minutes'), int), found
 
-          root = c.get('/')
-          assert root.status_code == 200
-          html = root.get_data(as_text=True)
+          html = c.get('/').get_data(as_text=True)
           assert 'ОБНОВИТЬ ЦИФРЫ' in html
           assert 'function metricAge(' in html
           assert 'data-metrics=' in html
           assert '/static/' not in html
           assert html.count('<script>') == 1 and html.count('</script>') == 1
           assert 'window.__V35_MANUAL_START__=true' in html
+          rules = {rule.rule for rule in app_module.app.url_map.iter_rules()}
+          assert '/api/radar/<int:item_id>/metrics-refresh' in rules, rules
 
-          # No live Actor call is made by simply opening/reading the page.
-          assert 'metrics-refresh' in {rule.rule for rule in app_module.app.url_map.iter_rules()}
-
-          # Bounded retry: transient 503 twice -> success on third call.
           class Fake503(Exception):
               status_code = 503
           calls = {'n': 0}
@@ -190,19 +151,16 @@ jobs:
               assert wrapped() == 'ok'
           assert calls['n'] == 3, calls
 
-          # Programming/validation errors must never be multiplied by retry logic.
           calls = {'n': 0}
           def bad_schema():
               calls['n'] += 1
               raise ValueError('invalid schema')
-          wrapped = overload._wrap_stage('test-validation', bad_schema)
           try:
-              wrapped()
+              overload._wrap_stage('validation', bad_schema)()
               raise AssertionError('ValueError expected')
           except ValueError:
               pass
           assert calls['n'] == 1, calls
-
           assert info['gemini_overload_profile'] == 'gemini_overload_v40', info
           assert info['gemini_transient_max_extra_attempts'] == 2, info
           assert info['gemini_validation_errors_retried'] is False, info
