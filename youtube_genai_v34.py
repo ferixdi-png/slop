@@ -14,12 +14,35 @@ import re
 
 from google import genai
 
-# Import-time patch only transforms the already-tested V33 HTML globals before its
-# installer runs later in the bootstrap. It does not add another browser runtime.
+# Import-time patch transforms the proven V33 HTML globals before its installer
+# runs. It still leaves exactly one browser runtime.
 import frontend_broad_v34  # noqa: F401
+import frontend_failopen_v33 as v33
 import gemini_service
 import radar_multiplatform_v28 as v28
 from models import RadarAssessment
+
+
+# Flask executes after_request handlers in reverse registration order. V34 is
+# registered after V28/V29/V30, so without this small ordering adapter the older
+# response metadata can overwrite only the public speech_required field back to
+# True even though the real V34 runtime is already broad. Wrap the final V33
+# installer (which runs after V34 backend registration) and move the V34 response
+# normalizer to index 0 so it executes LAST and is authoritative externally.
+_ORIGINAL_V33_INSTALL = v33.install_frontend_v33
+
+
+def _v33_install_with_v34_response_order(app):
+    info = _ORIGINAL_V33_INSTALL(app)
+    funcs = list((app.after_request_funcs or {}).get(None, []))
+    broad = [fn for fn in funcs if getattr(fn, "__name__", "") == "v34_broad_response"]
+    if broad:
+        rest = [fn for fn in funcs if fn not in broad]
+        app.after_request_funcs[None] = broad + rest
+    return info
+
+
+v33.install_frontend_v33 = _v33_install_with_v34_response_order
 
 
 def _json_text(text: str) -> str:
@@ -84,4 +107,5 @@ def install_youtube_v34():
         "youtube_interactions_schema": "google-genai-2.x-current",
         "youtube_url_input": True,
         "youtube_failure_policy": "keep_as_ai_unverified",
+        "v34_public_response_authoritative": True,
     }
