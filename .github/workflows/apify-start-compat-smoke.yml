@@ -26,7 +26,7 @@ jobs:
           from apify_start_compat import install_apify_start_compat
 
           assert install_apify_start_compat() is True
-          actor = ApifyClient('compat-smoke').actor('apify/instagram-hashtag-scraper')
+          actor = ApifyClient('compat-smoke').actor('apify/instagram-scraper')
           cls = type(actor)
           assert getattr(cls, '_slop_restart_on_error_compat', False) is True
 
@@ -38,7 +38,7 @@ jobs:
           cls._slop_original_start = fake_start
           try:
               result = actor.start(
-                  run_input={'hashtags': ['omni'], 'resultsLimit': 250},
+                  run_input={'directUrls': ['https://www.instagram.com/explore/tags/ai/']},
                   max_items=250,
                   max_total_charge_usd=Decimal('1.00'),
                   restart_on_error=False,
@@ -50,18 +50,21 @@ jobs:
           assert 'restart_on_error' not in captured, captured
           assert captured['max_items'] == 250, captured
           assert captured['max_total_charge_usd'] == Decimal('1.00'), captured
-          assert captured['run_input']['hashtags'] == ['omni'], captured
           print('Apify ActorClient.start compatibility OK')
           PY
-      - name: Verify V27 bootstrap exposes compatibility guard
+      - name: Verify V28 bootstrap exposes compatibility guard
         run: |
           python - <<'PY'
           import app
-          status = app.app.test_client().get('/api/status').get_json()
-          assert status.get('radar_runtime') == 'omni_veo_veo3_v27_strict_compress10', status
+          import radar_multiplatform_v28 as v28
           import radar_runtime_v27
+
+          status = app.app.test_client().get('/api/status').get_json()
+          assert status.get('radar_runtime') == v28.MODE_VERSION, status
           contract = radar_runtime_v27.activate_v27_runtime()
           assert contract.get('apify_start_compat') is True, contract
-          assert contract.get('hashtags') == ['omni', 'veo', 'veo3'], contract
-          print('V27 contract OK')
+          assert contract.get('hashtags') == ['omni', 'veo', 'veo3', 'ai', 'ии'], contract
+          assert contract.get('platforms') == ['Instagram Reels', 'TikTok', 'YouTube Shorts'], contract
+          assert contract.get('lookback_days') == 14, contract
+          print('V28 contract OK')
           PY
