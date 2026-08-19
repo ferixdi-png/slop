@@ -1,8 +1,8 @@
 """Single authoritative production bootstrap for the final radar runtime.
 
 The battle-tested V27 stack remains the infrastructure/content reconstruction
-base. V28 is the final product overlay: Instagram + TikTok + YouTube, five strict
-post-level hashtags, 14-day discovery and mandatory Gemini speech/timing checks.
+base. V28 supplies the three-platform speech/timing product behavior and V29
+adds the final hard <$5 spend guard without changing that product scope.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from apify_start_compat import install_apify_start_compat
 from radar_discovery_v27 import install_v27_high_volume_discovery
 from radar_logs import add_radar_log, suppress_startup_logs
 
-RUNTIME_VERSION = "multiplatform_speech_v28_strict14d"
+RUNTIME_VERSION = "multiplatform_speech_v29_budget5"
 PUBLIC_EDGE_PROFILE = RUNTIME_VERSION
 _APPLIED = False
 _CONTRACT = None
@@ -56,7 +56,7 @@ def _install_render_liveness(app):
 
 
 def activate_v27_runtime():
-    """Compose proven internal layers, then expose only final V28 behavior."""
+    """Compose proven internal layers, then expose only final V29 behavior."""
     global _APPLIED, _CONTRACT
     if _APPLIED:
         return dict(_CONTRACT or {"runtime": RUNTIME_VERSION})
@@ -119,17 +119,24 @@ def activate_v27_runtime():
         install_v27_high_volume_discovery()
         from radar_multiplatform_v28 import apply_multiplatform_v28
         v28_info = apply_multiplatform_v28()
+
+        # Apply the spend guard BEFORE importing the 14-day finish module so its
+        # imported profile constants are already the final V29 values.
+        from radar_budget_v29 import apply_budget_v29, budget_breakdown_v29
+        v29_info = apply_budget_v29()
+
         from radar_v28_finish import apply_v28_finish
         finish_info = apply_v28_finish()
 
-        final_keep_limit = int(v28_info.get("keep_limit") or budget.KEEP_LIMIT)
-        final_budget = budget.budget_breakdown()
+        final_info = {**dict(v28_info or {}), **dict(v29_info or {})}
+        final_keep_limit = int(final_info.get("keep_limit") or budget.KEEP_LIMIT)
+        final_budget = budget_breakdown_v29()
 
-        app_module.PROFILE_VERSION = v28_info["screening_profile"]
+        app_module.PROFILE_VERSION = final_info["screening_profile"]
         app_module.PRODUCTION_PROFILE_VERSION = PRODUCTION_PROFILE_VERSION
         app_module.KEEP_LIMIT = final_keep_limit
         app_module.BUDGET_INFO = final_budget
-        app_module.budget_breakdown = budget.budget_breakdown
+        app_module.budget_breakdown = budget_breakdown_v29
         app_module.cancel_active_job = cancel_active_job
         app_module.RADAR_RUNTIME = RUNTIME_VERSION
         app_module.EDGE_PROFILE = PUBLIC_EDGE_PROFILE
@@ -138,25 +145,28 @@ def activate_v27_runtime():
     _CONTRACT = {
         "runtime": RUNTIME_VERSION,
         "profile": RUNTIME_VERSION,
-        "internal_screening_profile": v28_info["screening_profile"],
+        "internal_screening_profile": final_info["screening_profile"],
         "edge_profile": PUBLIC_EDGE_PROFILE,
         "production_profile": app_module.PRODUCTION_PROFILE_VERSION,
-        "platforms": v28_info["platforms"],
-        "hashtags": v28_info["hashtags"],
-        "lookback_days": v28_info["lookback_days"],
-        "results_per_tag_per_platform": v28_info["results_per_tag_per_platform"],
-        "max_raw_requested": v28_info["max_raw_requested"],
-        "analyze_limit": v28_info["analyze_limit"],
+        "platforms": final_info["platforms"],
+        "hashtags": final_info["hashtags"],
+        "lookback_days": final_info["lookback_days"],
+        "results_per_tag_per_platform": final_info["results_per_tag_per_platform"],
+        "max_raw_requested": final_info["max_raw_requested"],
+        "analyze_limit": final_info["analyze_limit"],
         "keep_limit": final_keep_limit,
         "speech_required": True,
         "strict_actual_hashtag": True,
-        "youtube_direct_gemini": bool(v28_info.get("youtube_direct_gemini")),
+        "youtube_direct_gemini": bool(final_info.get("youtube_direct_gemini")),
         "v28_14day_api": bool(finish_info.get("v28_14day_api")),
         "direct_max_duration_sec": DIRECT_MAX_DURATION_SEC,
         "source_max_duration_sec": SOURCE_MAX_DURATION_SEC,
         "compressed_target_sec": COMPRESSED_TARGET_SEC,
         "momentum_record_key": MOMENTUM_RECORD_KEY,
         "budget": final_budget,
+        "hard_total_target_usd": final_budget["hard_total_target_usd"],
+        "apify_discovery_hard_cap_usd": final_budget["hard_apify_discovery_caps_usd"],
+        "budget_headroom_usd": final_budget["reserved_headroom_usd"],
         "legacy_startup_banners_suppressed": True,
         "render_fast_liveness": True,
         "apify_start_compat": True,
@@ -165,7 +175,7 @@ def activate_v27_runtime():
     _APPLIED = True
 
     add_radar_log(
-        "V28 RUNTIME READY: Instagram + TikTok + YouTube; #omni/#veo/#veo3/#ai/#ии; 14 дней; Gemini speech + timing required.",
+        "V29 RUNTIME READY: Instagram + TikTok + YouTube; 14 дней; speech/timing; Apify discovery hard cap $2.80; total target <$5.",
         stage="startup",
         details=dict(_CONTRACT),
     )
