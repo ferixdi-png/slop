@@ -1,26 +1,24 @@
-"""V34 full-scope momentum ranking.
+"""V34 final momentum ranking for the broad trend pool.
 
-Legacy V24 measures cross-run growth for omni/veo/veo3 in its seven-day window.
-The final product is five tags and fourteen days. This overlay extends that exact
-DB-backed momentum mechanism to the missing scope and ranks the broad TOP by
-current velocity without creating a second history store.
+V28 is the authoritative five-tag / fourteen-day scorer and already maintains the
+single DB-backed radar_momentum_history table. V34 must not calculate that history
+a second time. This overlay only checkpoints the finished V28 history and makes
+the broad TOP prefer measured current growth when it exists, otherwise lifetime
+views/hour.
 
 Architecture rules:
-- radar_momentum_history is the single source of cross-run observation truth;
-- V25 remains the cloud/local checkpoint for that table;
-- current V30 screening_profile is mandatory for persisted TOP rows;
-- this module owns MOMENTUM ONLY. V35 manual-start is installed by the final
-  production bootstrap after all discovery/budget/momentum wrappers.
+- V28 owns five-tag/14-day scoring and DB observations;
+- V25 owns cloud/local checkpoint serialization for that same DB table;
+- V34 owns final broad ranking only;
+- persisted TOP rows must belong to the current V30 screening profile;
+- V35 manual-start is installed once by the final production bootstrap.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import radar_broad_v34 as broad
 import radar_momentum_cloud_v25 as cloud_momentum
 import radar_multiplatform_v28 as v28
-import radar_omni_veo_veo3_v24 as v24
 import radar_quality
 from db import db_conn
 from radar_logs import add_radar_log
@@ -30,106 +28,9 @@ _APPLIED = False
 _BASE_REFRESH = None
 
 
-def _is_legacy_already_covered(row, now):
-    term = str(row["search_term"] or "").lower()
-    published = v24._parse_time(row["published_at"])
-    age_days = ((now - published).total_seconds() / 86400.0) if published else 999.0
-    return term in {"omni", "veo", "veo3"} and age_days <= 7.0
-
-
-def _history_row(conn, post_url):
-    return conn.execute(
-        """SELECT observed_at,views,average_views_per_hour,search_term
-           FROM radar_momentum_history WHERE post_url=?""",
-        (post_url,),
-    ).fetchone()
-
-
-def _observation_due(previous, now):
-    if previous is None:
-        return True
-    observed = v24._parse_time(previous["observed_at"])
-    if observed is None:
-        return True
-    return (now - observed).total_seconds() / 3600.0 >= v24.MIN_HISTORY_HOURS
-
-
-def _upsert_observation(conn, row, now):
-    conn.execute(
-        """INSERT INTO radar_momentum_history(post_url,observed_at,views,average_views_per_hour,search_term)
-           VALUES(?,?,?,?,?)
-           ON CONFLICT(post_url) DO UPDATE SET
-             observed_at=excluded.observed_at,
-             views=excluded.views,
-             average_views_per_hour=excluded.average_views_per_hour,
-             search_term=excluded.search_term""",
-        (
-            str(row["post_url"]),
-            now.isoformat(),
-            int(row["views"] or 0),
-            float(row["views_per_hour"] or 0),
-            str(row["search_term"] or "").lower(),
-        ),
-    )
-
-
 def refresh_momentum_v34(conn):
-    """Refresh all five tags using one DB history + one V25 checkpoint format."""
-    # Preserve every proven quality/V24/V25 step first. V24 handles its original
-    # 3-tag/7-day scope; below we fill only rows it intentionally does not cover.
+    """Run the authoritative V28 scorer once, then checkpoint its finished history."""
     _BASE_REFRESH(conn)
-
-    placeholders = ",".join("?" for _ in v28.TARGET_TAGS)
-    params = (*v28.TARGET_TAGS, broad.SCREENING_PROFILE)
-    rows = conn.execute(
-        f"""SELECT id,post_url,search_term,published_at,views,hours_since_publish,
-                   views_per_hour,viral_score_v2,measured_growth_per_hour,growth_acceleration
-            FROM radar_posts
-            WHERE datetime(published_at)>=datetime('now','-{v28.LOOKBACK_DAYS} days')
-              AND LOWER(COALESCE(search_term,'')) IN ({placeholders})
-              AND COALESCE(screening_profile,'')=?""",
-        params,
-    ).fetchall()
-    now = datetime.now(timezone.utc)
-    extended = 0
-
-    for row in rows:
-        if _is_legacy_already_covered(row, now):
-            continue
-        post_url = str(row["post_url"] or "")
-        if not post_url:
-            continue
-
-        previous = _history_row(conn, post_url)
-        measured_vph, acceleration, has_history = v24._history_velocity(row, previous, now)
-        score = v28._momentum_score(
-            int(row["views"] or 0),
-            measured_vph,
-            float(row["hours_since_publish"] or 0),
-            float(row["viral_score_v2"] or 0),
-            acceleration,
-            has_history,
-        )
-        conn.execute(
-            """UPDATE radar_posts
-               SET viral_score_v2=?, measured_growth_per_hour=?, growth_acceleration=?
-               WHERE id=?""",
-            (
-                score,
-                round(measured_vph, 2) if has_history else 0.0,
-                round(acceleration, 4) if has_history else 0.0,
-                row["id"],
-            ),
-        )
-        if _observation_due(previous, now):
-            _upsert_observation(conn, row, now)
-        extended += 1
-
-    conn.commit()
-
-    # V25 may have checkpointed the legacy rows before this extension ran. Save
-    # once more after the five-tag update so a Render replacement sees the same
-    # history that the current process used. This is KVS state I/O, not a paid Actor.
     try:
         if not cloud_momentum.save_momentum_checkpoint(conn):
             add_radar_log(
@@ -143,12 +44,6 @@ def refresh_momentum_v34(conn):
             level="WARN",
             stage="momentum-cloud",
         )
-
-    add_radar_log(
-        "V34 MOMENTUM REFRESH: five-tag/14-day DB history refreshed without a parallel history store.",
-        stage="momentum",
-        details={"extended_rows": extended, "profile": broad.SCREENING_PROFILE},
-    )
 
 
 def query_broad_by_current_velocity(limit=100):
@@ -201,6 +96,7 @@ def apply_momentum_v34():
             "ranking": "measured_current_growth_else_views_per_hour",
             "cloud_checkpoint": True,
         }
+
     _APPLIED = True
     _BASE_REFRESH = radar_quality.refresh_recent_scores_quality
     radar_quality.refresh_recent_scores_quality = refresh_momentum_v34
@@ -211,14 +107,16 @@ def apply_momentum_v34():
         "tags": list(v28.TARGET_TAGS),
         "lookback_days": v28.LOOKBACK_DAYS,
         "ranking": "measured_current_growth_else_views_per_hour",
+        "scoring_owner": "radar_multiplatform_v28.refresh_scores_v28",
+        "history_backend": "radar_momentum_history",
         "cloud_checkpoint": True,
-        "history_backend": "radar_momentum_history_v24_v25",
         "current_profile_only": True,
+        "duplicate_history_calculation": False,
         "manual_start_installed_here": False,
         "control_owner": "final_runtime_bootstrap",
     }
     add_radar_log(
-        "V34 MOMENTUM READY: all 5 tags / 14 days; one DB/cloud history; current-profile ranking only.",
+        "V34 MOMENTUM READY: V28 owns 5-tag/14-day scoring; V34 ranks current-profile TOP and checkpoints history once.",
         stage="startup",
         details=info,
     )
