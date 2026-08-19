@@ -1,0 +1,133 @@
+name: V32 Self-Contained UI Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'frontend_selfcontained_v32.py'
+      - 'radar_runtime_v27.py'
+      - 'templates/index.html'
+      - 'static/**'
+      - '.github/workflows/v32-self-contained-ui-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'frontend_selfcontained_v32.py'
+      - 'radar_runtime_v27.py'
+      - 'templates/index.html'
+      - 'static/**'
+      - '.github/workflows/v32-self-contained-ui-smoke.yml'
+
+jobs:
+  self-contained-ui:
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: v32-smoke
+      APIFY_API_TOKEN: ''
+      GEMINI_API_KEY: ''
+      RADAR_SOURCE_MAX_AGE_SECONDS: '480'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - name: Compile
+        run: python -m compileall -q app.py frontend_selfcontained_v32.py radar_runtime_v27.py
+      - name: Verify one-response UI, no DB root dependency, JS syntax and watchdog
+        run: |
+          python - <<'PY'
+          import re
+          import subprocess
+          import tempfile
+          from pathlib import Path
+
+          import app as app_module
+          import radar_hardening_v19 as hardening
+
+          c = app_module.app.test_client()
+          root = c.get('/')
+          assert root.status_code == 200, root.status_code
+          body = root.get_data()
+          html = body.decode('utf-8')
+          assert len(body) > 50_000, len(body)
+          assert root.headers.get('X-Frontend-Profile') == 'frontend_v32_self_contained', root.headers
+          assert root.headers.get('Cache-Control', '').startswith('no-store'), root.headers
+          assert '<script src="/static/' not in html
+          assert "<script src='/static/" not in html
+          assert '<link rel="stylesheet" href="/static/' not in html
+          assert 'data-v32-asset="style.css"' in html
+          assert 'data-v32-asset="upgrade.css"' in html
+          assert 'data-v32-asset="app.js"' in html
+          assert 'data-v32-asset="runtime.js"' in html
+          assert 'data-v32-watchdog="1"' in html
+          assert 'setInterval(check, 3000)' in html
+          assert 'V32 SELF-CONTAINED UI' in html
+
+          # GET / must never touch SQLite anymore. If the old index route executes,
+          # this replacement raises and the assertion below fails with HTTP 500.
+          original_db = app_module.db_conn
+          def explode_db(*args, **kwargs):
+              raise RuntimeError('ROOT_MUST_NOT_TOUCH_DB')
+          app_module.db_conn = explode_db
+          try:
+              again = c.get('/')
+              assert again.status_code == 200, again.status_code
+              assert len(again.get_data()) == len(body)
+          finally:
+              app_module.db_conn = original_db
+
+          health = c.get('/api/frontend-health')
+          assert health.status_code == 200
+          payload = health.get_json()
+          assert payload['ok'] is True, payload
+          assert payload['profile'] == 'frontend_v32_self_contained', payload
+          assert payload['external_static_dependencies'] == 0, payload
+          assert payload['runtime_watchdog'] is True, payload
+          assert payload['root_db_dependency'] is False, payload
+          assert payload['asset_count'] >= 8, payload
+          assert payload['html_bytes'] == len(body), (payload, len(body))
+          assert payload['source_watchdog_seconds'] == 480, payload
+          assert hardening.SOURCE_MAX_AGE_SECONDS == 480, hardening.SOURCE_MAX_AGE_SECONDS
+
+          # Syntax-check every application JS block after server-side inlining.
+          blocks = re.findall(r'<script data-v32-asset="([^"]+)">\n(.*?)\n</script>', html, re.S)
+          js_blocks = [(name, code) for name, code in blocks if name.endswith('.js')]
+          assert len(js_blocks) >= 6, [name for name, _ in js_blocks]
+          with tempfile.TemporaryDirectory() as td:
+              for name, code in js_blocks:
+                  path = Path(td) / name
+                  path.write_text(code, encoding='utf-8')
+                  subprocess.run(['node', '--check', str(path)], check=True)
+
+          runtime_info = app_module.RUNTIME_INFO
+          assert runtime_info['self_contained_frontend'] is True, runtime_info
+          assert runtime_info['external_static_dependencies'] == 0, runtime_info
+          assert runtime_info['source_watchdog_seconds'] == 480, runtime_info
+          print('V32 SELF-CONTAINED UI OK', payload)
+          PY
+      - name: Exact Gunicorn root stability check
+        run: |
+          set -euo pipefail
+          PORT=10000 gunicorn app:app --bind 0.0.0.0:10000 --workers 1 --threads 4 --timeout 900 >/tmp/v32-gunicorn.log 2>&1 &
+          PID=$!
+          trap 'kill $PID >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:10000/healthz >/dev/null; then break; fi
+            sleep 0.5
+          done
+          for i in $(seq 1 8); do
+            curl -fsS -D /tmp/v32-headers.txt http://127.0.0.1:10000/ -o /tmp/v32-root.html
+            python - <<'PY'
+          from pathlib import Path
+          body = Path('/tmp/v32-root.html').read_bytes()
+          assert len(body) > 50_000, len(body)
+          text = body.decode('utf-8')
+          assert '/static/app.js' not in text
+          assert '/static/style.css' not in text
+          assert 'data-v32-watchdog="1"' in text
+          PY
+            sleep 0.5
+          done
+          curl -fsS http://127.0.0.1:10000/api/frontend-health | python -m json.tool
+          kill -0 $PID
+          echo 'Gunicorn stayed alive with repeated self-contained root requests.'

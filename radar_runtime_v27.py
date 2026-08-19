@@ -2,8 +2,8 @@
 
 The battle-tested V27 stack remains the infrastructure/content reconstruction
 base. V28 supplies the three-platform speech/timing product behavior, V29 adds
-the hard <$5 spend guard, and V30 closes the ten highest-risk production gaps
-found by the full adversarial audit without widening product scope.
+the hard <$5 spend guard, V30 closes the adversarial audit top-10, and V32 makes
+the browser UI self-contained so a static-delivery failure cannot blank the page.
 """
 
 from __future__ import annotations
@@ -16,8 +16,12 @@ from apify_start_compat import install_apify_start_compat
 from radar_discovery_v27 import install_v27_high_volume_discovery
 from radar_logs import add_radar_log, suppress_startup_logs
 
+# Keep the semantic/runtime identity stable so an already-paid durable V30 run is
+# resumed after deploy instead of being migrated and re-discovered. V32 is a UI and
+# operational reliability layer, not a new screening contract.
 RUNTIME_VERSION = "multiplatform_speech_v30_audit10_budget5"
 PUBLIC_EDGE_PROFILE = RUNTIME_VERSION
+FRONTEND_PROFILE = "frontend_v32_self_contained"
 _APPLIED = False
 _CONTRACT = None
 _LIVENESS_INSTALLED = False
@@ -42,6 +46,7 @@ def _install_render_liveness(app):
         return {
             "ok": True,
             "runtime": RUNTIME_VERSION,
+            "frontend_profile": FRONTEND_PROFILE,
             "pid": __import__("os").getpid(),
         }, 200, {"Cache-Control": "no-store"}
 
@@ -57,7 +62,7 @@ def _install_render_liveness(app):
 
 
 def activate_v27_runtime():
-    """Compose proven internal layers, then expose only final V30 behavior."""
+    """Compose proven internal layers, then expose final V30 + V32 reliability behavior."""
     global _APPLIED, _CONTRACT
     if _APPLIED:
         return dict(_CONTRACT or {"runtime": RUNTIME_VERSION})
@@ -138,6 +143,13 @@ def activate_v27_runtime():
         from radar_v28_finish import apply_v28_finish
         finish_info = apply_v28_finish()
 
+        # V32 is intentionally installed last. It intercepts GET / before the old
+        # DB-backed index route, bundles every CSS/JS asset into one HTML response,
+        # and tightens the already-running source watchdog without changing the paid
+        # discovery/screening identity.
+        from frontend_selfcontained_v32 import install_frontend_v32
+        frontend_info = install_frontend_v32(app_module.app)
+
         final_info = {
             **dict(v28_info or {}),
             **dict(v29_info or {}),
@@ -163,6 +175,14 @@ def activate_v27_runtime():
         "internal_screening_profile": final_info["screening_profile"],
         "edge_profile": PUBLIC_EDGE_PROFILE,
         "production_profile": app_module.PRODUCTION_PROFILE_VERSION,
+        "frontend_profile": frontend_info.get("profile", FRONTEND_PROFILE),
+        "self_contained_frontend": True,
+        "external_static_dependencies": frontend_info.get("external_static_dependencies", 0),
+        "frontend_html_bytes": frontend_info.get("html_bytes"),
+        "frontend_html_sha256": frontend_info.get("html_sha256"),
+        "runtime_dom_watchdog": bool(frontend_info.get("runtime_watchdog")),
+        "root_db_dependency": bool(frontend_info.get("root_db_dependency", False)),
+        "source_watchdog_seconds": frontend_info.get("source_watchdog_seconds"),
         "platforms": final_info["platforms"],
         "hashtags": final_info["hashtags"],
         "lookback_days": final_info["lookback_days"],
@@ -204,7 +224,7 @@ def activate_v27_runtime():
     _APPLIED = True
 
     add_radar_log(
-        "V30 RUNTIME READY: audit top-10 closed; 3 platforms; 14 days; speech/timing; discovery hard cap $2.80; total target <$5.",
+        "V30 RUNTIME READY + V32 FRONTEND READY: self-contained HTML; zero browser /static dependencies; persistent DOM watchdog; source watchdog tightened; paid/search contract unchanged.",
         stage="startup",
         details=dict(_CONTRACT),
     )
